@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import get_current_user
 from database import get_db
 from github_client import post_github_check
-from models import AuditLog, Finding, Submission, User
-from routers.settings import get_github_config_internal
+from crypto import decrypt
+from models import AuditLog, Finding, Repo, Submission, User
 from schemas import SignoffRequest, SubmissionResponse
 
 router = APIRouter(prefix="/submissions", tags=["signoff"])
@@ -64,7 +64,9 @@ async def sign_off(
     await db.refresh(sub)
 
     # Update GitHub Check to success now that a human has reviewed and signed off.
-    _, github_token = await get_github_config_internal(db)
+    repo_rec = await db.execute(select(Repo).where(Repo.repo_full_name == sub.repo_full_name))
+    repo_rec = repo_rec.scalar_one_or_none()
+    github_token = decrypt(repo_rec.github_token_enc) if repo_rec else ""
     await post_github_check(
         repo=sub.repo_full_name,
         sha=sub.commit_sha,
