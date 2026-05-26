@@ -18,7 +18,7 @@ from worker.analysis.clone import clone_repo
 from worker.analysis.config_checks import run_config_checks
 from worker.analysis.llm import call_ollama
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
-from worker.analysis.synthesizer import synthesize
+from worker.analysis.synthesizer import dedup_raw_findings, synthesize
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ async def scan_self(
                 max_content_chars=cfg.llm_max_content_chars,
             )
 
-            all_findings = sast_context + ollama_result.findings
+            all_findings = dedup_raw_findings(sast_context + ollama_result.findings)
             sev_counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
             config_issue_count = 0
 
