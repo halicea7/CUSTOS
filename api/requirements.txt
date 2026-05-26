@@ -1,0 +1,14 @@
+fastapi>=0.111
+uvicorn[standard]
+pydantic-settings
+sqlalchemy[asyncio]>=2.0
+asyncpg
+alembic
+arq
+redis[hiredis]
+httpx
+python-jose[cryptography]
+bcrypt
+gitpython
+pygithub
+python-multipart

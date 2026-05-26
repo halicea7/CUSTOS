@@ -1,0 +1,48 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Environment
+.env
+api/.env
+*.env.local
+
+# Alembic
+alembic/versions/__pycache__/
+
+# Node
+dashboard/node_modules/
+dashboard/dist/
+
+# Logs
+.dev-logs/
+*.log
+stdout
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Clones directory (runtime)
+/tmp/Custos_clones/
+
+# Test / coverage
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
