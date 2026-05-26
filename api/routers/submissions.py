@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import get_current_user
 from database import get_db
 from models import AppConfig, Finding, LlmRun, Submission, User
+from routers.repos import _visible_repo_names
 from schemas import FindingResponse, SubmissionListResponse, SubmissionResponse
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -19,12 +20,26 @@ _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 @router.get("", response_model=SubmissionListResponse)
 async def list_submissions(
     status_filter: str | None = Query(None, alias="status"),
+    group_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    from models import Repo, RepoGroup
+    from sqlalchemy import select as _select
+
     q = select(Submission)
     if status_filter:
         q = q.where(Submission.status == status_filter)
+
+    if group_id is not None:
+        # Filter to repos in this specific group.
+        rg = await db.execute(_select(Repo.repo_full_name).join(RepoGroup, RepoGroup.repo_id == Repo.id).where(RepoGroup.group_id == group_id))
+        group_repos = set(rg.scalars().all())
+        q = q.where(Submission.repo_full_name.in_(group_repos))
+    else:
+        visible = await _visible_repo_names(db, current_user)
+        if visible is not None:
+            q = q.where(Submission.repo_full_name.in_(visible))
     result = await db.execute(q)
     submissions = result.scalars().all()
 

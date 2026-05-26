@@ -10,10 +10,11 @@ from pathlib import Path
 from sqlalchemy import delete as sql_delete, select
 
 from config import settings
+from crypto import decrypt
 from database import async_session_factory
 from github_client import post_github_check
-from models import AppConfig, Finding, LlmRun, SelfScan, SelfScanFinding, Submission
-from routers.settings import get_github_config_internal, load_app_config
+from models import AppConfig, Finding, LlmRun, Repo, SelfScan, SelfScanFinding, Submission
+from routers.settings import load_app_config
 from worker.analysis.clone import clone_repo
 from worker.analysis.config_checks import run_config_checks
 from worker.analysis.llm import call_ollama
@@ -43,7 +44,10 @@ async def analyze_submission(ctx, submission_id: str) -> None:
         sha = submission.commit_sha
 
         cfg = await load_app_config(db)
-        _, github_token = await get_github_config_internal(db)
+
+        repo_result = await db.execute(select(Repo).where(Repo.repo_full_name == repo))
+        repo_rec = repo_result.scalar_one_or_none()
+        github_token = decrypt(repo_rec.github_token_enc) if repo_rec else ""
 
         llm_run = LlmRun(
             submission_id=submission.id,

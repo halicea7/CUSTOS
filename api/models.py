@@ -142,6 +142,51 @@ class SelfScanFinding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class Repo(Base):
+    __tablename__ = "repos"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    repo_full_name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    github_token_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    webhook_secret_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    added_by: Mapped[str] = mapped_column(Text, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
+
+
+class Group(Base):
+    __tablename__ = "groups"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class GroupMember(Base):
+    __tablename__ = "group_members"
+
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    username: Mapped[str] = mapped_column(Text, primary_key=True)
+    added_by: Mapped[str] = mapped_column(Text, nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class RepoGroup(Base):
+    __tablename__ = "repo_groups"
+
+    repo_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("repos.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

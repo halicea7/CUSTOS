@@ -6,13 +6,10 @@ _ENV_FILE = Path(__file__).parent / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     SECRET_KEY: str = "changeme"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
-
-    GITHUB_WEBHOOK_SECRET: str = ""
-    GITHUB_TOKEN: str = ""
 
     DATABASE_URL: str = "postgresql+asyncpg://Custos:Custos@localhost:5432/Custos"
     REDIS_URL: str = "redis://localhost:6379"

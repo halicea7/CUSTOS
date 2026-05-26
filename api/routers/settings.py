@@ -14,8 +14,6 @@ from schemas import (
     AppConfigUpdateRequest,
     ChangePasswordRequest,
     CreateUserRequest,
-    GitHubConfigResponse,
-    GitHubConfigUpdateRequest,
     UpdateUserRoleRequest,
     UserListResponse,
 )
@@ -186,97 +184,3 @@ async def update_config(
     await db.commit()
     return await load_app_config(db)
 
-
-# ── GitHub config (admin only) ────────────────────────────────────────────────
-
-_GITHUB_KEYS = {"github_webhook_secret", "github_token"}
-
-
-def _mask(value: str) -> str:
-    """Return last-4 preview, e.g. '••••••••abcd'."""
-    if not value:
-        return ""
-    visible = value[-4:]
-    return f"••••••••{visible}"
-
-
-async def get_github_config_internal(db: AsyncSession) -> tuple[str, str]:
-    """Return (webhook_secret, token) — actual values for internal use only."""
-    result = await db.execute(select(AppConfig).where(AppConfig.key.in_(_GITHUB_KEYS)))
-    ov = {row.key: row.value for row in result.scalars()}
-    secret = ov.get("github_webhook_secret", settings.GITHUB_WEBHOOK_SECRET)
-    token = ov.get("github_token", settings.GITHUB_TOKEN)
-    return secret, token
-
-
-@router.get("/github", response_model=GitHubConfigResponse)
-async def get_github_config(
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
-):
-    secret, token = await get_github_config_internal(db)
-    return GitHubConfigResponse(
-        webhook_secret_set=bool(secret),
-        webhook_secret_preview=_mask(secret),
-        token_set=bool(token),
-        token_preview=_mask(token),
-    )
-
-
-@router.patch("/github", response_model=GitHubConfigResponse)
-async def update_github_config(
-    body: GitHubConfigUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    updates = {}
-    if body.webhook_secret is not None:
-        updates["github_webhook_secret"] = body.webhook_secret
-    if body.token is not None:
-        updates["github_token"] = body.token
-    for key, value in updates.items():
-        existing = await db.get(AppConfig, key)
-        if existing:
-            existing.value = value
-            existing.updated_by = current_user.username
-        else:
-            db.add(AppConfig(key=key, value=value, updated_by=current_user.username))
-    await db.commit()
-    secret, token = await get_github_config_internal(db)
-    return GitHubConfigResponse(
-        webhook_secret_set=bool(secret),
-        webhook_secret_preview=_mask(secret),
-        token_set=bool(token),
-        token_preview=_mask(token),
-    )
-
-
-@router.get("/github/test-token")
-async def test_github_token(
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
-):
-    _, token = await get_github_config_internal(db)
-    if not token:
-        return {"ok": False, "error": "No token configured", "login": None, "scopes": []}
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(
-                "https://api.github.com/user",
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-            if resp.status_code == 401:
-                return {"ok": False, "error": "Token is invalid or expired", "login": None, "scopes": []}
-            resp.raise_for_status()
-            data = resp.json()
-            raw_scopes = resp.headers.get("X-OAuth-Scopes", "")
-            scopes = [s.strip() for s in raw_scopes.split(",") if s.strip()]
-    except httpx.TimeoutException:
-        return {"ok": False, "error": "Request timed out", "login": None, "scopes": []}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "login": None, "scopes": []}
-    return {"ok": True, "login": data.get("login"), "scopes": scopes}

@@ -11,7 +11,9 @@ from config import settings
 from database import engine
 from routers import auth as auth_router
 from routers import findings as findings_router
+from routers import groups as groups_router
 from routers import health as health_router
+from routers import repos as repos_router
 from routers import settings as settings_router
 from routers import signoff as signoff_router
 from routers import submissions as submissions_router
@@ -44,6 +46,8 @@ app.include_router(findings_router.router)
 app.include_router(signoff_router.router)
 app.include_router(settings_router.router)
 app.include_router(health_router.router)
+app.include_router(repos_router.router)
+app.include_router(groups_router.router)
 
 
 @app.get("/healthz", tags=["system"])

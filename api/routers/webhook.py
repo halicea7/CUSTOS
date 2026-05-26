@@ -1,11 +1,15 @@
 import json
 import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from crypto import decrypt
 from database import get_db
-from github_client import verify_github_signature, post_github_check
-from models import Submission
-from routers.settings import get_github_config_internal
+from github_client import post_github_check, verify_github_signature
+from models import Repo, Submission
 from schemas import WebhookResponse
 
 logger = logging.getLogger(__name__)
@@ -20,23 +24,37 @@ _HANDLED_PR_ACTIONS = {"opened", "synchronize"}
 async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     payload_bytes = await request.body()
     signature = request.headers.get("X-Hub-Signature-256", "")
+    event_type = request.headers.get("X-GitHub-Event", "")
 
-    # HMAC validation must happen before any DB or queue interaction.
-    webhook_secret, _ = await get_github_config_internal(db)
+    # Minimal JSON parse to identify the repo — needed to look up its webhook secret.
+    try:
+        payload = json.loads(payload_bytes)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON")
+
+    repo_full_name: str = payload.get("repository", {}).get("full_name", "")
+    if not repo_full_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing repository.full_name")
+
+    # Read-only DB lookup to get the per-repo webhook secret — occurs before any write/queue op.
+    result = await db.execute(select(Repo).where(Repo.repo_full_name == repo_full_name))
+    repo_rec = result.scalar_one_or_none()
+    if not repo_rec:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Repository not registered")
+    if not repo_rec.enabled:
+        return WebhookResponse(status="ignored")
+
+    webhook_secret = decrypt(repo_rec.webhook_secret_enc)
     if not verify_github_signature(payload_bytes, signature, webhook_secret):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid signature")
 
-    event_type = request.headers.get("X-GitHub-Event", "")
     if event_type not in _HANDLED_EVENTS:
         return WebhookResponse(status="ignored")
-
-    payload = json.loads(payload_bytes)
 
     if event_type == "pull_request" and payload.get("action") not in _HANDLED_PR_ACTIONS:
         return WebhookResponse(status="ignored")
 
     repo = payload["repository"]
-    repo_full_name: str = repo["full_name"]
     repo_url: str = repo["clone_url"]
 
     if event_type == "push":
@@ -70,15 +88,17 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         status="pending",
     )
     db.add(submission)
+
+    repo_rec.last_push_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(submission)
 
     submission_id = str(submission.id)
+    github_token = decrypt(repo_rec.github_token_enc)
 
     arq_pool = request.app.state.arq_pool
     await arq_pool.enqueue_job("analyze_submission", submission_id)
 
-    _, github_token = await get_github_config_internal(db)
     await post_github_check(repo=repo_full_name, sha=commit_sha, status="in_progress", token=github_token)
 
     logger.info(

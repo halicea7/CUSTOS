@@ -158,3 +158,76 @@ class AppConfigUpdateRequest(BaseModel):
     access_token_expire_minutes: Optional[int] = None
     worker_max_jobs: Optional[int] = None
     worker_job_timeout: Optional[int] = None
+
+
+# ── Repo schemas ───────────────────────────────────────────────────────────────
+
+class GroupSummary(BaseModel):
+    id: UUID
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
+class RepoCreate(BaseModel):
+    repo_full_name: str
+    github_token: str
+    webhook_secret: str
+    group_ids: list[UUID] = []
+
+
+class RepoUpdate(BaseModel):
+    github_token: Optional[str] = None
+    webhook_secret: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class RepoResponse(BaseModel):
+    id: UUID
+    repo_full_name: str
+    added_by: str
+    added_at: datetime
+    last_push_at: Optional[datetime] = None
+    enabled: bool
+    token_preview: str
+    groups: list[GroupSummary] = []
+
+    model_config = {"from_attributes": True}
+
+
+class ValidateTokenRequest(BaseModel):
+    repo_full_name: str
+    github_token: str
+
+
+# ── Group schemas ──────────────────────────────────────────────────────────────
+
+class GroupCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class GroupUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class GroupMemberAdd(BaseModel):
+    username: str
+
+
+class GroupMemberResponse(BaseModel):
+    username: str
+    added_by: str
+    joined_at: datetime
+
+
+class GroupResponse(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str] = None
+    created_by: str
+    created_at: datetime
+    member_count: int = 0
+
+    model_config = {"from_attributes": True}

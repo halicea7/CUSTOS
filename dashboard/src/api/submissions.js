@@ -1,7 +1,9 @@
 import api from "./client.js";
 
-export async function listSubmissions(statusFilter) {
-  const params = statusFilter ? { status: statusFilter } : {};
+export async function listSubmissions(statusFilter, groupId) {
+  const params = {};
+  if (statusFilter) params.status = statusFilter;
+  if (groupId) params.group_id = groupId;
   const res = await api.get("/submissions", { params });
   return res.data;
 }

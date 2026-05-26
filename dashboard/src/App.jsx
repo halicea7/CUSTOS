@@ -14,6 +14,8 @@ import Queue from "./pages/Queue.jsx";
 import Submission from "./pages/Submission.jsx";
 import Finding from "./pages/Finding.jsx";
 import Health from "./pages/Health.jsx";
+import Repos from "./pages/Repos.jsx";
+import Groups from "./pages/Groups.jsx";
 import Settings from "./pages/Settings.jsx";
 
 const AuthCtx = createContext(null);
@@ -83,7 +85,13 @@ function Nav() {
           <span style={{ color: "var(--text-3)", fontSize: "11px" }}>v1.0</span>
         </Link>
         <span style={{ color: "var(--border-2)", fontSize: "11px" }}>/</span>
-        {[{ to: "/", label: "QUEUE" }, { to: "/health", label: "HEALTH" }, { to: "/settings", label: "SETTINGS" }].map(({ to, label }) => (
+        {[
+          { to: "/", label: "QUEUE" },
+          { to: "/repos", label: "REPOS" },
+          { to: "/health", label: "HEALTH" },
+          ...(user?.role === "admin" ? [{ to: "/groups", label: "GROUPS" }] : []),
+          { to: "/settings", label: "SETTINGS" },
+        ].map(({ to, label }) => (
           <Link
             key={to}
             to={to}
@@ -91,8 +99,8 @@ function Nav() {
               textDecoration: "none",
               fontSize: "11px",
               letterSpacing: "0.08em",
-              color: location.pathname === to ? "var(--text)" : "var(--text-2)",
-              borderBottom: location.pathname === to ? "1px solid var(--accent)" : "1px solid transparent",
+              color: (to === "/" ? location.pathname === "/" : location.pathname.startsWith(to)) ? "var(--text)" : "var(--text-2)",
+              borderBottom: (to === "/" ? location.pathname === "/" : location.pathname.startsWith(to)) ? "1px solid var(--accent)" : "1px solid transparent",
               paddingBottom: "2px",
             }}
           >
@@ -138,6 +146,8 @@ export default function App() {
                     <Route path="/submissions/:id" element={<Submission />} />
                     <Route path="/findings/:id" element={<Finding />} />
                     <Route path="/health" element={<Health />} />
+                    <Route path="/repos" element={<Repos />} />
+                    <Route path="/groups" element={<Groups />} />
                     <Route path="/settings" element={<Settings />} />
                   </Routes>
                 </main>

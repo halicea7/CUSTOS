@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { listSubmissions, getActiveLlmJobs, getLlmStatus } from "../api/submissions.js";
+import { listGroups } from "../api/groups.js";
 import SeverityBadge from "../components/SeverityBadge.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
 
@@ -85,22 +86,26 @@ export default function Queue() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState(null);
+  const [groupId, setGroupId] = useState(null);
+  const [groups, setGroups] = useState([]);
   // Set of submission IDs with active LLM jobs.
   const [activeJobs, setActiveJobs] = useState(new Set());
   const activeRef = useRef(null);
+
+  useEffect(() => { listGroups().then(setGroups).catch(() => {}); }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listSubmissions(filter);
+      const res = await listSubmissions(filter, groupId);
       setData(res);
     } catch (e) {
       setError(e.response?.data?.detail || "Failed to load submissions");
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, groupId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -148,7 +153,28 @@ export default function Queue() {
         </button>
       </div>
 
-      {/* Filters */}
+      {/* Group filter */}
+      {groups.length > 0 && (
+        <div style={{ display: "flex", gap: "6px", marginBottom: "8px", flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: "10px", color: "var(--text-3)", letterSpacing: "0.06em", marginRight: "2px" }}>GROUP</span>
+          {[{ id: null, name: "ALL" }, ...groups].map(g => (
+            <button
+              key={String(g.id)}
+              onClick={() => setGroupId(g.id)}
+              style={{
+                padding: "3px 10px", borderRadius: "var(--radius)", cursor: "pointer",
+                fontSize: "10px", fontFamily: "var(--mono)", letterSpacing: "0.06em",
+                border: groupId === g.id ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: groupId === g.id ? "rgba(255,160,0,0.1)" : "transparent",
+                color: groupId === g.id ? "var(--accent)" : "var(--text-3)",
+                transition: "all 0.1s",
+              }}
+            >{g.name}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Status Filters */}
       <div style={{ display: "flex", gap: "6px", marginBottom: "16px", flexWrap: "wrap" }}>
         {FILTERS.map(f => (
           <button
