@@ -30,36 +30,35 @@ async def run_config_checks(db: AsyncSession) -> list[RawFinding]:
             ),
         ))
 
-    if not settings.GITHUB_WEBHOOK_SECRET:
-        findings.append(RawFinding(
-            source="config",
-            severity="high",
-            title="GitHub webhook secret not configured",
-            description=(
-                "GITHUB_WEBHOOK_SECRET is empty. Without it, the /webhook/github endpoint "
-                "cannot validate HMAC-SHA256 signatures and will reject all GitHub webhook "
-                "deliveries, preventing automated scan triggers."
-            ),
-            remediation=(
-                "Set GITHUB_WEBHOOK_SECRET in api/.env to a strong random value "
-                "that matches the secret configured in your GitHub webhook settings."
-            ),
-        ))
-
-    if not settings.GITHUB_TOKEN:
+    from models import Repo
+    repo_result = await db.execute(select(func.count()).select_from(Repo))
+    repo_count = repo_result.scalar_one()
+    if repo_count == 0:
         findings.append(RawFinding(
             source="config",
             severity="medium",
-            title="GitHub token not configured",
+            title="No repositories registered",
             description=(
-                "GITHUB_TOKEN is not set. Custos cannot post check-run results back to "
-                "GitHub pull requests without a token, so developers will not see scan "
-                "results inline in PRs."
+                "No GitHub repositories have been connected to Custos. "
+                "Webhook deliveries will be rejected and no automated scans can run."
             ),
-            remediation=(
-                "Create a GitHub PAT with Contents:Read and Checks:Write scopes "
-                "and set it as GITHUB_TOKEN in api/.env."
+            remediation="Add a repository via the Repos page in the dashboard.",
+        ))
+
+    disabled_result = await db.execute(
+        select(func.count()).select_from(Repo).where(Repo.enabled == False)  # noqa: E712
+    )
+    disabled_count = disabled_result.scalar_one()
+    if disabled_count > 0:
+        findings.append(RawFinding(
+            source="config",
+            severity="info",
+            title=f"{disabled_count} repository disabled",
+            description=(
+                f"{disabled_count} registered {'repository is' if disabled_count == 1 else 'repositories are'} "
+                "currently disabled and will not trigger scans on push or PR events."
             ),
+            remediation="Re-enable the repository from the Repos page if this is unintentional.",
         ))
 
     redis_url = settings.REDIS_URL
