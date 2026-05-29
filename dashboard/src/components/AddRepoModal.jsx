@@ -193,7 +193,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
                     {showToken ? "HIDE" : "SHOW"}
                   </button>
                 </div>
-                <p style={S.hint}>Needs Contents: Read · Checks: Write</p>
+                <p style={S.hint}>Classic token: select <strong style={{color:"var(--text-2)"}}>repo</strong> (full). Fine-grained: Contents (read) + Commit statuses (read/write)</p>
               </div>
 
               <div style={S.row}>
