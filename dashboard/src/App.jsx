@@ -57,6 +57,13 @@ function RequireAuth({ children }) {
   return children;
 }
 
+function RequireAdmin({ children }) {
+  const { user } = useAuth();
+  if (user === undefined) return <Splash />;
+  if (user?.role !== "admin") return <Navigate to="/" replace />;
+  return children;
+}
+
 function Splash() {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", color: "var(--text-3)", fontFamily: "var(--mono)", letterSpacing: "0.1em", fontSize: "11px" }}>
@@ -88,8 +95,10 @@ function Nav() {
         {[
           { to: "/", label: "QUEUE" },
           { to: "/repos", label: "REPOS" },
-          { to: "/health", label: "HEALTH" },
-          ...(user?.role === "admin" ? [{ to: "/groups", label: "GROUPS" }] : []),
+          ...(user?.role === "admin" ? [
+            { to: "/health", label: "HEALTH" },
+            { to: "/groups", label: "GROUPS" },
+          ] : []),
           { to: "/settings", label: "SETTINGS" },
         ].map(({ to, label }) => (
           <Link
@@ -145,9 +154,9 @@ export default function App() {
                     <Route path="/" element={<Queue />} />
                     <Route path="/submissions/:id" element={<Submission />} />
                     <Route path="/findings/:id" element={<Finding />} />
-                    <Route path="/health" element={<Health />} />
+                    <Route path="/health" element={<RequireAdmin><Health /></RequireAdmin>} />
                     <Route path="/repos" element={<Repos />} />
-                    <Route path="/groups" element={<Groups />} />
+                    <Route path="/groups" element={<RequireAdmin><Groups /></RequireAdmin>} />
                     <Route path="/settings" element={<Settings />} />
                   </Routes>
                 </main>
