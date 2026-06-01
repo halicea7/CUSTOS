@@ -107,6 +107,30 @@ for i in $(seq 1 20); do
   sleep 0.5
 done
 
+# ── ngrok (opt-in: DEV_NGROK=1) ───────────────────────────────────────────────
+NGROK_PUBLIC_URL=""
+if [[ "${DEV_NGROK:-0}" == "1" ]]; then
+  if ! command -v ngrok &>/dev/null; then
+    log "${RED}ngrok not found — skipping. Install: https://ngrok.com/download${RESET}"
+  else
+    log "${CYAN}Starting ngrok tunnel on port 8000...${RESET}"
+    ngrok http 8000 --log=stdout > "$LOG_DIR/ngrok.log" 2>&1 &
+    PIDS+=($!)
+
+    # Poll ngrok's local API until the tunnel URL appears (up to 10s)
+    for i in $(seq 1 20); do
+      NGROK_PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null \
+        | grep -o '"public_url":"https://[^"]*"' | head -1 | cut -d'"' -f4)
+      [[ -n "$NGROK_PUBLIC_URL" ]] && break
+      sleep 0.5
+    done
+
+    if [[ -z "$NGROK_PUBLIC_URL" ]]; then
+      log "${YELLOW}ngrok started but URL not yet available — check .dev-logs/ngrok.log${RESET}"
+    fi
+  fi
+fi
+
 # ── Print status ──────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}Custos dev stack running${RESET}"
@@ -117,16 +141,19 @@ if [[ "${DEV_BIND_ALL:-0}" == "1" ]]; then
   HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<server-ip>")
   echo -e "  ${YELLOW}Network${RESET}    http://${HOST_IP}:5173  |  http://${HOST_IP}:8000"
 fi
+if [[ -n "$NGROK_PUBLIC_URL" ]]; then
+  echo -e "  ${YELLOW}ngrok${RESET}      $NGROK_PUBLIC_URL"
+  echo -e "  ${YELLOW}Webhook URL${RESET} ${NGROK_PUBLIC_URL}/api/webhook/github"
+fi
 echo -e "  ${CYAN}Logs${RESET}       $LOG_DIR/"
 echo ""
 echo -e "Press ${BOLD}Ctrl+C${RESET} to stop all services."
 echo ""
 
 # ── Tail logs to terminal ─────────────────────────────────────────────────────
-tail -f \
-  "$LOG_DIR/api.log" \
-  "$LOG_DIR/worker.log" \
-  "$LOG_DIR/dashboard.log" &
+TAIL_LOGS=("$LOG_DIR/api.log" "$LOG_DIR/worker.log" "$LOG_DIR/dashboard.log")
+[[ "${DEV_NGROK:-0}" == "1" ]] && TAIL_LOGS+=("$LOG_DIR/ngrok.log")
+tail -f "${TAIL_LOGS[@]}" &
 PIDS+=($!)
 
 wait
