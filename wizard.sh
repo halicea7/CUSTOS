@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Custos local development setup wizard.
 # Run once from the project root: bash wizard.sh
+# Pass -y / --yes to accept all defaults without pausing.
 set -uo pipefail
+
+# ── flags ─────────────────────────────────────────────────────────────────────
+
+YES=0
+for arg in "$@"; do
+  [[ "$arg" == "-y" || "$arg" == "--yes" ]] && YES=1
+done
 
 # ── colours ───────────────────────────────────────────────────────────────────
 
@@ -32,10 +40,13 @@ warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
 err()  { echo -e "  ${RED}✗${RESET}  $*" >&2; }
 die()  { err "$*"; exit 1; }
 
-# Prompt with a default value.
-# Usage: result=$(ask "Label" "default")
+# Prompt with a default value. In --yes mode returns the default immediately.
 ask() {
   local label="$1" default="$2" reply
+  if [[ "$YES" -eq 1 ]]; then
+    echo "$default"
+    return
+  fi
   if [[ -n "$default" ]]; then
     read -rp "    ${label} [${DIM}${default}${RESET}]: " reply
     echo "${reply:-$default}"
@@ -45,17 +56,26 @@ ask() {
   fi
 }
 
-# Prompt for a secret (hidden input).
+# Prompt for a secret (hidden input). In --yes mode returns empty string.
 ask_secret() {
   local label="$1" reply
+  if [[ "$YES" -eq 1 ]]; then
+    echo ""
+    return
+  fi
   read -rsp "    ${label}: " reply
   echo ""  # newline after hidden input
   echo "$reply"
 }
 
 # y/n confirm — defaults to YES unless second arg is "n".
+# In --yes mode always returns the default.
 confirm() {
   local prompt="$1" default="${2:-y}" reply
+  if [[ "$YES" -eq 1 ]]; then
+    [[ "$default" == "y" ]]
+    return
+  fi
   if [[ "$default" == "y" ]]; then
     read -rp "    ${prompt} [Y/n]: " reply
   else
@@ -65,8 +85,38 @@ confirm() {
   [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]
 }
 
+# Pause for Enter, skipped in --yes mode.
+pause() {
+  [[ "$YES" -eq 1 ]] && return
+  read -rp "  Press Enter to continue..."
+}
+
 # Print a horizontal rule.
 rule() { echo -e "${DIM}  ────────────────────────────────────────────${RESET}"; }
+
+# Detect OS family
+OS_FAMILY="unknown"
+if [[ "$(uname)" == "Darwin" ]]; then
+  OS_FAMILY="macos"
+elif [[ -f /etc/os-release ]]; then
+  . /etc/os-release
+  case "$ID" in
+    ubuntu|debian) OS_FAMILY="debian" ;;
+    rhel|centos|fedora|rocky|almalinux) OS_FAMILY="rhel" ;;
+    *) OS_FAMILY="linux" ;;
+  esac
+fi
+
+# Start a system service, using sudo on Linux.
+start_service() {
+  local svc="$1"
+  if [[ "$OS_FAMILY" == "macos" ]]; then
+    brew services start "$svc" 2>/dev/null || true
+  else
+    sudo systemctl start "$svc" 2>/dev/null || true
+    sudo systemctl enable "$svc" 2>/dev/null || true
+  fi
+}
 
 TOTAL_STEPS=8
 
@@ -92,6 +142,7 @@ echo "  ╚██████╗╚██████╔╝███████
 echo "   ╚═════╝ ╚═════╝ ╚══════╝   ╚═╝    ╚═════╝ ╚══════╝"
 echo -e "${RESET}"
 echo -e "  ${DIM}Local Development Setup Wizard${RESET}"
+[[ "$YES" -eq 1 ]] && echo -e "  ${YELLOW}Running in non-interactive mode (--yes)${RESET}"
 echo ""
 rule
 echo ""
@@ -108,8 +159,10 @@ echo -e "    ${CYAN}8${RESET}  Install dashboard dependencies"
 echo ""
 rule
 echo ""
-echo -e "  Press ${BOLD}Enter${RESET} to start, or ${BOLD}Ctrl+C${RESET} to exit."
-read -r
+if [[ "$YES" -eq 0 ]]; then
+  echo -e "  Press ${BOLD}Enter${RESET} to start, or ${BOLD}Ctrl+C${RESET} to exit."
+  read -r
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 — Prerequisites
@@ -160,7 +213,7 @@ else
   PREREQ_OK=0
 fi
 
-# psql — try PATH then known Homebrew locations
+# psql — try PATH then known locations
 PSQL=""
 for candidate in psql \
     /opt/homebrew/opt/postgresql@16/bin/psql \
@@ -185,10 +238,13 @@ else
 fi
 
 # Redis
+REDIS_OK=0
 if command -v redis-server &>/dev/null; then
   ok "redis-server $(redis-server --version | awk '{print $3}' | tr -d 'v')"
+  REDIS_OK=1
 elif command -v redis-cli &>/dev/null; then
   ok "redis-cli found (server managed externally)"
+  REDIS_OK=1
 else
   warn "redis-server not found."
   echo ""
@@ -205,7 +261,7 @@ fi
 
 ok "All required tools present."
 echo ""
-read -rp "  Press Enter to continue..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 2 — Python virtual environment
@@ -233,7 +289,7 @@ info "Installing Python dependencies from api/requirements.txt ..."
 ok "Python dependencies installed."
 
 echo ""
-read -rp "  Press Enter to continue..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 3 — PostgreSQL database
@@ -243,41 +299,67 @@ header "Step 3 of $TOTAL_STEPS — PostgreSQL database"
 step_label 3 "Creating role and database"
 echo ""
 
-# Check if Postgres is reachable
+# Try to connect; auto-start if needed.
+_pg_connect() {
+  local user="$1"
+  "$PSQL" -U "$user" postgres -c "\q" &>/dev/null 2>&1
+}
+
 PG_RUNNING=0
-if "$PSQL" -U "$(whoami)" postgres -c "\q" &>/dev/null 2>&1; then
+PG_SUPERUSER=""
+
+if _pg_connect "$(whoami)"; then
   PG_RUNNING=1
-elif "$PSQL" -U postgres postgres -c "\q" &>/dev/null 2>&1; then
+  PG_SUPERUSER="$(whoami)"
+elif _pg_connect "postgres"; then
   PG_RUNNING=1
   PG_SUPERUSER="postgres"
-fi
+else
+  warn "PostgreSQL is not reachable — attempting to start it..."
+  case "$OS_FAMILY" in
+    macos)
+      # Try each common Homebrew formula name
+      for pg_svc in postgresql@16 postgresql@15 postgresql; do
+        if brew services start "$pg_svc" &>/dev/null 2>&1; then
+          info "Started $pg_svc via Homebrew."
+          break
+        fi
+      done
+      ;;
+    debian|linux)
+      if sudo systemctl start postgresql 2>/dev/null; then
+        info "Started postgresql via systemctl."
+        sudo systemctl enable postgresql 2>/dev/null || true
+      else
+        warn "systemctl start postgresql failed."
+      fi
+      ;;
+    rhel)
+      if sudo systemctl start postgresql 2>/dev/null; then
+        info "Started postgresql via systemctl."
+        sudo systemctl enable postgresql 2>/dev/null || true
+      fi
+      ;;
+  esac
 
-if [[ "$PG_RUNNING" -eq 0 ]]; then
-  warn "Cannot connect to PostgreSQL."
-  echo ""
-  echo -e "  ${DIM}Start it first:${RESET}"
-  echo -e "    macOS:  brew services start postgresql@16"
-  echo -e "    Ubuntu: sudo systemctl start postgresql"
-  echo ""
-  if ! confirm "Try connecting again after you start it?"; then
+  sleep 2  # give postgres a moment to initialise
+
+  if _pg_connect "$(whoami)"; then
+    PG_RUNNING=1
+    PG_SUPERUSER="$(whoami)"
+  elif _pg_connect "postgres"; then
+    PG_RUNNING=1
+    PG_SUPERUSER="postgres"
+  else
+    warn "Still cannot connect to PostgreSQL."
     warn "Skipping database setup — run 'make db && alembic upgrade head' manually later."
     DB_SETUP=0
-  else
-    info "Retrying..."
-    if "$PSQL" -U "$(whoami)" postgres -c "\q" &>/dev/null 2>&1; then
-      PG_RUNNING=1
-    else
-      warn "Still cannot connect. Skipping database setup."
-      DB_SETUP=0
-    fi
   fi
 fi
 
 DB_SETUP=${DB_SETUP:-1}
 
 if [[ "$DB_SETUP" -eq 1 && "$PG_RUNNING" -eq 1 ]]; then
-  PG_SUPERUSER="${PG_SUPERUSER:-$(whoami)}"
-
   echo ""
   echo -e "  ${DIM}Default database settings:${RESET}"
   echo -e "    User:     ${BOLD}Custos${RESET}"
@@ -302,14 +384,24 @@ if [[ "$DB_SETUP" -eq 1 && "$PG_RUNNING" -eq 1 ]]; then
 
   echo ""
   info "Creating role '${DB_USER}' ..."
-  "$PSQL" -U "$PG_SUPERUSER" postgres \
+
+  # On Ubuntu the postgres system user owns the socket; use sudo -u postgres if needed.
+  _psql_super() {
+    if [[ "$PG_SUPERUSER" == "postgres" ]] && ! _pg_connect "$(whoami)"; then
+      sudo -u postgres "$PSQL" -U postgres "$@" 2>/dev/null
+    else
+      "$PSQL" -U "$PG_SUPERUSER" "$@" 2>/dev/null
+    fi
+  }
+
+  _psql_super postgres \
     -c "CREATE USER \"${DB_USER}\" WITH PASSWORD '${DB_PASS}';" \
-    2>/dev/null && ok "Role created." || ok "Role already exists — skipping."
+    && ok "Role created." || ok "Role already exists — skipping."
 
   info "Creating database '${DB_NAME}' ..."
-  "$PSQL" -U "$PG_SUPERUSER" postgres \
+  _psql_super postgres \
     -c "CREATE DATABASE \"${DB_NAME}\" OWNER \"${DB_USER}\";" \
-    2>/dev/null && ok "Database created." || ok "Database already exists — skipping."
+    && ok "Database created." || ok "Database already exists — skipping."
 else
   DB_USER="Custos"
   DB_PASS="Custos"
@@ -321,7 +413,7 @@ fi
 DB_URL="postgresql+asyncpg://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
 echo ""
-read -rp "  Press Enter to continue..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 4 — api/.env configuration
@@ -357,12 +449,6 @@ if [[ "$WRITE_ENV" -eq 1 ]]; then
   OLLAMA_MODEL=$(ask "Model name (must match 'ollama list')" "qwen2.5-coder:32b")
 
   echo ""
-  echo -e "  ${BOLD}GitHub integration${RESET} ${DIM}(optional — press Enter to skip)${RESET}"
-  echo ""
-  GH_WEBHOOK_SECRET=$(ask "Webhook secret" "")
-  GH_TOKEN=$(ask "GitHub token (Contents:Read + Checks:Write)" "")
-
-  echo ""
   echo -e "  ${BOLD}Redis${RESET}"
   if confirm "Use default Redis URL (redis://localhost:6379)?"; then
     REDIS_URL="redis://localhost:6379"
@@ -370,7 +456,7 @@ if [[ "$WRITE_ENV" -eq 1 ]]; then
     REDIS_URL=$(ask "Redis URL" "redis://localhost:6379")
   fi
 
-  # Write the file
+  # Write the file — no global GitHub token; repos are connected via the dashboard.
   cat > "$ENV_FILE" <<EOF
 # Generated by wizard.sh — $(date '+%Y-%m-%d %H:%M:%S')
 
@@ -383,9 +469,6 @@ REDIS_URL=${REDIS_URL}
 OLLAMA_BASE_URL=${OLLAMA_URL}
 OLLAMA_MODEL=${OLLAMA_MODEL}
 
-GITHUB_WEBHOOK_SECRET=${GH_WEBHOOK_SECRET}
-GITHUB_TOKEN=${GH_TOKEN}
-
 CLONE_BASE_DIR=/tmp/Custos_clones
 MAX_FILE_SIZE_KB=500
 MAX_FILES_PER_REPO=200
@@ -394,10 +477,11 @@ EOF
   ok "api/.env written."
   echo ""
   echo -e "  ${DIM}You can edit it at any time: nano api/.env${RESET}"
+  echo -e "  ${DIM}GitHub tokens are now configured per-repo via the Repos page.${RESET}"
 fi
 
 echo ""
-read -rp "  Press Enter to continue..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 5 — Migrations
@@ -407,7 +491,7 @@ header "Step 5 of $TOTAL_STEPS — Database migrations"
 step_label 5 "Running alembic upgrade head"
 echo ""
 
-if [[ "$DB_SETUP" -eq 0 ]]; then
+if [[ "${DB_SETUP:-1}" -eq 0 ]]; then
   warn "Skipping migrations — database was not set up in step 3."
   warn "Run 'alembic upgrade head' manually once your database is ready."
 else
@@ -420,7 +504,7 @@ else
 fi
 
 echo ""
-read -rp "  Press Enter to continue..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 6 — Create admin user
@@ -430,7 +514,7 @@ header "Step 6 of $TOTAL_STEPS — Create first admin user"
 step_label 6 "Setting up your login account"
 echo ""
 
-if [[ "$DB_SETUP" -eq 0 ]]; then
+if [[ "${DB_SETUP:-1}" -eq 0 ]]; then
   warn "Skipping user creation — database was not set up."
   warn "Run: cd api && python create_user.py <user> <pass> admin"
 else
@@ -460,7 +544,7 @@ else
 fi
 
 echo ""
-read -rp "  Press Enter to continue..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 7 — SAST tools
@@ -477,9 +561,11 @@ echo ""
 SAST_MISSING=()
 command -v semgrep   &>/dev/null && ok "semgrep already installed"   || SAST_MISSING+=("semgrep")
 command -v gitleaks  &>/dev/null && ok "gitleaks already installed"  || SAST_MISSING+=("gitleaks")
-command -v pip-audit &>/dev/null || "$VENV_DIR/bin/pip-audit" --version &>/dev/null 2>&1 \
-  && ok "pip-audit already installed" \
-  || SAST_MISSING+=("pip-audit")
+if command -v pip-audit &>/dev/null || "$VENV_DIR/bin/pip-audit" --version &>/dev/null 2>&1; then
+  ok "pip-audit already installed"
+else
+  SAST_MISSING+=("pip-audit")
+fi
 
 if [[ ${#SAST_MISSING[@]} -eq 0 ]]; then
   ok "All SAST tools are present."
@@ -540,7 +626,7 @@ else
 fi
 
 echo ""
-read -rp "  Press Enter to continue..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 8 — Dashboard dependencies
@@ -562,7 +648,7 @@ else
 fi
 
 echo ""
-read -rp "  Press Enter to see the summary..."
+pause
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Done
@@ -598,8 +684,8 @@ echo -e "  ${BOLD}What to do next${RESET}"
 echo ""
 echo -e "    ${DIM}1.${RESET}  Run ${CYAN}./dev.sh${RESET} to start the stack"
 echo -e "    ${DIM}2.${RESET}  Open the dashboard and log in as ${BOLD}${ADMIN_USER:-admin}${RESET}"
-echo -e "    ${DIM}3.${RESET}  Configure GitHub webhook + Ollama in the ${BOLD}Settings${RESET} tab"
-echo -e "    ${DIM}4.${RESET}  Push a commit to a connected repo to trigger the first scan"
+echo -e "    ${DIM}3.${RESET}  Go to ${BOLD}REPOS${RESET} and click ${BOLD}ADD REPO${RESET} to connect a GitHub repository"
+echo -e "    ${DIM}4.${RESET}  The wizard will walk you through token setup and webhook config"
 echo -e "    ${DIM}5.${RESET}  For local webhook testing: ${DIM}ngrok http 8000${RESET}"
 echo ""
 rule
