@@ -11,6 +11,15 @@ for arg in "$@"; do
   [[ "$arg" == "-y" || "$arg" == "--yes" ]] && YES=1
 done
 
+# ── logging ───────────────────────────────────────────────────────────────────
+
+LOG_FILE="wizard-$(date '+%Y%m%d-%H%M%S').log"
+# Tee all stdout+stderr to the log file, stripping ANSI codes so it's readable.
+exec > >(tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_FILE")) 2>&1
+echo "# wizard.sh started $(date '+%Y-%m-%d %H:%M:%S') on $(uname -a)"
+echo "# Log: $LOG_FILE"
+echo ""
+
 # ── colours ───────────────────────────────────────────────────────────────────
 
 BOLD='\033[1m'
