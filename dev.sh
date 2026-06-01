@@ -73,7 +73,7 @@ if [[ "$REDIS_EXTERNAL" -eq 0 ]]; then
 fi
 
 log "${CYAN}Starting API (uvicorn)...${RESET}"
-(cd "$API_DIR" && uvicorn main:app --reload --host 127.0.0.1 --port 8000) \
+(cd "$API_DIR" && uvicorn main:app --reload --host 0.0.0.0 --port 8000) \
   > "$LOG_DIR/api.log" 2>&1 &
 PIDS+=($!)
 
@@ -83,7 +83,7 @@ log "${CYAN}Starting ARQ worker...${RESET}"
 PIDS+=($!)
 
 log "${CYAN}Starting dashboard (Vite)...${RESET}"
-(cd "$DASH_DIR" && npm run dev) \
+(cd "$DASH_DIR" && npm run dev -- --host 0.0.0.0) \
   > "$LOG_DIR/dashboard.log" 2>&1 &
 PIDS+=($!)
 
@@ -97,10 +97,11 @@ for i in $(seq 1 20); do
 done
 
 # ── Print status ──────────────────────────────────────────────────────────────
+HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 echo ""
 echo -e "${GREEN}${BOLD}Custos dev stack running${RESET}"
-echo -e "  ${CYAN}Dashboard${RESET}  http://localhost:5173"
-echo -e "  ${CYAN}API${RESET}        http://localhost:8000"
+echo -e "  ${CYAN}Dashboard${RESET}  http://localhost:5173  (network: http://${HOST_IP}:5173)"
+echo -e "  ${CYAN}API${RESET}        http://localhost:8000  (network: http://${HOST_IP}:8000)"
 echo -e "  ${CYAN}API docs${RESET}   http://localhost:8000/docs"
 echo -e "  ${CYAN}Logs${RESET}       $LOG_DIR/"
 echo ""
