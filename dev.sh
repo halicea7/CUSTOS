@@ -72,8 +72,18 @@ if [[ "$REDIS_EXTERNAL" -eq 0 ]]; then
   sleep 0.5
 fi
 
+# DEV_BIND_ALL=1 exposes both servers on all interfaces (e.g. for Tailscale).
+# Defaults to localhost-only. Do not set in untrusted network environments.
+BIND_HOST="127.0.0.1"
+VITE_HOST_FLAG=""
+if [[ "${DEV_BIND_ALL:-0}" == "1" ]]; then
+  BIND_HOST="0.0.0.0"
+  VITE_HOST_FLAG="--host 0.0.0.0"
+  log "${YELLOW}DEV_BIND_ALL=1 — binding to 0.0.0.0 (all interfaces)${RESET}"
+fi
+
 log "${CYAN}Starting API (uvicorn)...${RESET}"
-(cd "$API_DIR" && uvicorn main:app --reload --host 0.0.0.0 --port 8000) \
+(cd "$API_DIR" && uvicorn main:app --reload --host "$BIND_HOST" --port 8000) \
   > "$LOG_DIR/api.log" 2>&1 &
 PIDS+=($!)
 
@@ -83,7 +93,8 @@ log "${CYAN}Starting ARQ worker...${RESET}"
 PIDS+=($!)
 
 log "${CYAN}Starting dashboard (Vite)...${RESET}"
-(cd "$DASH_DIR" && npm run dev -- --host 0.0.0.0) \
+# shellcheck disable=SC2086
+(cd "$DASH_DIR" && npm run dev -- $VITE_HOST_FLAG) \
   > "$LOG_DIR/dashboard.log" 2>&1 &
 PIDS+=($!)
 
@@ -97,12 +108,15 @@ for i in $(seq 1 20); do
 done
 
 # ── Print status ──────────────────────────────────────────────────────────────
-HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 echo ""
 echo -e "${GREEN}${BOLD}Custos dev stack running${RESET}"
-echo -e "  ${CYAN}Dashboard${RESET}  http://localhost:5173  (network: http://${HOST_IP}:5173)"
-echo -e "  ${CYAN}API${RESET}        http://localhost:8000  (network: http://${HOST_IP}:8000)"
+echo -e "  ${CYAN}Dashboard${RESET}  http://localhost:5173"
+echo -e "  ${CYAN}API${RESET}        http://localhost:8000"
 echo -e "  ${CYAN}API docs${RESET}   http://localhost:8000/docs"
+if [[ "${DEV_BIND_ALL:-0}" == "1" ]]; then
+  HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<server-ip>")
+  echo -e "  ${YELLOW}Network${RESET}    http://${HOST_IP}:5173  |  http://${HOST_IP}:8000"
+fi
 echo -e "  ${CYAN}Logs${RESET}       $LOG_DIR/"
 echo ""
 echo -e "Press ${BOLD}Ctrl+C${RESET} to stop all services."
