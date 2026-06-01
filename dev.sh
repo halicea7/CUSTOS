@@ -120,8 +120,8 @@ if [[ "${DEV_NGROK:-0}" == "1" ]]; then
     # Poll ngrok's local API until the tunnel URL appears (up to 10s)
     for i in $(seq 1 20); do
       NGROK_PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null \
-        | grep -o '"public_url":"https://[^"]*"' | head -1 | cut -d'"' -f4)
-      [[ -n "$NGROK_PUBLIC_URL" ]] && break
+        | grep -o '"public_url":"https://[^"]*"' | head -1 | cut -d'"' -f4 || true)
+      if [[ -n "$NGROK_PUBLIC_URL" ]]; then break; fi
       sleep 0.5
     done
 
