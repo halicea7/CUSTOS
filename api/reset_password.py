@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Reset a user's password. Run from the api/ directory.
+"""Reset a user's password. Run from the api/ directory using the venv Python.
 
 Usage:
-    python reset_password.py <username> <new_password>
+    ../.venv/bin/python3 reset_password.py <username> <new_password>
 
 Example:
-    python reset_password.py admin newsecret123
+    ../.venv/bin/python3 reset_password.py admin newsecret123
 """
 import asyncio
 import sys

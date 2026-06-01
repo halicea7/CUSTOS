@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Create an analyst/admin user. Run from the api/ directory after migrations.
+"""Create an analyst/admin user. Run from the api/ directory using the venv Python.
 
 Usage:
-    python create_user.py <username> <password> [role]
+    ../.venv/bin/python3 create_user.py <username> <password> [role]
 
 Example:
-    python create_user.py admin secret123 admin
+    ../.venv/bin/python3 create_user.py admin secret123 admin
 """
 import asyncio
 import sys
