@@ -63,6 +63,12 @@ else
   REDIS_EXTERNAL=0
 fi
 
+# ── Kill any leftover processes from a previous run ───────────────────────────
+for port in 8000 5173 5174; do
+  fuser -k "${port}/tcp" &>/dev/null 2>&1 || true
+done
+pkill -f "ngrok http" &>/dev/null 2>&1 || true
+
 # ── Start services ────────────────────────────────────────────────────────────
 
 if [[ "$REDIS_EXTERNAL" -eq 0 ]]; then
@@ -101,7 +107,7 @@ PIDS+=($!)
 # ── Wait for API to be ready ──────────────────────────────────────────────────
 log "Waiting for API..."
 for i in $(seq 1 20); do
-  if curl -s http://localhost:8000/health &>/dev/null; then
+  if curl -s http://localhost:8000/healthz &>/dev/null; then
     break
   fi
   sleep 0.5
