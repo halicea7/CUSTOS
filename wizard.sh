@@ -281,17 +281,20 @@ step_label 2 "Setting up .venv and installing dependencies"
 echo ""
 
 VENV_DIR="$SCRIPT_DIR/.venv"
+VENV_PYTHON="$VENV_DIR/bin/python3"
+VENV_PIP="$VENV_DIR/bin/pip"
 
-if [[ -d "$VENV_DIR" ]]; then
-  ok ".venv already exists — skipping creation."
+if [[ -d "$VENV_DIR" && -x "$VENV_PIP" ]]; then
+  ok ".venv already exists."
 else
+  if [[ -d "$VENV_DIR" ]]; then
+    warn ".venv exists but is broken — recreating..."
+    rm -rf "$VENV_DIR"
+  fi
   info "Creating virtual environment at .venv ..."
   $PYTHON -m venv "$VENV_DIR"
   ok "Virtual environment created."
 fi
-
-VENV_PYTHON="$VENV_DIR/bin/python3"
-VENV_PIP="$VENV_DIR/bin/pip"
 
 info "Installing Python dependencies from api/requirements.txt ..."
 "$VENV_PIP" install --quiet -r api/requirements.txt
@@ -308,10 +311,16 @@ header "Step 3 of $TOTAL_STEPS — PostgreSQL database"
 step_label 3 "Creating role and database"
 echo ""
 
-# Try to connect; auto-start if needed.
+# Try to connect to postgres.
+# On Ubuntu, the default peer auth means only the postgres system user can
+# connect as the postgres role — so we try sudo -u postgres on Linux.
 _pg_connect() {
   local user="$1"
-  "$PSQL" -U "$user" postgres -c "\q" &>/dev/null 2>&1
+  if [[ "$user" == "postgres" && "$OS_FAMILY" != "macos" ]]; then
+    sudo -u postgres "$PSQL" -U postgres postgres -c "\q" &>/dev/null 2>&1
+  else
+    "$PSQL" -U "$user" postgres -c "\q" &>/dev/null 2>&1
+  fi
 }
 
 PG_RUNNING=0
@@ -327,7 +336,6 @@ else
   warn "PostgreSQL is not reachable — attempting to start it..."
   case "$OS_FAMILY" in
     macos)
-      # Try each common Homebrew formula name
       for pg_svc in postgresql@16 postgresql@15 postgresql; do
         if brew services start "$pg_svc" &>/dev/null 2>&1; then
           info "Started $pg_svc via Homebrew."
@@ -335,18 +343,12 @@ else
         fi
       done
       ;;
-    debian|linux)
+    debian|linux|rhel)
       if sudo systemctl start postgresql 2>/dev/null; then
         info "Started postgresql via systemctl."
         sudo systemctl enable postgresql 2>/dev/null || true
       else
         warn "systemctl start postgresql failed."
-      fi
-      ;;
-    rhel)
-      if sudo systemctl start postgresql 2>/dev/null; then
-        info "Started postgresql via systemctl."
-        sudo systemctl enable postgresql 2>/dev/null || true
       fi
       ;;
   esac
@@ -394,9 +396,9 @@ if [[ "$DB_SETUP" -eq 1 && "$PG_RUNNING" -eq 1 ]]; then
   echo ""
   info "Creating role '${DB_USER}' ..."
 
-  # On Ubuntu the postgres system user owns the socket; use sudo -u postgres if needed.
+  # On Ubuntu, peer auth means we must run as the postgres system user.
   _psql_super() {
-    if [[ "$PG_SUPERUSER" == "postgres" ]] && ! _pg_connect "$(whoami)"; then
+    if [[ "$PG_SUPERUSER" == "postgres" && "$OS_FAMILY" != "macos" ]]; then
       sudo -u postgres "$PSQL" -U postgres "$@" 2>/dev/null
     else
       "$PSQL" -U "$PG_SUPERUSER" "$@" 2>/dev/null
