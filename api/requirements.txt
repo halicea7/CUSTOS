@@ -12,3 +12,4 @@ bcrypt
 gitpython
 pygithub
 python-multipart
+textual>=0.80
