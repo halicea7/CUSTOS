@@ -64,6 +64,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 url=submission.repo_url,
                 sha=sha,
                 base_dir=settings.CLONE_BASE_DIR,
+                github_token=github_token,
             )
 
             semgrep_findings, gitleaks_findings, dep_findings = await asyncio.gather(
