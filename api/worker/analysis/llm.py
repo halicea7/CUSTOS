@@ -133,8 +133,9 @@ async def call_ollama(
             ],
             "stream": False,
             "format": "json",
-            "think": ollama_think,
         }
+        if ollama_think:
+            payload["think"] = True
         if ollama_num_ctx and ollama_num_ctx > 0:
             payload["options"] = {"num_ctx": ollama_num_ctx}
         async with httpx.AsyncClient(timeout=300) as client:
