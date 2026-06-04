@@ -1,14 +1,14 @@
 const sevLight = {
   critical: { fg: "#c2241a", solid: "#dc2626", bg: "#fdeceb", label: "Critical", short: "CRIT" },
-  high:     { fg: "#b4530c", solid: "#ea7317", bg: "#fdf0e6", label: "High",     short: "HIGH" },
-  medium:   { fg: "#9a6c0e", solid: "#d29922", bg: "#fbf3df", label: "Medium",   short: "MED"  },
+  high:     { fg: "#c2570a", solid: "#ea580c", bg: "#fdf0e6", label: "High",     short: "HIGH" },
+  medium:   { fg: "#b45309", solid: "#d97706", bg: "#fef3c7", label: "Medium",   short: "MED"  },
   low:      { fg: "#1f6fd6", solid: "#2f7ee0", bg: "#eaf2fd", label: "Low",      short: "LOW"  },
   info:     { fg: "#5a6473", solid: "#7b8696", bg: "#eef1f5", label: "Info",     short: "INFO" },
 };
 const sevDark = {
   critical: { fg: "#ff6b63", solid: "#f85149", bg: "rgba(248,81,73,0.14)",    label: "Critical", short: "CRIT" },
-  high:     { fg: "#f0883e", solid: "#e3650a", bg: "rgba(227,101,10,0.15)",   label: "High",     short: "HIGH" },
-  medium:   { fg: "#e3b341", solid: "#d29922", bg: "rgba(210,153,34,0.15)",   label: "Medium",   short: "MED"  },
+  high:     { fg: "#fb923c", solid: "#f97316", bg: "rgba(249,115,22,0.15)",   label: "High",     short: "HIGH" },
+  medium:   { fg: "#fbbf24", solid: "#f59e0b", bg: "rgba(245,158,11,0.14)",   label: "Medium",   short: "MED"  },
   low:      { fg: "#58a6ff", solid: "#388bfd", bg: "rgba(56,139,253,0.15)",   label: "Low",      short: "LOW"  },
   info:     { fg: "#9aa4b2", solid: "#6e7a8a", bg: "rgba(139,148,158,0.14)", label: "Info",     short: "INFO" },
 };
@@ -18,13 +18,13 @@ export const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 export const STATUS_META = {
   pending:    { label: "Pending",    dark: "#9aa4b2", light: "#7b8696" },
   analyzing:  { label: "Analyzing",  dark: "#58a6ff", light: "#2f7ee0" },
-  reviewed:   { label: "Reviewed",   dark: "#e3b341", light: "#b4870c" },
+  reviewed:   { label: "Reviewed",   dark: "#fbbf24", light: "#b45309" },
   signed_off: { label: "Signed off", dark: "#3fb950", light: "#1f9d4d" },
 };
 
 export const HEALTH_META = {
   healthy: { label: "Healthy", light: "#1f9d4d", dark: "#3fb950" },
-  warning: { label: "Warning", light: "#b4530c", dark: "#f0883e" },
+  warning: { label: "Warning", light: "#c2570a", dark: "#fb923c" },
   urgent:  { label: "Urgent",  light: "#c2241a", dark: "#ff6b63" },
 };
 
