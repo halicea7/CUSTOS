@@ -287,11 +287,18 @@ def main() -> None:
             continue
         _start(key)
 
-    # Raw terminal for keyboard input
+    # Set terminal to cbreak-like mode:
+    # - char-at-a-time input (ICANON off, no need to press Enter)
+    # - Ctrl+C passed as \x03 (ISIG off, we handle quit ourselves)
+    # - output processing KEPT ON (OPOST stays) so \n → \r\n and lines stay left-aligned
     fd = sys.stdin.fileno()
     try:
         _old_term = termios.tcgetattr(fd)
-        tty.setraw(fd)
+        new = termios.tcgetattr(fd)
+        new[3] = new[3] & ~(termios.ECHO | termios.ICANON | termios.ISIG)
+        new[6][termios.VMIN]  = 1
+        new[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSAFLUSH, new)
     except Exception:
         _old_term = None
 
