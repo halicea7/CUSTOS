@@ -81,7 +81,7 @@ Screen { layout: horizontal; }
     overflow-y: auto;
 }
 
-#main { flex: 1; height: 100%; }
+#main { width: 1fr; height: 100%; }
 
 /* Section headings */
 .sh {
@@ -99,11 +99,11 @@ Screen { layout: horizontal; }
     align: left middle;
 }
 .svc-dot  { width: 2; }
-.svc-name { flex: 1; padding-left: 1; }
+.svc-name { width: 1fr; padding-left: 1; }
 .svc-btn  {
     width: 3; min-width: 3;
     border: none;
-    background: transparent;
+    background: $background;
     padding: 0 0;
     color: $text-muted;
 }
@@ -117,7 +117,7 @@ Screen { layout: horizontal; }
     align: left middle;
     margin-top: 1;
 }
-.opt-label { flex: 1; }
+.opt-label { width: 1fr; }
 Switch { height: 1; }
 
 /* ngrok URL display */
