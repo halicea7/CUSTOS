@@ -1,24 +1,25 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { useAuth } from "../App.jsx";
+import { useAuth, useTheme, Icon } from "../App.jsx";
 import api, { getMe } from "../api/client.js";
+import { Btn } from "../components/atoms.jsx";
+import { Field, TextInput } from "../components/ui.jsx";
 
 export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState(null);
   const { login, user } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const from = location.state?.from?.pathname || "/";
+  const { theme } = useTheme();
+  const navigate  = useNavigate();
+  const location  = useLocation();
+  const from      = location.state?.from?.pathname || "/";
 
-  useEffect(() => {
-    if (user) navigate(from, { replace: true });
-  }, [user]);
+  useEffect(() => { if (user) navigate(from, { replace: true }); }, [user]);
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
+    e?.preventDefault();
     setLoading(true);
     setError(null);
     try {
@@ -39,112 +40,67 @@ export default function Login() {
     }
   };
 
+  const t = theme;
+
   return (
     <div style={{
       minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-      background: "var(--bg)",
-      backgroundImage: "radial-gradient(ellipse 80% 50% at 50% -20%, rgba(240,165,0,0.06), transparent)",
+      background: t.c.bg,
+      backgroundImage: t.mode === "light"
+        ? "radial-gradient(ellipse 70% 50% at 50% -10%, rgba(79,70,229,0.07), transparent)"
+        : "radial-gradient(ellipse 70% 50% at 50% -10%, rgba(124,121,242,0.12), transparent)",
+      padding: 24,
     }}>
-      <div style={{ width: "100%", maxWidth: "360px", padding: "0 24px" }}>
-        <div style={{ textAlign: "center", marginBottom: "40px" }}>
-          <div style={{
-            fontSize: "28px", fontWeight: 700, letterSpacing: "-0.03em",
-            color: "var(--accent)", marginBottom: "4px",
-            fontFamily: "var(--mono)",
-          }}>
-            CUSTOS
+      <div style={{ width: "100%", maxWidth: 380 }}>
+        {/* Logo */}
+        <div style={{ textAlign: "center", marginBottom: 30 }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 11, marginBottom: 14 }}>
+            <div style={{ width: 40, height: 40, borderRadius: 11, background: t.c.accent,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: `0 8px 22px ${t.c.accent}44` }}>
+              <Icon name="shield" size={22} color={t.c.accentText} />
+            </div>
+            <span style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.03em",
+              color: t.c.text, fontFamily: t.fontDisplay }}>CUSTOS</span>
           </div>
-          <div style={{ fontSize: "11px", color: "var(--text-3)", letterSpacing: "0.15em" }}>
-            SECURITY REVIEW SYSTEM
+          <div style={{ fontSize: 12.5, color: t.c.text3, letterSpacing: "0.04em" }}>
+            Automated code security review
           </div>
         </div>
 
-        <div style={{
-          background: "var(--bg-2)",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--radius-lg)",
-          padding: "32px",
+        {/* Card */}
+        <form onSubmit={handleSubmit} style={{
+          background: t.c.surface, border: `1px solid ${t.c.border}`,
+          borderRadius: t.radiusLg, padding: 28, boxShadow: t.c.shadowHi,
         }}>
-          <form onSubmit={handleSubmit}>
-            <div style={{ marginBottom: "16px" }}>
-              <label style={{ display: "block", fontSize: "10px", color: "var(--text-3)", letterSpacing: "0.12em", marginBottom: "6px" }}>
-                USERNAME
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                autoFocus
-                autoComplete="username"
-                required
-                style={{
-                  width: "100%", padding: "9px 12px",
-                  background: "var(--bg-3)", border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)", color: "var(--text)",
-                  fontFamily: "var(--mono)", fontSize: "13px", outline: "none",
-                  transition: "border-color 0.15s",
-                }}
-                onFocus={e => e.target.style.borderColor = "var(--border-2)"}
-                onBlur={e => e.target.style.borderColor = "var(--border)"}
-              />
+          <Field theme={t} label="Username">
+            <TextInput theme={t} value={username} onChange={(e) => setUsername(e.target.value)}
+              mono autoFocus />
+          </Field>
+          <Field theme={t} label="Password">
+            <TextInput theme={t} type="password" value={password}
+              onChange={(e) => setPassword(e.target.value)} mono
+              onKeyDown={(e) => e.key === "Enter" && handleSubmit()} />
+          </Field>
+
+          {error && (
+            <div style={{ marginBottom: 16, padding: "9px 12px",
+              background: `${t.sev.critical.fg}14`,
+              border: `1px solid ${t.sev.critical.fg}33`,
+              borderRadius: t.radius, color: t.sev.critical.fg, fontSize: 12.5 }}>
+              {error}
             </div>
+          )}
 
-            <div style={{ marginBottom: "24px" }}>
-              <label style={{ display: "block", fontSize: "10px", color: "var(--text-3)", letterSpacing: "0.12em", marginBottom: "6px" }}>
-                PASSWORD
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-                style={{
-                  width: "100%", padding: "9px 12px",
-                  background: "var(--bg-3)", border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)", color: "var(--text)",
-                  fontFamily: "var(--mono)", fontSize: "13px", outline: "none",
-                  transition: "border-color 0.15s",
-                }}
-                onFocus={e => e.target.style.borderColor = "var(--border-2)"}
-                onBlur={e => e.target.style.borderColor = "var(--border)"}
-              />
-            </div>
+          <div style={{ marginTop: 22 }}>
+            <Btn theme={t} variant="primary" full size="lg" onClick={handleSubmit} disabled={loading}>
+              {loading ? "Authenticating…" : "Sign in"}
+            </Btn>
+          </div>
+        </form>
 
-            {error && (
-              <div style={{
-                marginBottom: "16px", padding: "8px 12px",
-                background: "var(--red-dim)", border: "1px solid #f8514933",
-                borderRadius: "var(--radius)", color: "var(--red)", fontSize: "12px",
-              }}>
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                width: "100%", padding: "10px",
-                background: loading ? "var(--bg-3)" : "var(--accent-dim)",
-                border: `1px solid ${loading ? "var(--border)" : "var(--accent)"}`,
-                borderRadius: "var(--radius)",
-                color: loading ? "var(--text-3)" : "var(--accent)",
-                fontSize: "12px", fontWeight: 700, letterSpacing: "0.1em",
-                cursor: loading ? "not-allowed" : "pointer",
-                fontFamily: "var(--mono)",
-                transition: "all 0.15s",
-              }}
-              onMouseEnter={e => { if (!loading) e.target.style.background = "rgba(240,165,0,0.2)"; }}
-              onMouseLeave={e => { if (!loading) e.target.style.background = "var(--accent-dim)"; }}
-            >
-              {loading ? "AUTHENTICATING..." : "LOGIN"}
-            </button>
-          </form>
-        </div>
-
-        <div style={{ textAlign: "center", marginTop: "20px", fontSize: "11px", color: "var(--text-3)" }}>
-          University IT Security Team
+        <div style={{ textAlign: "center", marginTop: 20, fontSize: 12, color: t.c.text3 }}>
+          University IT · Security Team
         </div>
       </div>
     </div>

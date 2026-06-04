@@ -1,40 +1,21 @@
 import React from "react";
-
-const ST = {
-  pending:    { color: "#8b949e", bg: "rgba(139,148,158,0.10)", label: "PENDING" },
-  analyzing:  { color: "#388bfd", bg: "rgba(56,139,253,0.10)",  label: "ANALYZING" },
-  reviewed:   { color: "#d29922", bg: "rgba(210,153,34,0.10)",  label: "REVIEWED" },
-  signed_off: { color: "#3fb950", bg: "rgba(63,185,80,0.10)",   label: "SIGNED OFF" },
-  failed:     { color: "#f85149", bg: "rgba(248,81,73,0.10)",   label: "FAILED" },
-};
+import { useTheme } from "../App.jsx";
+import { STATUS_META } from "../theme.js";
 
 export default function StatusBadge({ status }) {
-  const s = ST[status?.toLowerCase()] || { color: "#8b949e", bg: "rgba(139,148,158,0.10)", label: status?.toUpperCase() || "—" };
+  const { theme } = useTheme();
+  const t = theme;
+  const s = STATUS_META[status] || STATUS_META.pending;
+  const color = t.mode === "light" ? s.light : s.dark;
+  const animating = status === "analyzing";
   return (
     <span style={{
-      display: "inline-flex", alignItems: "center",
-      padding: "2px 8px",
-      borderRadius: "3px",
-      fontSize: "10px",
-      fontWeight: 600,
-      letterSpacing: "0.08em",
-      color: s.color,
-      background: s.bg,
-      border: `1px solid ${s.color}33`,
-      fontFamily: "var(--mono)",
-      whiteSpace: "nowrap",
-      userSelect: "none",
+      display: "inline-flex", alignItems: "center", gap: 6,
+      fontSize: 11, fontWeight: 500, color, fontFamily: t.fontUi, whiteSpace: "nowrap",
     }}>
-      {status === "analyzing" && (
-        <span style={{
-          display: "inline-block", width: "6px", height: "6px",
-          borderRadius: "50%", background: s.color,
-          marginRight: "5px",
-          animation: "pulse 1.4s ease-in-out infinite",
-        }} />
-      )}
+      <span style={{ width: 7, height: 7, borderRadius: 999, background: color, flexShrink: 0,
+        animation: animating ? "custosPulse 1.3s ease-in-out infinite" : "none" }} />
       {s.label}
-      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
     </span>
   );
 }

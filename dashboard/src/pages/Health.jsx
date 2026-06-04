@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getHealthStatus, getScanFindings, listScans, triggerScan } from "../api/health.js";
-import { useAuth } from "../App.jsx";
+import { useAuth, useTheme } from "../App.jsx";
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -443,8 +443,9 @@ function ScanHistoryRow({ scan, isSelected, onSelect }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Health() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { user }  = useAuth();
+  const { theme } = useTheme();
+  const isAdmin   = user?.role === "admin";
 
   const [status, setStatus] = useState(null);
   const [scans, setScans] = useState([]);
@@ -558,52 +559,46 @@ export default function Health() {
   const healthStyle = HEALTH_STYLE[latestScan?.overall_health] || { color: "var(--text-3)", label: "NO DATA", dot: "var(--text-3)" };
 
   const thStyle = {
-    padding: "8px 16px", fontSize: "10px", letterSpacing: "0.08em",
-    color: "var(--text-3)", fontWeight: 500, fontFamily: "var(--mono)",
-    borderBottom: "1px solid var(--border)",
+    padding: "8px 20px", fontSize: "11px", letterSpacing: "0.06em",
+    color: "var(--text-3)", fontWeight: 600, textTransform: "uppercase",
+    borderBottom: "1px solid var(--border)", textAlign: "left",
   };
 
+  const t = theme;
+
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 24px" }}>
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 34px" }}>
 
       {/* ── Top shimmer bar (only while scanning) ── */}
       {isScanning && <ScanProgressBar />}
 
       {/* ── Header ── */}
-      <div style={{
-        display: "flex", justifyContent: "space-between", alignItems: "flex-start",
-        marginBottom: "24px",
-      }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between",
+        gap: 20, marginBottom: 24, flexWrap: "wrap" }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: "15px", fontWeight: 700, letterSpacing: "0.08em", color: "var(--text)", marginBottom: "6px" }}>
-            SYSTEM HEALTH
+          <h1 style={{ fontSize: 24, fontWeight: 600, color: t.c.text,
+            fontFamily: t.fontDisplay, letterSpacing: "-0.025em", margin: 0 }}>
+            System health
           </h1>
-          <div style={{ color: "var(--text-3)", fontSize: "11px" }}>
+          <div style={{ fontSize: 13, color: t.c.text3, marginTop: 5 }}>
             {latestScan
-              ? <>Last scan: <span style={{ color: "var(--text-2)" }}>{relativeTime(latestScan.started_at)}</span></>
-              : "No scans yet"}
+              ? <>Last scan: <span style={{ color: t.c.text2 }}>{relativeTime(latestScan.started_at)}</span></>
+              : "No scans have been run yet"}
           </div>
         </div>
-
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
           {isAdmin && (
-            <button
-              onClick={handleTrigger}
-              disabled={triggering || isScanning}
-              style={{
-                padding: "7px 16px",
-                background: (triggering || isScanning) ? "var(--bg-3)" : "var(--accent-dim)",
-                border: `1px solid ${(triggering || isScanning) ? "var(--border)" : "var(--accent)"}`,
-                color: (triggering || isScanning) ? "var(--text-3)" : "var(--accent)",
-                borderRadius: "var(--radius)", cursor: (triggering || isScanning) ? "not-allowed" : "pointer",
-                fontSize: "11px", letterSpacing: "0.08em", fontFamily: "var(--mono)",
-                transition: "all 0.15s",
-              }}
-            >
-              {triggering ? "STARTING…" : isScanning ? "RUNNING…" : "↻ SCAN NOW"}
+            <button onClick={handleTrigger} disabled={triggering || isScanning} style={{
+              padding: "8px 16px", background: (triggering || isScanning) ? t.c.raised : t.c.accentBg,
+              border: `1px solid ${(triggering || isScanning) ? t.c.border : t.c.accent}`,
+              color: (triggering || isScanning) ? t.c.text3 : t.c.accent,
+              borderRadius: t.radius, cursor: (triggering || isScanning) ? "not-allowed" : "pointer",
+              fontSize: 12.5, fontWeight: 500, fontFamily: t.fontUi, transition: "all 0.15s",
+            }}>
+              {triggering ? "Starting…" : isScanning ? "Running…" : "↻ Scan now"}
             </button>
           )}
-          {scanningErr && <span style={{ fontSize: "11px", color: "var(--red)" }}>{scanningErr}</span>}
+          {scanningErr && <span style={{ fontSize: 11, color: t.sev.critical.fg }}>{scanningErr}</span>}
         </div>
       </div>
 
@@ -613,31 +608,36 @@ export default function Health() {
       {/* ── Status banner (last completed scan) ── */}
       {latestScan && (
         <div style={{
-          display: "flex", alignItems: "center", gap: "16px",
-          padding: "14px 20px",
-          background: `linear-gradient(135deg, ${healthStyle.dot}0a 0%, var(--bg-2) 100%)`,
+          display: "flex", alignItems: "center", gap: 20,
+          padding: "16px 24px",
+          background: `${healthStyle.dot}08`,
           border: `1px solid ${healthStyle.dot}33`,
           borderRadius: "var(--radius-lg)",
-          marginBottom: "24px",
+          marginBottom: "24px", flexWrap: "wrap",
         }}>
           <HealthBadge health={latestScan.overall_health} size="large" />
-          <div style={{ width: "1px", height: "32px", background: "var(--border)" }} />
-          <div style={{ display: "flex", gap: "28px" }}>
+          <div style={{ width: 1, height: 32, background: "var(--border)", flexShrink: 0 }} />
+          <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
             {SEV_ORDER.map((sev) => {
               const count = latestScan.finding_counts?.[sev] || 0;
               const c = SEV_COLOR[sev];
               return (
-                <div key={sev} style={{ textAlign: "center" }}>
-                  <div style={{ color: count > 0 ? c.fg : "var(--text-3)", fontSize: "18px", fontWeight: 700, lineHeight: 1.2 }}>{count}</div>
-                  <div style={{ color: "var(--text-3)", fontSize: "9px", letterSpacing: "0.1em", marginTop: "2px" }}>{sev.toUpperCase()}</div>
+                <div key={sev} style={{ textAlign: "center", minWidth: 36 }}>
+                  <div style={{ color: count > 0 ? c.fg : "var(--text-3)", fontSize: "22px",
+                    fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>{count}</div>
+                  <div style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.08em",
+                    marginTop: 4, textTransform: "uppercase" }}>{sev.slice(0, 4).toUpperCase()}</div>
                 </div>
               );
             })}
-            <div style={{ textAlign: "center" }}>
-              <div style={{ color: (latestScan.config_issue_count || 0) > 0 ? "var(--orange)" : "var(--text-3)", fontSize: "18px", fontWeight: 700, lineHeight: 1.2 }}>
+            <div style={{ textAlign: "center", minWidth: 36 }}>
+              <div style={{ color: (latestScan.config_issue_count || 0) > 0 ? "var(--orange)" : "var(--text-3)",
+                fontSize: "22px", fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>
                 {latestScan.config_issue_count || 0}
               </div>
-              <div style={{ color: "var(--text-3)", fontSize: "9px", letterSpacing: "0.1em", marginTop: "2px" }}>CONFIG</div>
+              <div style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.08em", marginTop: 4 }}>
+                CONFIG
+              </div>
             </div>
           </div>
         </div>
@@ -658,33 +658,42 @@ export default function Health() {
 
       {/* ── Charts row ── */}
       {selectedScan?.status === "complete" && (
-        <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: "16px", marginBottom: "24px" }}>
-          <div style={{
-            background: "var(--bg-2)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius-lg)", padding: "20px 16px",
-            display: "flex", flexDirection: "column", alignItems: "center", gap: "12px",
-          }}>
-            <div style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.1em" }}>BY SEVERITY</div>
-            <DonutChart counts={scanCounts} />
-            <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "4px" }}>
-              {SEV_ORDER.map((sev) => {
-                const count = scanCounts[sev] || 0;
-                return count > 0 ? (
-                  <div key={sev} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "10px" }}>
-                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: SEV_COLOR[sev].fg, flexShrink: 0 }} />
-                    <span style={{ color: "var(--text-3)", flex: 1 }}>{sev}</span>
-                    <span style={{ color: "var(--text-2)" }}>{count}</span>
-                  </div>
-                ) : null;
-              })}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 16, marginBottom: 24 }}>
+          {/* Donut — By severity */}
+          <div style={{ background: "var(--bg-2)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius-lg)", padding: "20px 24px" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 16 }}>
+              By severity
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+              <div style={{ width: 140, flexShrink: 0 }}>
+                <DonutChart counts={scanCounts} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {SEV_ORDER.map((sev) => {
+                  const count = scanCounts[sev] || 0;
+                  if (!count) return null;
+                  return (
+                    <div key={sev} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                      <span style={{ width: 9, height: 9, borderRadius: "50%",
+                        background: SEV_COLOR[sev].fg, flexShrink: 0 }} />
+                      <span style={{ color: "var(--text-2)", textTransform: "capitalize", flex: 1 }}>
+                        {sev.charAt(0).toUpperCase() + sev.slice(1)}
+                      </span>
+                      <span style={{ color: "var(--text)", fontWeight: 600 }}>{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
-          <div style={{
-            background: "var(--bg-2)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius-lg)", padding: "20px 24px",
-          }}>
-            <div style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.1em", marginBottom: "16px" }}>BY CATEGORY</div>
+          {/* Category bars — By category */}
+          <div style={{ background: "var(--bg-2)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius-lg)", padding: "20px 28px" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 16 }}>
+              By category
+            </div>
             {CATEGORY_ORDER.map((cat) => {
               const count = catCounts[cat] || 0;
               const color = cat === "config" ? "#e3650a" : cat === "secrets" ? "#f85149"
@@ -701,11 +710,11 @@ export default function Health() {
         borderRadius: "var(--radius-lg)", marginBottom: "24px", overflow: "hidden",
       }}>
         <div style={{
-          padding: "12px 16px", borderBottom: "1px solid var(--border)",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 20px", borderBottom: "1px solid var(--border)",
+          display: "flex", alignItems: "center", gap: 10,
         }}>
-          <span style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.1em" }}>SCAN HISTORY</span>
-          <span style={{ color: "var(--text-3)", fontSize: "10px" }}>{scans.length} scan{scans.length !== 1 ? "s" : ""}</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Scan history</span>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>{scans.length} scan{scans.length !== 1 ? "s" : ""}</span>
         </div>
         {scans.length === 0 ? (
           <div style={{ padding: "24px", color: "var(--text-3)", fontSize: "12px", textAlign: "center" }}>No scans yet</div>

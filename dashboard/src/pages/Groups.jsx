@@ -3,32 +3,19 @@ import {
   listGroups, createGroup, updateGroup, deleteGroup,
   listMembers, addMember, removeMember,
 } from "../api/groups.js";
+import { useTheme, Icon } from "../App.jsx";
+import { Btn, Avatar } from "../components/atoms.jsx";
+import { PageHeader, PageWrap, SectionCard, TextInput } from "../components/ui.jsx";
 
-const S = {
-  input: {
-    background: "var(--bg)", border: "1px solid var(--border)",
-    borderRadius: "var(--radius)", padding: "7px 10px", color: "var(--text)",
-    fontSize: "12px", fontFamily: "var(--mono)", outline: "none", width: "100%",
-    boxSizing: "border-box",
-  },
-  btn: (v = "default") => ({
-    padding: "6px 14px", borderRadius: "var(--radius)", cursor: "pointer",
-    fontSize: "11px", fontFamily: "var(--mono)", letterSpacing: "0.06em",
-    border: v === "primary" ? "none" : "1px solid var(--border)",
-    background: v === "primary" ? "var(--accent)" : "transparent",
-    color: v === "primary" ? "#000" : "var(--text-2)",
-    fontWeight: v === "primary" ? 700 : 400,
-  }),
-};
-
-function GroupCard({ group, onUpdated, onDeleted }) {
-  const [expanded, setExpanded] = useState(false);
-  const [members, setMembers] = useState(null);
-  const [newUser, setNewUser] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [editName, setEditName] = useState(null);
+function GroupCard({ theme, group, preloadedMembers = [], onUpdated, onDeleted }) {
+  const [expanded,   setExpanded]   = useState(false);
+  const [members,    setMembers]    = useState(null);
+  const [newUser,    setNewUser]    = useState("");
+  const [adding,     setAdding]     = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [err, setErr] = useState("");
+  const [editName,   setEditName]   = useState(null);
+  const [err,        setErr]        = useState("");
+  const t = theme;
 
   const loadMembers = async () => {
     const m = await listMembers(group.id).catch(() => []);
@@ -45,8 +32,7 @@ function GroupCard({ group, onUpdated, onDeleted }) {
     setAdding(true); setErr("");
     try {
       await addMember(group.id, newUser.trim());
-      setNewUser("");
-      loadMembers();
+      setNewUser(""); await loadMembers();
       onUpdated({ ...group, member_count: group.member_count + 1 });
     } catch (e) {
       setErr(e?.response?.data?.detail || "Failed to add member.");
@@ -63,94 +49,106 @@ function GroupCard({ group, onUpdated, onDeleted }) {
     if (!editName?.trim()) return setEditName(null);
     try {
       const updated = await updateGroup(group.id, { name: editName.trim() });
-      onUpdated(updated);
-      setEditName(null);
-    } catch (e) {
-      setErr(e?.response?.data?.detail || "Failed to rename.");
-    }
+      onUpdated(updated); setEditName(null);
+    } catch (e) { setErr(e?.response?.data?.detail || "Failed to rename."); }
   };
 
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius)", overflow: "hidden", marginBottom: "10px" }}>
-      <div
-        onClick={handleExpand}
-        style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "12px 16px", background: "var(--bg-2)", cursor: "pointer",
-          userSelect: "none",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <span style={{ fontSize: "11px", color: "var(--text-3)", transition: "transform 0.15s", display: "inline-block", transform: expanded ? "rotate(90deg)" : "none" }}>▶</span>
-          {editName !== null ? (
-            <input
-              autoFocus
-              value={editName}
-              onChange={e => setEditName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setEditName(null); }}
-              onClick={e => e.stopPropagation()}
-              style={{ ...S.input, width: "200px", padding: "3px 8px", fontSize: "13px" }}
-            />
-          ) : (
-            <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--text)", letterSpacing: "0.02em" }}>{group.name}</span>
-          )}
-          {group.description && (
-            <span style={{ fontSize: "11px", color: "var(--text-3)" }}>{group.description}</span>
-          )}
+    <div style={{ border: `1px solid ${t.c.border}`, borderRadius: t.radiusLg,
+      overflow: "hidden", marginBottom: 12, background: t.c.surface, boxShadow: t.c.shadow }}>
+      {/* Header row */}
+      <div onClick={handleExpand} style={{ display: "flex", alignItems: "center",
+        justifyContent: "space-between", padding: "15px 18px", cursor: "pointer",
+        userSelect: "none", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 13, minWidth: 0 }}>
+          <span style={{ color: t.c.text3, fontSize: 10, transition: "transform 0.18s",
+            transform: expanded ? "rotate(90deg)" : "none", display: "inline-block" }}>▶</span>
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: t.c.accentBg,
+            color: t.c.accent, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Icon name="groups" size={18} color={t.c.accent} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            {editName !== null ? (
+              <input autoFocus value={editName}
+                onChange={e => setEditName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setEditName(null); }}
+                onClick={e => e.stopPropagation()}
+                style={{ fontSize: 15, fontWeight: 600, color: t.c.text,
+                  background: t.c.bg, border: `1px solid ${t.c.accent}`,
+                  borderRadius: t.radius / 2, padding: "2px 8px", outline: "none",
+                  fontFamily: t.fontDisplay, width: "100%" }} />
+            ) : (
+              <div style={{ fontSize: 15, fontWeight: 600, color: t.c.text, fontFamily: t.fontDisplay }}>
+                {group.name}
+              </div>
+            )}
+            {group.description && (
+              <div style={{ fontSize: 12.5, color: t.c.text3, marginTop: 2 }}>{group.description}</div>
+            )}
+          </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <span style={{ fontSize: "11px", color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }} onClick={e => e.stopPropagation()}>
+          {/* Avatar stack — shows real initials from preloaded members */}
+          <div style={{ display: "flex" }}>
+            {preloadedMembers.slice(0, 4).map((username, i) => (
+              <div key={username} style={{ marginLeft: i ? -8 : 0, borderRadius: 999,
+                border: `2px solid ${t.c.surface}` }}>
+                <Avatar theme={t} name={username} size={26} />
+              </div>
+            ))}
+          </div>
+          <span style={{ fontSize: 12.5, color: t.c.text3, whiteSpace: "nowrap" }}>
             {group.member_count} member{group.member_count !== 1 ? "s" : ""}
           </span>
-          <button
-            onClick={e => { e.stopPropagation(); setEditName(group.name); }}
-            style={{ ...S.btn(), padding: "3px 8px", fontSize: "10px" }}
-          >RENAME</button>
+          <Btn theme={t} variant="quiet" size="sm"
+            onClick={e => { e.stopPropagation(); setEditName(group.name); }}>Rename</Btn>
           {confirming ? (
             <>
-              <button onClick={e => { e.stopPropagation(); onDeleted(group.id); }} style={{ ...S.btn(), padding: "3px 8px", fontSize: "10px", color: "var(--red, #f87171)", borderColor: "var(--red, #f87171)" }}>CONFIRM</button>
-              <button onClick={e => { e.stopPropagation(); setConfirming(false); }} style={{ ...S.btn(), padding: "3px 8px", fontSize: "10px" }}>CANCEL</button>
+              <Btn theme={t} variant="danger" size="sm" onClick={() => onDeleted(group.id)}>Confirm</Btn>
+              <Btn theme={t} variant="quiet" size="sm" onClick={() => setConfirming(false)}>Cancel</Btn>
             </>
           ) : (
-            <button onClick={e => { e.stopPropagation(); setConfirming(true); }} style={{ ...S.btn(), padding: "3px 8px", fontSize: "10px" }}>DELETE</button>
+            <Btn theme={t} variant="quiet" size="sm" onClick={() => setConfirming(true)}>Delete</Btn>
           )}
         </div>
       </div>
 
+      {/* Expanded body */}
       {expanded && (
-        <div style={{ padding: "14px 16px", borderTop: "1px solid var(--border)" }}>
-          {err && <p style={{ color: "var(--red, #f87171)", fontSize: "12px", margin: "0 0 10px" }}>{err}</p>}
+        <div style={{ padding: "16px 18px", borderTop: `1px solid ${t.c.border}`,
+          background: t.c.raised }}>
+          {err && <div style={{ color: t.sev.critical.fg, fontSize: 12, marginBottom: 10 }}>{err}</div>}
 
-          <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
-            <input
-              style={{ ...S.input, flex: 1 }}
-              placeholder="username"
-              value={newUser}
-              onChange={e => setNewUser(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleAddMember()}
-            />
-            <button onClick={handleAddMember} disabled={adding || !newUser.trim()} style={{ ...S.btn("primary"), opacity: adding || !newUser.trim() ? 0.5 : 1 }}>
-              ADD
-            </button>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, maxWidth: 420 }}>
+            <TextInput theme={t} value={newUser} onChange={e => setNewUser(e.target.value)}
+              placeholder="Add member by username" mono
+              onKeyDown={e => e.key === "Enter" && handleAddMember()} />
+            <Btn theme={t} variant="primary" onClick={handleAddMember} disabled={adding || !newUser.trim()}>
+              Add
+            </Btn>
           </div>
 
           {members === null ? (
-            <p style={{ fontSize: "11px", color: "var(--text-3)" }}>Loading...</p>
+            <div style={{ fontSize: 11, color: t.c.text3 }}>Loading…</div>
           ) : members.length === 0 ? (
-            <p style={{ fontSize: "11px", color: "var(--text-3)" }}>No members yet.</p>
+            <div style={{ fontSize: 11, color: t.c.text3 }}>No members yet.</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-              {members.map(m => (
-                <div key={m.username} style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "5px 10px", background: "var(--bg)", borderRadius: "var(--radius)",
-                  border: "1px solid var(--border)",
-                }}>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--text-2)" }}>{m.username}</span>
-                  <button
-                    onClick={() => handleRemoveMember(m.username)}
-                    style={{ ...S.btn(), padding: "2px 8px", fontSize: "10px" }}
-                  >REMOVE</button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {members.map((m) => (
+                <div key={m.username} style={{ display: "flex", alignItems: "center",
+                  justifyContent: "space-between", padding: "8px 12px",
+                  background: t.c.surface, border: `1px solid ${t.c.border}`,
+                  borderRadius: t.radius }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <Avatar theme={t} name={m.username} size={26} />
+                    <span style={{ fontSize: 13, color: t.c.text2, fontFamily: t.fontMono }}>
+                      {m.username}
+                    </span>
+                  </div>
+                  <Btn theme={t} variant="quiet" size="sm" onClick={() => handleRemoveMember(m.username)}>
+                    Remove
+                  </Btn>
                 </div>
               ))}
             </div>
@@ -162,85 +160,84 @@ function GroupCard({ group, onUpdated, onDeleted }) {
 }
 
 export default function Groups() {
-  const [groups, setGroups] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [err, setErr] = useState("");
+  const { theme }     = useTheme();
+  const [groups,       setGroups]     = useState([]);
+  const [membersMap,   setMembersMap] = useState({});  // {groupId: [username, ...]}
+  const [loading,      setLoading]    = useState(true);
+  const [name,         setName]       = useState("");
+  const [desc,         setDesc]       = useState("");
+  const [creating,     setCreating]   = useState(false);
+  const [err,          setErr]        = useState("");
+  const t = theme;
 
   useEffect(() => {
-    listGroups().then(setGroups).catch(() => {}).finally(() => setLoading(false));
+    listGroups()
+      .then(async (gs) => {
+        setGroups(gs);
+        // Load first 4 members of each group for the avatar stack
+        const map = {};
+        await Promise.all(gs.map(async (g) => {
+          try {
+            const members = await listMembers(g.id);
+            map[g.id] = members.slice(0, 4).map(m => m.username);
+          } catch { map[g.id] = []; }
+        }));
+        setMembersMap(map);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   const handleCreate = async () => {
     if (!name.trim()) return;
     setCreating(true); setErr("");
     try {
-      const g = await createGroup({ name: name.trim(), description: description.trim() || undefined });
+      const g = await createGroup({ name: name.trim(), description: desc.trim() || undefined });
       setGroups(prev => [g, ...prev]);
-      setName(""); setDescription("");
+      setName(""); setDesc("");
     } catch (e) {
       setErr(e?.response?.data?.detail || "Failed to create group.");
     } finally { setCreating(false); }
   };
 
-  const handleUpdated = (updated) => {
-    setGroups(prev => prev.map(g => g.id === updated.id ? updated : g));
-  };
-
+  const handleUpdated = (updated) => setGroups(prev => prev.map(g => g.id === updated.id ? updated : g));
   const handleDeleted = async (id) => {
     await deleteGroup(id).catch(() => {});
     setGroups(prev => prev.filter(g => g.id !== id));
   };
 
   return (
-    <div style={{ padding: "24px", maxWidth: "800px", margin: "0 auto" }}>
-      <div style={{ marginBottom: "24px" }}>
-        <h1 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, letterSpacing: "0.04em", color: "var(--text)" }}>
-          GROUPS
-        </h1>
-        <p style={{ margin: 0, fontSize: "12px", color: "var(--text-3)" }}>
-          Organize users into teams. Members can see all repositories assigned to their group.
-        </p>
-      </div>
+    <PageWrap theme={t} max={840}>
+      <PageHeader theme={t} title="Groups"
+        subtitle="Organize users into teams. Members see every repository assigned to their group." />
 
-      <div style={{
-        border: "1px solid var(--border)", borderRadius: "var(--radius)",
-        padding: "16px", marginBottom: "24px", background: "var(--bg-2)",
-      }}>
-        <p style={{ margin: "0 0 12px", fontSize: "11px", color: "var(--text-2)", letterSpacing: "0.06em" }}>CREATE GROUP</p>
-        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-          <input
-            style={{ ...S.input, flex: "1 1 160px" }}
-            placeholder="Group name"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleCreate()}
-          />
-          <input
-            style={{ ...S.input, flex: "2 1 200px" }}
-            placeholder="Description (optional)"
-            value={description}
-            onChange={e => setDescription(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleCreate()}
-          />
-          <button onClick={handleCreate} disabled={creating || !name.trim()} style={{ ...S.btn("primary"), opacity: creating || !name.trim() ? 0.5 : 1 }}>
-            CREATE
-          </button>
+      <SectionCard theme={t} title="Create group">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 170px" }}>
+            <TextInput theme={t} value={name} onChange={e => setName(e.target.value)}
+              placeholder="Group name" onKeyDown={e => e.key === "Enter" && handleCreate()} />
+          </div>
+          <div style={{ flex: "2 1 220px" }}>
+            <TextInput theme={t} value={desc} onChange={e => setDesc(e.target.value)}
+              placeholder="Description (optional)" onKeyDown={e => e.key === "Enter" && handleCreate()} />
+          </div>
+          <Btn theme={t} variant="primary" onClick={handleCreate}
+            disabled={creating || !name.trim()}>Create</Btn>
         </div>
-        {err && <p style={{ color: "var(--red, #f87171)", fontSize: "12px", margin: "8px 0 0" }}>{err}</p>}
-      </div>
+        {err && <div style={{ color: t.sev.critical.fg, fontSize: 12, marginTop: 10 }}>{err}</div>}
+      </SectionCard>
 
       {loading ? (
-        <p style={{ color: "var(--text-3)", fontSize: "12px" }}>Loading...</p>
+        <div style={{ color: t.c.text3, fontSize: 13 }}>Loading…</div>
       ) : groups.length === 0 ? (
-        <p style={{ color: "var(--text-3)", fontSize: "12px" }}>No groups yet.</p>
+        <div style={{ color: t.c.text3, fontSize: 13 }}>No groups yet.</div>
       ) : (
         groups.map(g => (
-          <GroupCard key={g.id} group={g} onUpdated={handleUpdated} onDeleted={handleDeleted} />
+          <GroupCard key={g.id} theme={t} group={g}
+            preloadedMembers={membersMap[g.id] || []}
+            onUpdated={handleUpdated} onDeleted={handleDeleted} />
         ))
       )}
-    </div>
+    </PageWrap>
   );
 }

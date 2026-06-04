@@ -12,6 +12,30 @@ from models import AppConfig, Finding, LlmRun, Submission, User
 from routers.repos import _visible_repo_names
 from schemas import FindingResponse, SubmissionListResponse, SubmissionResponse
 
+
+async def _finding_counts(db: AsyncSession, submission_ids: list) -> dict:
+    """Return {str(submission_id): {"critical": N, ...}} for the given IDs."""
+    if not submission_ids:
+        return {}
+    rows = await db.execute(
+        select(Finding.submission_id, Finding.severity, func.count().label("c"))
+        .where(Finding.submission_id.in_(submission_ids))
+        .group_by(Finding.submission_id, Finding.severity)
+    )
+    result: dict = {}
+    for row in rows:
+        sid = str(row.submission_id)
+        result.setdefault(sid, {})
+        result[sid][row.severity] = row.c
+    return result
+
+
+def _with_counts(sub: Submission, counts: dict | None) -> SubmissionResponse:
+    base = SubmissionResponse.model_validate(sub)
+    data = base.model_dump()
+    data["finding_counts"] = counts or None
+    return SubmissionResponse(**data)
+
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -57,8 +81,9 @@ async def list_submissions(
         key=lambda s: (-counts[s.id], -s.created_at.timestamp()),
     )
 
+    counts_map = await _finding_counts(db, [s.id for s in sorted_subs])
     return SubmissionListResponse(
-        submissions=[SubmissionResponse.model_validate(s) for s in sorted_subs],
+        submissions=[_with_counts(s, counts_map.get(str(s.id))) for s in sorted_subs],
         total=len(sorted_subs),
     )
 
@@ -117,7 +142,8 @@ async def get_submission(
     sub = await db.get(Submission, submission_id)
     if not sub:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
-    return sub
+    counts_map = await _finding_counts(db, [submission_id])
+    return _with_counts(sub, counts_map.get(str(submission_id)))
 
 
 @router.get("/{submission_id}/findings", response_model=list[FindingResponse])

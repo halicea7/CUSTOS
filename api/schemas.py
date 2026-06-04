@@ -1,7 +1,8 @@
+import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -28,12 +29,24 @@ class SubmissionResponse(BaseModel):
     commit_sha: str
     branch: Optional[str] = None
     submitter: Optional[str] = None
+    github_actor: Optional[str] = None
     event_type: Optional[str] = None
     pr_number: Optional[int] = None
     status: str
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    finding_counts: Optional[dict] = None
+
+    @field_validator("finding_counts", mode="before")
+    @classmethod
+    def parse_finding_counts(cls, v: Any) -> Optional[dict]:
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except Exception:
+                return None
+        return v
 
     model_config = {"from_attributes": True}
 

@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import hljs from "highlight.js";
+import { useTheme } from "../App.jsx";
 
-// Minimal dark theme inlined to avoid CSS import issues
-const THEME = `
+// Dark hljs theme
+const HLJS_DARK = `
 .hljs{color:#c9d1d9;background:transparent}
 .hljs-comment,.hljs-meta{color:#8b949e;font-style:italic}
 .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-name,.hljs-tag{color:#ff7b72}
@@ -10,13 +11,30 @@ const THEME = `
 .hljs-title,.hljs-section,.hljs-attribute{color:#d2a8ff}
 .hljs-variable,.hljs-template-variable{color:#ffa657}
 .hljs-literal,.hljs-type,.hljs-params{color:#79c0ff}
-.hljs-number{color:#f0a500}
+.hljs-number{color:#7c79f2}
 .hljs-deletion{color:#f85149}
 .hljs-emphasis{font-style:italic}
 .hljs-strong{font-weight:bold}
 `;
 
+// Light hljs theme
+const HLJS_LIGHT = `
+.hljs{color:#24292e;background:transparent}
+.hljs-comment,.hljs-meta{color:#6a737d;font-style:italic}
+.hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-name,.hljs-tag{color:#d73a49}
+.hljs-string,.hljs-attr,.hljs-symbol,.hljs-bullet,.hljs-addition{color:#032f62}
+.hljs-title,.hljs-section,.hljs-attribute{color:#6f42c1}
+.hljs-variable,.hljs-template-variable{color:#e36209}
+.hljs-literal,.hljs-type,.hljs-params{color:#005cc5}
+.hljs-number{color:#4f46e5}
+.hljs-deletion{color:#b31d28}
+.hljs-emphasis{font-style:italic}
+.hljs-strong{font-weight:bold}
+`;
+
 export default function CodeViewer({ code, language, lineStart, lineEnd, filePath }) {
+  const { theme } = useTheme();
+  const t = theme;
   const preRef = useRef(null);
   const [highlighted, setHighlighted] = useState("");
 
@@ -41,63 +59,49 @@ export default function CodeViewer({ code, language, lineStart, lineEnd, filePat
   const lines = (highlighted || code).split("\n");
   const startNum = typeof lineStart === "number" ? lineStart : 1;
 
+  const isLight = t.mode === "light";
+  const codeBg  = isLight ? "#f8f9fb" : "#0c0e13";
+  const gutterBg = isLight ? "#f3f4f7" : "#0d1014";
+
   return (
-    <div style={{
-      borderRadius: "var(--radius-lg)",
-      border: "1px solid var(--border)",
-      overflow: "hidden",
-      background: "#0d1117",
-    }}>
-      <style>{THEME}</style>
+    <div style={{ borderRadius: t.radius, overflow: "hidden",
+      border: `1px solid ${t.c.border}`, background: codeBg }}>
+      <style>{isLight ? HLJS_LIGHT : HLJS_DARK}</style>
       {filePath && (
-        <div style={{
-          padding: "7px 14px",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg-3)",
-          display: "flex", alignItems: "center", gap: "8px",
-        }}>
-          <span style={{ color: "var(--text-3)", fontSize: "11px" }}>📄</span>
-          <span style={{ color: "var(--text-2)", fontSize: "11px", fontFamily: "var(--mono)" }}>
+        <div style={{ padding: "7px 14px", borderBottom: `1px solid ${t.c.border}`,
+          background: t.c.raised, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: t.c.text3, fontSize: 11, fontFamily: t.fontMono }}>
             {filePath}
-            {lineStart && <span style={{ color: "var(--text-3)" }}>:{lineStart}{lineEnd && lineEnd !== lineStart ? `–${lineEnd}` : ""}</span>}
+            {lineStart && (
+              <span style={{ color: t.c.text3 }}>
+                :{lineStart}{lineEnd && lineEnd !== lineStart ? `–${lineEnd}` : ""}
+              </span>
+            )}
           </span>
         </div>
       )}
       <div style={{ overflowX: "auto" }}>
-        <table style={{
-          borderCollapse: "collapse", width: "100%",
-          fontFamily: "var(--mono)", fontSize: "12px", lineHeight: "1.6",
-        }}>
+        <table style={{ borderCollapse: "collapse", width: "100%",
+          fontFamily: t.fontMono, fontSize: 12, lineHeight: "1.6" }}>
           <tbody>
             {lines.map((line, i) => {
               const lineNum = startNum + i;
               const isHighlighted = lineStart && lineEnd
                 ? lineNum >= lineStart && lineNum <= lineEnd
-                : lineStart
-                ? lineNum === lineStart
-                : false;
+                : lineStart ? lineNum === lineStart : false;
+              const hlBg  = isHighlighted ? (isLight ? "rgba(220,38,38,0.06)" : "rgba(248,81,73,0.1)") : "transparent";
+              const hlBorder = isHighlighted ? (isLight ? "#dc2626" : "#f85149") : "transparent";
               return (
-                <tr key={i} style={{
-                  background: isHighlighted ? "rgba(240,165,0,0.08)" : "transparent",
-                  borderLeft: isHighlighted ? "2px solid var(--accent)" : "2px solid transparent",
-                }}>
-                  <td style={{
-                    padding: "0 14px 0 10px",
-                    color: isHighlighted ? "var(--accent)" : "var(--text-3)",
-                    textAlign: "right",
-                    userSelect: "none",
-                    minWidth: "42px",
-                    fontSize: "11px",
-                    opacity: isHighlighted ? 1 : 0.6,
-                    fontVariantNumeric: "tabular-nums",
-                  }}>
+                <tr key={i} style={{ background: hlBg,
+                  borderLeft: `2px solid ${hlBorder}` }}>
+                  <td style={{ padding: "0 12px 0 10px", color: isHighlighted ? t.c.accent : t.c.text3,
+                    textAlign: "right", userSelect: "none", minWidth: 42, fontSize: 11,
+                    background: gutterBg, borderRight: `1px solid ${t.c.border}`,
+                    fontVariantNumeric: "tabular-nums" }}>
                     {lineNum}
                   </td>
-                  <td style={{
-                    padding: "0 20px 0 0",
-                    whiteSpace: "pre",
-                    color: isHighlighted ? "#ffd787" : undefined,
-                  }}
+                  <td style={{ padding: "0 20px 0 14px", whiteSpace: "pre",
+                    color: isHighlighted ? t.c.text : undefined }}
                     dangerouslySetInnerHTML={{ __html: line || "&nbsp;" }}
                   />
                 </tr>

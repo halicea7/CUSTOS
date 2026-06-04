@@ -1,84 +1,76 @@
 import React, { useEffect, useState } from "react";
 import { listRepos, deleteRepo, updateRepo } from "../api/repos.js";
 import { useAuth } from "../App.jsx";
+import { useTheme, Icon } from "../App.jsx";
+import { Btn } from "../components/atoms.jsx";
+import { PageHeader, PageWrap } from "../components/ui.jsx";
 import AddRepoModal from "../components/AddRepoModal.jsx";
 
-function fmtDate(ts) {
+function fmtDay(ts) {
   if (!ts) return "—";
-  const d = new Date(ts);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-function RepoRow({ repo, isAdmin, onDelete, onToggle }) {
+function RepoRow({ theme, repo, onToggle, onDelete, last }) {
   const [confirming, setConfirming] = useState(false);
-
-  const canEdit = isAdmin || repo.added_by === repo._currentUser;
+  const [hover,      setHover]      = useState(false);
+  const t = theme;
+  const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
 
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "1fr 140px 120px 90px 110px",
-      gap: "12px",
-      alignItems: "center",
-      padding: "10px 16px",
-      borderBottom: "1px solid var(--border)",
-      fontSize: "12px",
-    }}>
-      <div>
-        <div style={{ color: "var(--text)", fontFamily: "var(--mono)", fontWeight: 600, marginBottom: "3px" }}>
-          {repo.repo_full_name}
+    <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{ display: "grid", gridTemplateColumns: "1fr 130px 110px 110px 190px", gap: 14,
+        alignItems: "center", padding: "14px 18px",
+        borderBottom: last ? "none" : `1px solid ${t.c.border}`,
+        background: hover ? t.c.raised : "transparent", transition: "background 0.12s",
+        opacity: repo.enabled ? 1 : 0.62 }}>
+
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+          <Icon name="repos" size={14} color={t.c.text3} />
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: t.c.text, fontFamily: t.fontMono,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>
+            {repo.repo_full_name}
+          </span>
         </div>
-        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-          {repo.groups.map(g => (
-            <span key={g.id} style={{
-              padding: "1px 6px", borderRadius: "3px", fontSize: "10px",
-              background: "rgba(255,160,0,0.12)", color: "var(--accent)",
-              border: "1px solid rgba(255,160,0,0.25)",
-            }}>{g.name}</span>
-          ))}
-        </div>
+        {repo.groups?.length > 0 && (
+          <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap", paddingLeft: 23 }}>
+            {repo.groups.map((g) => (
+              <span key={g.id} style={{ display: "inline-flex", alignItems: "center",
+                padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 500,
+                color: t.c.accent, background: t.c.accentBg }}>{g.name}</span>
+            ))}
+          </div>
+        )}
       </div>
-      <div style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: "11px" }}>
-        {repo.token_preview}
-      </div>
-      <div style={{ color: "var(--text-3)", fontSize: "11px" }}>
-        {repo.added_by}
-      </div>
-      <div style={{ color: "var(--text-3)", fontSize: "11px" }}>
-        {fmtDate(repo.last_push_at)}
-      </div>
-      <div style={{ display: "flex", gap: "6px", justifyContent: "flex-end" }}>
-        <button
-          onClick={() => onToggle(repo)}
-          style={{
-            padding: "3px 8px", borderRadius: "var(--radius)", cursor: "pointer",
-            fontSize: "10px", fontFamily: "var(--mono)",
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: repo.enabled ? "var(--text-2)" : "var(--text-3)",
-          }}
-        >
-          {repo.enabled ? "ENABLED" : "DISABLED"}
+
+      <span style={{ fontSize: 12, color: t.c.text3, fontFamily: t.fontMono }}>
+        {repo.token_preview || "—"}
+      </span>
+      <span style={{ fontSize: 12.5, color: t.c.text2 }}>{repo.added_by}</span>
+      <span style={{ fontSize: 12, color: t.c.text3 }}>{fmtDay(repo.last_push_at)}</span>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "flex-end" }}>
+        <button onClick={() => onToggle(repo)} style={{ display: "inline-flex", alignItems: "center",
+          gap: 6, background: "none", border: "none", cursor: "pointer", fontSize: 12.5,
+          fontWeight: 500, fontFamily: t.fontUi, color: repo.enabled ? green : t.c.text3,
+          padding: 0, transition: "opacity 0.12s" }}>
+          <span style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0,
+            background: repo.enabled ? green : t.c.text3 }} />
+          {repo.enabled ? "Enabled" : "Disabled"}
         </button>
         {confirming ? (
-          <>
-            <button onClick={() => { onDelete(repo.id); setConfirming(false); }} style={{
-              padding: "3px 8px", borderRadius: "var(--radius)", cursor: "pointer",
-              fontSize: "10px", fontFamily: "var(--mono)",
-              border: "1px solid var(--red, #f87171)", background: "transparent", color: "var(--red, #f87171)",
-            }}>CONFIRM</button>
-            <button onClick={() => setConfirming(false)} style={{
-              padding: "3px 8px", borderRadius: "var(--radius)", cursor: "pointer",
-              fontSize: "10px", fontFamily: "var(--mono)",
-              border: "1px solid var(--border)", background: "transparent", color: "var(--text-3)",
-            }}>CANCEL</button>
-          </>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn theme={t} variant="danger" size="sm" onClick={() => { onDelete(repo.id); setConfirming(false); }}>Confirm</Btn>
+            <Btn theme={t} variant="quiet" size="sm" onClick={() => setConfirming(false)}>Cancel</Btn>
+          </div>
         ) : (
-          <button onClick={() => setConfirming(true)} style={{
-            padding: "3px 8px", borderRadius: "var(--radius)", cursor: "pointer",
-            fontSize: "10px", fontFamily: "var(--mono)",
-            border: "1px solid var(--border)", background: "transparent", color: "var(--text-3)",
-          }}>REMOVE</button>
+          <button onClick={() => setConfirming(true)} style={{ background: "none", border: "none",
+            cursor: "pointer", fontSize: 12.5, color: t.c.text3, fontFamily: t.fontUi, padding: 0 }}
+            onMouseEnter={e => e.currentTarget.style.color = t.c.text}
+            onMouseLeave={e => e.currentTarget.style.color = t.c.text3}>
+            Remove
+          </button>
         )}
       </div>
     </div>
@@ -86,11 +78,13 @@ function RepoRow({ repo, isAdmin, onDelete, onToggle }) {
 }
 
 export default function Repos() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
-  const [repos, setRepos] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { user }   = useAuth();
+  const { theme }  = useTheme();
+  const isAdmin    = user?.role === "admin";
+  const [repos,     setRepos]     = useState([]);
+  const [loading,   setLoading]   = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const t = theme;
 
   const load = () => {
     setLoading(true);
@@ -110,72 +104,39 @@ export default function Repos() {
   };
 
   return (
-    <div style={{ padding: "24px", maxWidth: "1100px", margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: "16px", fontWeight: 700, letterSpacing: "0.04em", color: "var(--text)" }}>
-            REPOSITORIES
-          </h1>
-          <p style={{ margin: "4px 0 0", fontSize: "12px", color: "var(--text-3)" }}>
-            {isAdmin ? "All connected repositories" : "Your repositories and group repositories"}
-          </p>
-        </div>
-        <button
-          onClick={() => setShowModal(true)}
-          style={{
-            padding: "8px 16px", borderRadius: "var(--radius)", cursor: "pointer",
-            fontSize: "11px", fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: "0.06em",
-            border: "none", background: "var(--accent)", color: "#000",
-          }}
-        >
-          + ADD REPO
-        </button>
-      </div>
+    <PageWrap theme={t} max={1080}>
+      <PageHeader theme={t} title="Repositories"
+        subtitle={`${repos.length} repositories connected to webhooks`}
+        right={<Btn theme={t} variant="primary" onClick={() => setShowModal(true)}>+ Add repository</Btn>}
+      />
 
-      <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius)", overflow: "hidden" }}>
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 140px 120px 90px 110px",
-          gap: "12px",
-          padding: "8px 16px",
-          background: "var(--bg-2)",
-          borderBottom: "1px solid var(--border)",
-          fontSize: "10px", color: "var(--text-3)", letterSpacing: "0.08em",
-        }}>
-          <span>REPOSITORY</span>
-          <span>TOKEN</span>
-          <span>ADDED BY</span>
-          <span>LAST PUSH</span>
-          <span style={{ textAlign: "right" }}>ACTIONS</span>
+      <div style={{ border: `1px solid ${t.c.border}`, borderRadius: t.radiusLg,
+        overflow: "hidden", background: t.c.surface, boxShadow: t.c.shadow }}>
+        {/* Header row */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 110px 110px 190px", gap: 14,
+          padding: "11px 18px", background: t.c.raised, borderBottom: `1px solid ${t.c.border}` }}>
+          {["Repository", "Token", "Added by", "Last push", ""].map((h, i) => (
+            <span key={i} style={{ fontSize: 11, fontWeight: 600, color: t.c.text3,
+              letterSpacing: "0.04em", textTransform: "uppercase",
+              textAlign: i === 4 ? "right" : "left" }}>{h}</span>
+          ))}
         </div>
 
         {loading ? (
-          <div style={{ padding: "32px", textAlign: "center", color: "var(--text-3)", fontSize: "12px" }}>
-            Loading...
+          <div style={{ padding: "40px", textAlign: "center", color: t.c.text3, fontSize: 13 }}>
+            Loading…
           </div>
         ) : repos.length === 0 ? (
-          <div style={{ padding: "48px 32px", textAlign: "center" }}>
-            <p style={{ color: "var(--text-3)", fontSize: "13px", margin: "0 0 12px" }}>No repositories connected yet.</p>
-            <button
-              onClick={() => setShowModal(true)}
-              style={{
-                padding: "8px 16px", borderRadius: "var(--radius)", cursor: "pointer",
-                fontSize: "11px", fontFamily: "var(--mono)", fontWeight: 700,
-                border: "none", background: "var(--accent)", color: "#000",
-              }}
-            >
-              + ADD YOUR FIRST REPO
-            </button>
+          <div style={{ padding: "56px 32px", textAlign: "center" }}>
+            <div style={{ color: t.c.text3, fontSize: 13, marginBottom: 16 }}>
+              No repositories connected yet.
+            </div>
+            <Btn theme={t} variant="primary" onClick={() => setShowModal(true)}>+ Add your first repo</Btn>
           </div>
         ) : (
-          repos.map(repo => (
-            <RepoRow
-              key={repo.id}
-              repo={repo}
-              isAdmin={isAdmin}
-              onDelete={handleDelete}
-              onToggle={handleToggle}
-            />
+          repos.map((repo, i) => (
+            <RepoRow key={repo.id} theme={t} repo={repo}
+              onToggle={handleToggle} onDelete={handleDelete} last={i === repos.length - 1} />
           ))
         )}
       </div>
@@ -186,6 +147,6 @@ export default function Repos() {
           onAdded={(repo) => { setRepos(prev => [repo, ...prev]); setShowModal(false); }}
         />
       )}
-    </div>
+    </PageWrap>
   );
 }
