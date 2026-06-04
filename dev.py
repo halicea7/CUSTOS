@@ -167,7 +167,8 @@ def _start(key: str) -> None:
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "FORCE_COLOR": "0", "NO_COLOR": "1"}
 
     try:
-        proc = Popen(cmd, cwd=cwd, env=env, stdout=PIPE, stderr=STDOUT)
+        proc = Popen(cmd, cwd=cwd, env=env,
+                     stdin=subprocess.DEVNULL, stdout=PIPE, stderr=STDOUT)
     except FileNotFoundError:
         _push(key, f"[red]{cmd[0]}: executable not found[/red]")
         return
