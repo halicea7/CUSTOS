@@ -22,10 +22,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# ── Auto-venv: re-exec with .venv Python if we're not already in it ───────────
+# ── Auto-venv: re-exec with .venv Python if we're not inside it ──────────────
 ROOT = Path(__file__).parent.resolve()
 _venv_py = ROOT / ".venv" / "bin" / "python"
-if _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
+if _venv_py.exists() and not sys.prefix.startswith(str(ROOT / ".venv")):
     os.execv(str(_venv_py), [str(_venv_py)] + sys.argv)
 
 # ── Dependency check ──────────────────────────────────────────────────────────
