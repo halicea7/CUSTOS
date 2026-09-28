@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { getHealthStatus, getScanFindings, listScans, triggerScan } from "../api/health.js";
+import React, { useEffect, useRef, useState } from "react";
+import { useHealthStatus, useScanFindings, useScans, useTriggerScan } from "../api/queries.js";
 import { useAuth, useTheme } from "../App.jsx";
+import { errorMessage } from "../api/errors.js";
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -447,54 +448,33 @@ export default function Health() {
   const { theme } = useTheme();
   const isAdmin   = user?.role === "admin";
 
-  const [status, setStatus] = useState(null);
-  const [scans, setScans] = useState([]);
-  const [findings, setFindings] = useState([]);
-  const [selectedScan, setSelectedScan] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [catFilter, setCatFilter] = useState("all");
-  const [scanningErr, setScanningErr] = useState(null);
-  const [triggering, setTriggering] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [justTriggered, setJustTriggered] = useState(false);
-  const pollRef = useRef(null);
-  const elapsedRef = useRef(null);
   const triggerTimeRef = useRef(null);
 
-  const loadStatus = useCallback(async () => {
-    try {
-      const [s, sc] = await Promise.all([getHealthStatus(), listScans()]);
-      setStatus(s);
-      setScans(sc);
-      if (!selectedScan) {
-        const latest = sc.find((x) => x.status === "complete");
-        if (latest) setSelectedScan(latest);
-      }
-    } catch (e) {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedScan]);
+  // Poll only while a scan is running (or right after triggering, until the
+  // backend reports running=true).
+  const [polling, setPolling] = useState(false);
+  const statusQuery = useHealthStatus(polling);
+  const scansQuery = useScans(polling);
+  const status = statusQuery.data ?? null;
+  const scans = scansQuery.data ?? [];
+  const loading = statusQuery.isPending || scansQuery.isPending;
+  const isScanning = Boolean(status?.running) || justTriggered;
 
-  const isScanning = status?.running || justTriggered;
+  useEffect(() => { setPolling(isScanning); }, [isScanning]);
+  useEffect(() => { if (status?.running) setJustTriggered(false); }, [status?.running]);
 
-  // Poll while running (or right after triggering while waiting for first running=true)
-  useEffect(() => { loadStatus(); }, []); // eslint-disable-line
+  // Default selection: the latest completed scan.
+  const selectedScan =
+    scans.find((x) => x.id === selectedId) || scans.find((x) => x.status === "complete") || null;
+  const { data: findings = [] } = useScanFindings(selectedScan);
 
-  useEffect(() => {
-    if (isScanning) {
-      pollRef.current = setInterval(loadStatus, 2000);
-    } else {
-      clearInterval(pollRef.current);
-    }
-    return () => clearInterval(pollRef.current);
-  }, [isScanning, loadStatus]);
-
-  // Clear justTriggered once the backend confirms running
-  useEffect(() => {
-    if (status?.running) setJustTriggered(false);
-  }, [status?.running]); // eslint-disable-line
+  const trigger = useTriggerScan();
+  const triggering = trigger.isPending;
+  const scanningErr = trigger.error ? errorMessage(trigger.error, "Failed to start scan") : null;
 
   // Elapsed timer — ticks every second while scanning
   const runningScan = status?.running_scan_id
@@ -504,7 +484,6 @@ export default function Health() {
   useEffect(() => {
     if (!isScanning) {
       setElapsed(0);
-      clearInterval(elapsedRef.current);
       triggerTimeRef.current = null;
       return;
     }
@@ -514,40 +493,22 @@ export default function Health() {
       : (triggerTimeRef.current || Date.now());
     const tick = () => setElapsed(Math.floor((Date.now() - startedAt) / 1000));
     tick();
-    elapsedRef.current = setInterval(tick, 1000);
-    return () => clearInterval(elapsedRef.current);
-  }, [isScanning, runningScan?.started_at]); // eslint-disable-line
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [isScanning, runningScan?.started_at]);
 
-  // Load findings when selected scan changes
-  useEffect(() => {
-    if (!selectedScan || selectedScan.status !== "complete") {
-      setFindings([]);
-      return;
-    }
-    getScanFindings(selectedScan.id).then(setFindings).catch(() => setFindings([]));
-  }, [selectedScan]);
-
-  const handleTrigger = async () => {
+  const handleTrigger = () => {
     if (!isAdmin || triggering || isScanning) return;
-    setTriggering(true);
-    setScanningErr(null);
     // Record click time so elapsed timer starts immediately, before first poll
     triggerTimeRef.current = Date.now();
     setJustTriggered(true);
-    try {
-      await triggerScan();
-      await loadStatus();
-    } catch (e) {
-      setJustTriggered(false);
-      triggerTimeRef.current = null;
-      setScanningErr(e?.response?.data?.detail || "Failed to start scan");
-    } finally {
-      setTriggering(false);
-    }
+    trigger.mutate(undefined, {
+      onError: () => { setJustTriggered(false); triggerTimeRef.current = null; },
+    });
   };
 
   const handleSelectScan = (scan) => {
-    setSelectedScan(scan);
+    setSelectedId(scan.id);
     setCatFilter("all");
   };
 
@@ -604,6 +565,15 @@ export default function Health() {
 
       {/* ── Scan stages panel (while running) ── */}
       {isScanning && <ScanStagesPanel elapsed={elapsed} />}
+
+      {selectedScan?.error && (
+        <div style={{ marginBottom: 16, padding: "10px 14px", borderRadius: t.radius,
+          background: `${t.sev.critical.fg}10`, border: `1px solid ${t.sev.critical.fg}33`,
+          color: selectedScan.status === "failed" ? t.sev.critical.fg : t.c.text2, fontSize: 12,
+          whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          {selectedScan.status === "failed" ? "Scan failed: " : ""}{selectedScan.error}
+        </div>
+      )}
 
       {/* ── Status banner (last completed scan) ── */}
       {latestScan && (

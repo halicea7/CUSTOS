@@ -4,6 +4,7 @@ import { useAuth, useTheme, Icon } from "../App.jsx";
 import api, { getMe } from "../api/client.js";
 import { Btn } from "../components/atoms.jsx";
 import { Field, TextInput } from "../components/ui.jsx";
+import { errorMessage } from "../api/errors.js";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -16,7 +17,7 @@ export default function Login() {
   const location  = useLocation();
   const from      = location.state?.from?.pathname || "/";
 
-  useEffect(() => { if (user) navigate(from, { replace: true }); }, [user]);
+  useEffect(() => { if (user) navigate(from, { replace: true }); }, [user, from, navigate]);
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
@@ -33,7 +34,7 @@ export default function Login() {
       setError(
         e.response?.status === 401
           ? "Invalid username or password"
-          : e.response?.data?.detail || "Login failed"
+          : errorMessage(e, "Login failed")
       );
     } finally {
       setLoading(false);

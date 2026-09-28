@@ -18,8 +18,9 @@ export const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 export const STATUS_META = {
   pending:    { label: "Pending",    dark: "#9aa4b2", light: "#7b8696" },
   analyzing:  { label: "Analyzing",  dark: "#58a6ff", light: "#2f7ee0" },
-  reviewed:   { label: "Reviewed",   dark: "#fbbf24", light: "#b45309" },
+  needs_review: { label: "Needs review", dark: "#fbbf24", light: "#b45309" },
   signed_off: { label: "Signed off", dark: "#3fb950", light: "#1f9d4d" },
+  error:      { label: "Error",      dark: "#ff6b63", light: "#c2241a" },
 };
 
 export const HEALTH_META = {

@@ -14,7 +14,7 @@ export function PageHeader({ theme, title, subtitle, right }) {
   );
 }
 
-export function PageWrap({ theme, max = 1080, children }) {
+export function PageWrap({ max = 1080, children }) {
   return <div style={{ padding: "28px 34px", maxWidth: max, margin: "0 auto" }}>{children}</div>;
 }
 
