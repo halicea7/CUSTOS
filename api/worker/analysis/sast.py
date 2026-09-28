@@ -7,13 +7,15 @@ absence or non-zero exit is logged and returns an empty list.
 import asyncio
 import json
 import logging
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
+from config import settings
 
 logger = logging.getLogger(__name__)
+
+_TOOL_TIMEOUT_SECONDS = 300
 
 
 @dataclass
@@ -21,22 +23,25 @@ class RawFinding:
     source: str
     severity: str
     title: str
-    description: Optional[str] = None
-    file_path: Optional[str] = None
-    line_start: Optional[int] = None
-    line_end: Optional[int] = None
-    cwe: Optional[str] = None
-    code_snippet: Optional[str] = None
-    remediation: Optional[str] = None
-    llm_reasoning: Optional[str] = None
+    description: str | None = None
+    file_path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    cwe: str | None = None
+    code_snippet: str | None = None
+    remediation: str | None = None
+    llm_reasoning: str | None = None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-async def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+async def _run(
+    cmd: list[str], cwd: str | None = None, timeout: int = _TOOL_TIMEOUT_SECONDS
+) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
@@ -44,7 +49,13 @@ async def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     except FileNotFoundError:
         logger.warning("Tool not found: %s", cmd[0])
         return 127, "", f"{cmd[0]}: command not found"
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("%s timed out after %ds", cmd[0], timeout)
+        return 124, "", f"{cmd[0]}: timed out"
     return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
@@ -59,7 +70,16 @@ _SEMGREP_SEVERITY = {
 # ── Semgrep ───────────────────────────────────────────────────────────────────
 
 async def run_semgrep(repo_path: str) -> list[RawFinding]:
-    cmd = ["semgrep", "scan", "--config=auto", "--json", "--quiet", repo_path]
+    # --config=auto requires sending metrics to semgrep.dev, so use explicit
+    # rulesets (registry names or local paths) and keep metrics off.
+    configs = [f"--config={c.strip()}" for c in settings.SEMGREP_CONFIG.split(",") if c.strip()]
+    cmd = [
+        "semgrep", "scan", *configs,
+        "--json", "--quiet",
+        "--metrics=off", "--disable-version-check",
+        "--timeout=30", "--max-target-bytes=1000000",
+        repo_path,
+    ]
     rc, stdout, stderr = await _run(cmd)
     # semgrep exits 1 when findings exist — that is normal.
     if rc not in (0, 1):
@@ -178,7 +198,9 @@ async def _pip_audit(repo_path: str) -> list[RawFinding]:
                         source="pip_audit",
                         severity="high",
                         title=f"{dep['name']} {dep['version']}: {vuln.get('id', '')}",
-                        description=vuln.get("description"),
+                        description=(
+                            (f"Aliases: {aliases}\n\n" if aliases else "") + (vuln.get("description") or "")
+                        ) or None,
                         remediation=(
                             f"Upgrade to {', '.join(vuln.get('fix_versions', ['unknown']))}"
                             if vuln.get("fix_versions")
@@ -205,7 +227,9 @@ async def _npm_audit(repo_path: str) -> list[RawFinding]:
     if not (Path(repo_path) / "package.json").is_file():
         return []
 
-    cmd = ["npm", "audit", "--json"]
+    # Force the public registry: a hostile repo's .npmrc could otherwise
+    # redirect the audit request (and its lockfile) to an attacker's server.
+    cmd = ["npm", "audit", "--json", "--registry=https://registry.npmjs.org/"]
     rc, stdout, stderr = await _run(cmd, cwd=repo_path)
     if rc not in (0, 1):
         logger.warning("npm audit exited %d: %s", rc, stderr[:200])

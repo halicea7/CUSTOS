@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from access import can_see_group
 from auth import get_current_user, require_admin
 from database import get_db
+from enums import Role
 from models import Group, GroupMember, User
 from schemas import (
     GroupCreate,
@@ -18,18 +20,31 @@ from schemas import (
 router = APIRouter(prefix="/groups", tags=["groups"])
 
 
-async def _group_response(db: AsyncSession, group: Group) -> GroupResponse:
-    count_result = await db.execute(
-        select(func.count()).select_from(GroupMember).where(GroupMember.group_id == group.id)
+async def _member_counts(db: AsyncSession, group_ids: list[UUID]) -> dict[UUID, int]:
+    if not group_ids:
+        return {}
+    rows = await db.execute(
+        select(GroupMember.group_id, func.count())
+        .where(GroupMember.group_id.in_(group_ids))
+        .group_by(GroupMember.group_id)
     )
+    return dict(rows.all())
+
+
+def _response(group: Group, member_count: int) -> GroupResponse:
     return GroupResponse(
         id=group.id,
         name=group.name,
         description=group.description,
         created_by=group.created_by,
         created_at=group.created_at,
-        member_count=count_result.scalar_one(),
+        member_count=member_count,
     )
+
+
+async def _group_response(db: AsyncSession, group: Group) -> GroupResponse:
+    counts = await _member_counts(db, [group.id])
+    return _response(group, counts.get(group.id, 0))
 
 
 @router.get("", response_model=list[GroupResponse])
@@ -37,9 +52,8 @@ async def list_groups(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role == "admin":
+    if current_user.role == Role.ADMIN:
         result = await db.execute(select(Group).order_by(Group.name))
-        groups = result.scalars().all()
     else:
         result = await db.execute(
             select(Group)
@@ -48,7 +62,8 @@ async def list_groups(
             .order_by(Group.name)
         )
         groups = result.scalars().all()
-    return [await _group_response(db, g) for g in groups]
+    counts = await _member_counts(db, [g.id for g in groups])
+    return [_response(g, counts.get(g.id, 0)) for g in groups]
 
 
 @router.post("", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
@@ -111,10 +126,8 @@ async def list_members(
     group = await db.get(Group, group_id)
     if not group:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    if current_user.role != "admin":
-        mem = await db.get(GroupMember, (group_id, current_user.username))
-        if not mem:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of this group")
+    if not await can_see_group(db, current_user, group_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of this group")
     result = await db.execute(
         select(GroupMember).where(GroupMember.group_id == group_id).order_by(GroupMember.joined_at)
     )
