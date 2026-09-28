@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import hljs from "highlight.js";
+import React, { useMemo } from "react";
+import hljs from "highlight.js/lib/common";
 import { useTheme } from "../App.jsx";
 
 // Dark hljs theme
@@ -32,31 +32,35 @@ const HLJS_LIGHT = `
 .hljs-strong{font-weight:bold}
 `;
 
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+export function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+}
+
+export function highlightSafe(code, language) {
+  if (!code) return "";
+  try {
+    if (language) {
+      const lang = hljs.getLanguage(language) ? language : "plaintext";
+      return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+    }
+    return hljs.highlightAuto(code).value;
+  } catch {
+    return escapeHtml(code);
+  }
+}
+
 export default function CodeViewer({ code, language, lineStart, lineEnd, filePath }) {
   const { theme } = useTheme();
   const t = theme;
-  const preRef = useRef(null);
-  const [highlighted, setHighlighted] = useState("");
-
-  useEffect(() => {
-    if (!code) return;
-    let result;
-    try {
-      if (language) {
-        const lang = hljs.getLanguage(language) ? language : "plaintext";
-        result = hljs.highlight(code, { language: lang });
-      } else {
-        result = hljs.highlightAuto(code);
-      }
-      setHighlighted(result.value);
-    } catch {
-      setHighlighted(code.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
-    }
-  }, [code, language]);
+  // `code` comes from the scanned (untrusted) repository. It is only ever
+  // rendered as HTML after hljs has escaped it, or after escapeHtml() — never raw.
+  const highlighted = useMemo(() => highlightSafe(code, language), [code, language]);
 
   if (!code) return null;
 
-  const lines = (highlighted || code).split("\n");
+  const lines = highlighted.split("\n");
   const startNum = typeof lineStart === "number" ? lineStart : 1;
 
   const isLight = t.mode === "light";
@@ -102,6 +106,7 @@ export default function CodeViewer({ code, language, lineStart, lineEnd, filePat
                   </td>
                   <td style={{ padding: "0 20px 0 14px", whiteSpace: "pre",
                     color: isHighlighted ? t.c.text : undefined }}
+                    // eslint-disable-next-line react/no-danger -- `line` is hljs/escapeHtml output, never raw code
                     dangerouslySetInnerHTML={{ __html: line || "&nbsp;" }}
                   />
                 </tr>

@@ -8,6 +8,3 @@ export const changePassword = (body) => api.patch("/settings/me/password", body)
 export const getConfig = () => api.get("/settings/config").then(r => r.data);
 export const updateConfig = (body) => api.patch("/settings/config", body).then(r => r.data);
 export const testOllama = (url) => api.get("/settings/config/test-ollama", { params: { url } }).then(r => r.data);
-export const getGitHubConfig = () => api.get("/settings/github").then(r => r.data);
-export const updateGitHubConfig = (body) => api.patch("/settings/github", body).then(r => r.data);
-export const testGitHubToken = () => api.get("/settings/github/test-token").then(r => r.data);

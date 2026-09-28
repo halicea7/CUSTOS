@@ -1,11 +1,13 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getSubmission, getSubmissionFindings, rerunLlm, getLlmStatus, getLlmRuns, signOff } from "../api/submissions.js";
 import { useTheme } from "../App.jsx";
-import { Severity, SeverityBar, StatusBadge, DispositionTag, SEV_ORDER, fmtDate, Btn, Label } from "../components/atoms.jsx";
-import { Pill } from "../components/atoms.jsx";
-
-// ── MetaItem ──────────────────────────────────────────────────────────────────
+import { Severity, StatusBadge, SEV_ORDER, fmtDate, Btn, Pill } from "../components/atoms.jsx";
+import ReportModal from "../components/submission/ReportModal.jsx";
+import LlmRerunPanel from "../components/submission/LlmPanel.jsx";
+import SummaryPanel from "../components/submission/SummaryPanel.jsx";
+import FindingRow from "../components/submission/FindingRow.jsx";
+import { useInvalidateSubmission, useSubmission, useSubmissionFindings } from "../api/queries.js";
+import { errorMessage } from "../api/errors.js";
 
 function MetaItem({ theme, label, children, mono }) {
   return (
@@ -18,555 +20,34 @@ function MetaItem({ theme, label, children, mono }) {
   );
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-const SOURCE_LABELS = {
-  semgrep: "Semgrep (SAST)", gitleaks: "Gitleaks (Secrets)",
-  pip_audit: "pip-audit (Deps)", npm_audit: "npm-audit (Deps)", llm: "LLM Analysis",
-};
-
-function fmtUtc(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toISOString().replace("T", " ").slice(0, 16) + " UTC";
-}
-function fmtDuration(s) {
-  if (s == null) return "—";
-  if (s < 60) return `${s.toFixed(1)}s`;
-  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
-}
-function fmtTokens(n) {
-  if (n == null) return "—";
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-}
-function reportStats(findings) {
-  const total = findings.length;
-  const sevCounts = Object.fromEntries(SEV_ORDER.map(s => [s, findings.filter(f => f.severity === s).length]));
-  const sourceCounts = findings.reduce((a, f) => { a[f.source] = (a[f.source] || 0) + 1; return a; }, {});
-  const disp = {
-    confirmed:      findings.filter(f => f.disposition === "confirmed").length,
-    false_positive: findings.filter(f => f.disposition === "false_positive").length,
-    escalated:      findings.filter(f => f.disposition === "escalated").length,
-    unreviewed:     findings.filter(f => !f.disposition).length,
-  };
-  return { total, sevCounts, sourceCounts, disp };
-}
-
-// ── Report generation (kept exactly as original) ──────────────────────────────
-
-const SEV_COLORS = {
-  critical: { fg: "#b91c1c", bg: "#fef2f2", border: "#fca5a5" },
-  high:     { fg: "#c2410c", bg: "#fff7ed", border: "#fdba74" },
-  medium:   { fg: "#92400e", bg: "#fffbeb", border: "#fcd34d" },
-  low:      { fg: "#1d4ed8", bg: "#eff6ff", border: "#93c5fd" },
-  info:     { fg: "#374151", bg: "#f9fafb", border: "#d1d5db" },
-};
-
-function generateMarkdown(sub, findings) {
-  const now = fmtUtc(new Date().toISOString());
-  const sha = sub.commit_sha || "";
-  const { total, sevCounts, sourceCounts, disp } = reportStats(findings);
-  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
-  const srcLabel = s => SOURCE_LABELS[s] || s;
-  let md = `# Application Security Report\n\nRepository: ${sub.repo_full_name}  \nCommit: ${sha.slice(0, 12)}  \nGenerated: ${now}\n\n---\n\n`;
-  md += `## Submission Details\n\n| Field | Value |\n|-------|-------|\n`;
-  md += `| Repository | \`${sub.repo_full_name}\` |\n`;
-  md += `| Commit | \`${sha}\` |\n`;
-  if (sub.branch) md += `| Branch | \`${sub.branch}\` |\n`;
-  if (sub.submitter) md += `| Submitted by | ${sub.submitter} |\n`;
-  md += `| Submitted | ${fmtUtc(sub.created_at)} |\n`;
-  md += `| Review Status | ${sub.status.replace(/_/g, " ").toUpperCase()} |\n\n---\n\n## Executive Summary\n\n`;
-  if (total === 0) {
-    md += `No security findings were identified in this submission.\n\n`;
-  } else {
-    const critHigh = sevCounts.critical + sevCounts.high;
-    md += `${total} finding${total !== 1 ? "s" : ""} identified`;
-    if (critHigh > 0) md += `, including ${critHigh} critical/high severity issue${critHigh !== 1 ? "s" : ""}`;
-    md += `.\n\n### Severity Distribution\n\n| Severity | Count |\n|----------|-------|\n`;
-    for (const sev of SEV_ORDER) { if (sevCounts[sev]) md += `| ${cap(sev)} | ${sevCounts[sev]} |\n`; }
-    md += `\n`;
-  }
-  if (total > 0) {
-    md += `---\n\n## Findings\n\n`;
-    for (const sev of SEV_ORDER) {
-      const group = findings.filter(f => f.severity === sev);
-      if (!group.length) continue;
-      md += `### ${cap(sev)} (${group.length})\n\n`;
-      group.forEach((f, i) => {
-        md += `#### ${i + 1}. ${f.title}\n\n`;
-        if (f.file_path) md += `Location: \`${f.file_path}${f.line_start ? `:${f.line_start}` : ""}\`\n\n`;
-        if (f.description) md += `${f.description}\n\n`;
-        if (f.code_snippet) md += `\`\`\`\n${f.code_snippet}\n\`\`\`\n\n`;
-        if (f.remediation) md += `**Remediation:** ${f.remediation}\n\n`;
-        md += `---\n\n`;
-      });
-    }
-  }
-  md += `## Report Metadata\n\n| Generated by | Custos Code Review |\n| Generated at | ${now} |\n`;
-  return md;
-}
-
-function generateHtmlReport(sub, findings) {
-  const now = fmtUtc(new Date().toISOString());
-  const sha = sub.commit_sha || "";
-  const { total, sevCounts } = reportStats(findings);
-  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
-  const esc = s => !s ? "" : String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const pills = SEV_ORDER.filter(s => sevCounts[s] > 0).map(s => {
-    const c = SEV_COLORS[s];
-    return `<div style="text-align:center;padding:14px 20px;border-radius:6px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);">
-      <div style="font-size:32px;font-weight:700;color:#fff;line-height:1;">${sevCounts[s]}</div>
-      <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;margin-top:4px;color:${c.bg};">${cap(s)}</div></div>`;
-  }).join("");
-  const findingSections = SEV_ORDER.map(sev => {
-    const group = findings.filter(f => f.severity === sev);
-    if (!group.length) return "";
-    const c = SEV_COLORS[sev];
-    const cards = group.map((f, i) => {
-      const loc = f.file_path ? (f.line_start ? `${f.file_path}:${f.line_start}` : f.file_path) : null;
-      return `<div style="border:1px solid #e5e7eb;border-left:4px solid ${c.fg};border-radius:0 6px 6px 0;margin-bottom:20px;">
-        <div style="padding:12px 16px;background:#f9fafb;border-bottom:1px solid #e5e7eb;">
-          <span style="font-size:14px;font-weight:600;color:#111827;">${esc(f.title)}</span>
-          ${f.cwe ? `<span style="font-size:11px;color:#6b7280;font-family:monospace;background:#f3f4f6;padding:2px 7px;border-radius:3px;margin-left:8px;">${esc(f.cwe)}</span>` : ""}
-        </div>
-        <div style="padding:16px;">
-          ${loc ? `<div style="font-size:12px;color:#6b7280;font-family:monospace;margin-bottom:10px;">${esc(loc)}</div>` : ""}
-          ${f.description ? `<p style="font-size:13px;color:#374151;line-height:1.65;margin-bottom:14px;">${esc(f.description)}</p>` : ""}
-          ${f.code_snippet ? `<pre style="background:#0f172a;color:#e2e8f0;border-radius:6px;padding:14px;overflow-x:auto;font-size:12px;line-height:1.6;margin:0 0 14px;"><code>${esc(f.code_snippet)}</code></pre>` : ""}
-          ${f.remediation ? `<p style="font-size:13px;color:#374151;line-height:1.65;margin:0;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;">${esc(f.remediation)}</p>` : ""}
-        </div></div>`;
-    }).join("");
-    return `<div style="margin-bottom:32px;">
-      <h3 style="font-size:14px;font-weight:700;color:${c.fg};margin-bottom:16px;">${cap(sev)} (${group.length})</h3>
-      ${cards}</div>`;
-  }).join("");
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Security Report — ${esc(sub.repo_full_name)}</title>
-<style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.6;color:#111827;background:#fff;}.page{max-width:880px;margin:0 auto;}</style>
-</head><body><div class="page">
-  <div style="background:#111827;color:#fff;padding:44px 48px 40px;">
-    <div style="font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#9ca3af;margin-bottom:14px;">Application Security Report</div>
-    <div style="font-size:26px;font-weight:700;font-family:monospace;margin-bottom:6px;">${esc(sub.repo_full_name)}</div>
-    <div style="font-size:13px;color:#9ca3af;font-family:monospace;">${esc(sha.slice(0, 12))}${sub.branch ? ` · ${esc(sub.branch)}` : ""}</div>
-    <div style="display:flex;gap:12px;margin-top:28px;flex-wrap:wrap;">${pills}</div>
-    <div style="margin-top:24px;font-size:11px;color:#6b7280;">Generated ${esc(now)} · Custos Code Review</div>
-  </div>
-  <div style="padding:36px 48px;">
-    ${total > 0 ? `<div>${findingSections}</div>` : `<p style="color:#6b7280;">No findings identified.</p>`}
-    <div style="margin-top:36px;padding-top:20px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;">Generated by Custos · ${esc(now)}</div>
-  </div>
-</div></body></html>`;
-}
-
-function downloadBlob(content, filename, mime) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
-}
-
-// ── Report modal ──────────────────────────────────────────────────────────────
-
-function ReportModal({ theme, sub, findings, onClose }) {
-  const slug = (sub.repo_full_name || "report").replace("/", "-");
-  const sha = sub.commit_sha?.slice(0, 8) || "unknown";
-  const basename = `custos-report-${slug}-${sha}`;
-  const htmlContent = generateHtmlReport(sub, findings);
-  const mdContent   = generateMarkdown(sub, findings);
-  const printPdf = useCallback(() => {
-    const iframe = document.createElement("iframe");
-    iframe.style.cssText = "position:fixed;width:0;height:0;border:0;visibility:hidden;";
-    document.body.appendChild(iframe);
-    iframe.contentDocument.open(); iframe.contentDocument.write(htmlContent); iframe.contentDocument.close();
-    iframe.contentWindow.focus(); iframe.contentWindow.print();
-    setTimeout(() => document.body.removeChild(iframe), 2000);
-  }, [htmlContent]);
-  useEffect(() => {
-    const h = e => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [onClose]);
-
-  const t = theme;
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.7)",
-      display: "flex", alignItems: "stretch", justifyContent: "flex-end" }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ width: "min(900px, 96vw)", background: t.c.surface,
-        border: `1px solid ${t.c.border}`, display: "flex", flexDirection: "column",
-        overflow: "hidden", boxShadow: t.c.shadowHi }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "10px 16px", borderBottom: `1px solid ${t.c.border}`, background: t.c.raised }}>
-          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: t.c.text2 }}>
-            SECURITY REPORT — {sub.repo_full_name}
-          </span>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <Btn theme={t} size="sm" onClick={() => downloadBlob(mdContent, `${basename}.md`, "text/markdown")}>↓ Markdown</Btn>
-            <Btn theme={t} size="sm" onClick={() => downloadBlob(htmlContent, `${basename}.html`, "text/html")}>↓ HTML</Btn>
-            <Btn theme={t} size="sm" variant="primary" onClick={printPdf}>↓ PDF</Btn>
-            <button onClick={onClose} style={{ background: "none", border: "none", color: t.c.text3,
-              fontSize: 18, cursor: "pointer", padding: "2px 8px" }}>✕</button>
-          </div>
-        </div>
-        <iframe srcDoc={htmlContent} style={{ flex: 1, border: "none", width: "100%", background: "#fff" }} title="Report preview" />
-      </div>
-    </div>
-  );
-}
-
-// ── LLM run history ───────────────────────────────────────────────────────────
-
-function LlmRunHistory({ theme, submissionId, refreshKey }) {
-  const [runs, setRuns] = useState(null);
-  const [open, setOpen] = useState(false);
-  const t = theme;
-
-  useEffect(() => {
-    if (!open) return;
-    getLlmRuns(submissionId).then(setRuns).catch(() => setRuns([]));
-  }, [open, submissionId, refreshKey]);
-
-  const statusColor = s => s === "complete" ? t.status.signed_off[t.mode === "light" ? "light" : "dark"]
-    : s === "failed" ? t.sev.critical.fg : t.c.accent;
-
-  return (
-    <div style={{ marginTop: 10 }}>
-      <button onClick={() => setOpen(o => !o)} style={{ background: "none", border: "none", padding: 0,
-        color: t.c.text3, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-        fontFamily: t.fontMono, letterSpacing: "0.06em" }}>
-        <span style={{ fontSize: 9 }}>{open ? "▼" : "▶"}</span>
-        LLM DETAILS
-      </button>
-      {open && (
-        <div style={{ marginTop: 10, border: `1px solid ${t.c.border}`, borderRadius: t.radius, overflow: "hidden" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 70px 70px 70px 70px 80px",
-            padding: "6px 12px", background: t.c.raised, borderBottom: `1px solid ${t.c.border}`, gap: 8 }}>
-            {["TRIGGER","MODEL","STATUS","DUR.","FINDS","TOK IN","TOK OUT"].map(h => (
-              <span key={h} style={{ fontSize: 9, color: t.c.text3, letterSpacing: "0.08em", fontWeight: 600 }}>{h}</span>
-            ))}
-          </div>
-          {runs === null && <div style={{ padding: 12, fontSize: 11, color: t.c.text3 }}>Loading…</div>}
-          {runs?.length === 0 && <div style={{ padding: 12, fontSize: 11, color: t.c.text3 }}>No runs recorded yet.</div>}
-          {runs?.map((r, i) => (
-            <div key={r.id} style={{ display: "grid", gridTemplateColumns: "80px 1fr 70px 70px 70px 70px 80px",
-              padding: "8px 12px", gap: 8, alignItems: "center",
-              borderBottom: i < runs.length - 1 ? `1px solid ${t.c.border}` : "none",
-              background: i % 2 === 0 ? t.c.surface : t.c.raised }}>
-              <span style={{ fontSize: 10, fontWeight: 600, fontFamily: t.fontMono,
-                color: r.triggered_by === "rerun" ? t.c.accent : t.c.text3 }}>
-                {r.triggered_by === "rerun" ? "RE-RUN" : "INITIAL"}
-              </span>
-              <span style={{ fontSize: 11, color: t.c.text2, fontFamily: t.fontMono,
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.model}</span>
-              <span style={{ fontSize: 10, fontWeight: 600, color: statusColor(r.status), fontFamily: t.fontMono }}>
-                {r.status === "complete" ? "DONE" : r.status === "failed" ? "FAILED" : "RUNNING"}
-              </span>
-              <span style={{ fontSize: 11, color: t.c.text2, fontFamily: t.fontMono }}>{fmtDuration(r.duration_seconds)}</span>
-              <span style={{ fontSize: 11, color: t.c.text2, fontFamily: t.fontMono }}>{r.findings_count ?? "—"}</span>
-              <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>{fmtTokens(r.prompt_tokens)}</span>
-              <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>{fmtTokens(r.completion_tokens)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── LLM re-run panel ──────────────────────────────────────────────────────────
-
-function LlmRerunPanel({ theme, submissionId, onComplete }) {
-  const [status, setStatus] = useState(null);
-  const [error, setError] = useState(null);
-  const [historyKey, setHistoryKey] = useState(0);
-  const pollRef = useRef(null);
-  const t = theme;
-
-  const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-
-  useEffect(() => {
-    getLlmStatus(submissionId).then(s => {
-      if (s.status === "running" || s.status === "queued") { setStatus(s); startPolling(); }
-    }).catch(() => {});
-    return stopPolling;
-  }, [submissionId]);
-
-  const startPolling = () => {
-    stopPolling();
-    pollRef.current = setInterval(async () => {
-      try {
-        const s = await getLlmStatus(submissionId);
-        setStatus(s);
-        if (s.status === "complete") { stopPolling(); setHistoryKey(k => k + 1); onComplete?.(); }
-        else if (s.status === "failed") { stopPolling(); setHistoryKey(k => k + 1); setError("LLM re-run failed"); }
-      } catch { stopPolling(); }
-    }, 2000);
-  };
-
-  const handleRerun = async () => {
-    setError(null);
-    setStatus({ status: "queued", elapsed: 0, estimated: 90, progress: 0 });
-    try { await rerunLlm(submissionId); startPolling(); }
-    catch (e) { setStatus(null); setError(e.response?.data?.detail || "Failed to start re-run"); }
-  };
-
-  const isActive = status?.status === "running" || status?.status === "queued";
-  const pct = Math.round((status?.progress || 0) * 100);
-  const remaining = status?.status === "running" && status.estimated > 0
-    ? Math.max(0, Math.round(status.estimated - status.elapsed)) : null;
-
-  return (
-    <div style={{ border: `1px solid ${t.c.border}`, borderRadius: t.radiusLg,
-      overflow: "hidden", background: t.c.surface, marginBottom: 18 }}>
-      <div style={{ padding: "10px 16px", borderBottom: `1px solid ${t.c.border}`,
-        background: t.c.raised, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: t.c.text2 }}>LLM ANALYSIS</span>
-        {status?.status === "complete" && (
-          <span style={{ fontSize: 10, color: t.status.signed_off[t.mode === "light" ? "light" : "dark"], fontWeight: 600 }}>✓ COMPLETE</span>
-        )}
-      </div>
-      <div style={{ padding: "14px 16px" }}>
-        {isActive ? (
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <span style={{ fontSize: 11, color: t.c.text2 }}>
-                {status.status === "queued" ? "Queued…" : "Running…"}
-              </span>
-              <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>
-                {status.status === "running"
-                  ? `${pct}%${remaining !== null ? ` · ~${remaining}s remaining` : ""}`
-                  : "waiting for worker"}
-              </span>
-            </div>
-            <div style={{ height: 4, background: t.c.border, borderRadius: 999, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: status.status === "queued" ? "6%" : `${pct}%`,
-                background: t.c.accent, borderRadius: 999, transition: "width 1.8s ease-out",
-                animation: status.status === "queued" ? "shimmer 1.4s ease-in-out infinite" : "none" }} />
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <Btn theme={t} variant="primary" size="sm" onClick={handleRerun}>↺ Re-run LLM</Btn>
-            <span style={{ fontSize: 11, color: t.c.text3 }}>
-              Re-clones at the same SHA · only LLM findings are replaced
-            </span>
-          </div>
-        )}
-        {status?.status === "complete" && (
-          <div style={{ marginTop: 10, fontSize: 12,
-            color: t.status.signed_off[t.mode === "light" ? "light" : "dark"] }}>
-            ✓ Findings updated — scroll down to review new LLM results
-          </div>
-        )}
-        {error && (
-          <div style={{ marginTop: 8, padding: "8px 12px", background: `${t.sev.critical.fg}14`,
-            border: `1px solid ${t.sev.critical.fg}33`, borderRadius: t.radius,
-            color: t.sev.critical.fg, fontSize: 12 }}>{error}</div>
-        )}
-        <LlmRunHistory theme={t} submissionId={submissionId} refreshKey={historyKey} />
-      </div>
-    </div>
-  );
-}
-
-// ── Sign-off panel (sidebar) ──────────────────────────────────────────────────
-
-function SummaryPanel({ theme, sub, findings, onSignOff }) {
-  const [note,      setNote]      = useState("");
-  const [loading,   setLoading]   = useState(false);
-  const [error,     setError]     = useState(null);
-  const [confirmed, setConfirmed] = useState(false);
-  const t = theme;
-
-  const critHigh  = findings.filter(f => f.severity === "critical" || f.severity === "high");
-  const actioned  = critHigh.filter(f => f.disposition != null);
-  const allTriaged = findings.length > 0 && findings.filter(f => !f.disposition).length === 0;
-  const gateOpen  = critHigh.length === 0 || actioned.length === critHigh.length;
-  const alreadySigned = sub.status === "signed_off";
-  const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
-
-  const handleSignOff = async () => {
-    if (!gateOpen || loading || alreadySigned) return;
-    setLoading(true); setError(null);
-    try {
-      const updated = await signOff(sub.id, note);
-      onSignOff?.(updated);
-    } catch (e) {
-      setError(e.response?.data?.detail || "Sign-off failed");
-    } finally { setLoading(false); setConfirmed(false); }
-  };
-
-  const counts = findings.reduce((acc, f) => {
-    acc[f.severity] = (acc[f.severity] || 0) + 1; return acc;
-  }, {});
-  const triaged = findings.filter(f => f.disposition).length;
-  const total   = findings.length;
-
-  return (
-    <div style={{ background: t.c.surface, border: `1px solid ${t.c.border}`,
-      borderRadius: t.radiusLg, padding: 18, display: "flex", flexDirection: "column",
-      gap: 16, position: "sticky", top: 24 }}>
-
-      {/* Severity breakdown */}
-      <div>
-        <Label theme={t}>Severity breakdown</Label>
-        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 9 }}>
-          {SEV_ORDER.map((k) => (
-            <div key={k} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <Severity theme={t} severity={k} />
-              <span style={{ fontSize: 13, fontFamily: t.fontMono, fontWeight: 600,
-                color: counts[k] ? t.sev[k].fg : t.c.text3 }}>{counts[k] || 0}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ height: 1, background: t.c.border }} />
-
-      {/* Triage progress */}
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-          <span style={{ fontSize: 12, color: t.c.text2 }}>Triage progress</span>
-          <span style={{ fontSize: 12, fontFamily: t.fontMono, color: t.c.text }}>{triaged}/{total}</span>
-        </div>
-        <div style={{ height: 6, background: t.c.border, borderRadius: 999, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: total ? `${(triaged / total) * 100}%` : "0%",
-            background: allTriaged ? green : t.c.accent, borderRadius: 999, transition: "width 0.4s" }} />
-        </div>
-      </div>
-
-      {/* Sign-off */}
-      {alreadySigned ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "11px 14px",
-          borderRadius: t.radius, background: `${green}18`, color: green, fontSize: 12.5, fontWeight: 600 }}>
-          ✓ Signed off{sub.signed_by ? ` by ${sub.signed_by}` : ""}
-        </div>
-      ) : (
-        <div>
-          {!gateOpen && (
-            <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: t.radius,
-              background: `${t.sev.critical.fg}0e`, border: `1px solid ${t.sev.critical.fg}22`,
-              fontSize: 12, color: t.c.text2 }}>
-              <span style={{ color: t.sev.critical.fg, fontWeight: 600 }}>
-                {critHigh.length - actioned.length} critical/high
-              </span>
-              {" "}still need disposition.
-            </div>
-          )}
-          {gateOpen && !confirmed && (
-            <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: t.radius,
-              background: `${t.c.accent}0e`, border: `1px solid ${t.c.accent}22`,
-              fontSize: 12, color: t.c.text2 }}>
-              <span style={{ color: t.c.accent }}>Ready for sign-off.</span>
-            </div>
-          )}
-          {gateOpen && (
-            <>
-              <textarea
-                value={note} onChange={e => setNote(e.target.value)}
-                placeholder="Sign-off note (optional)"
-                rows={2}
-                style={{ width: "100%", resize: "vertical", padding: "9px 11px", fontSize: 12.5,
-                  fontFamily: t.fontUi, color: t.c.text, background: t.c.bg,
-                  border: `1px solid ${t.c.border}`, borderRadius: t.radius, outline: "none",
-                  marginBottom: 12 }}
-              />
-              {!confirmed ? (
-                <Btn theme={t} variant="primary" full size="lg" onClick={() => setConfirmed(true)}>
-                  Sign off submission
-                </Btn>
-              ) : (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <Btn theme={t} variant="success" full onClick={handleSignOff} disabled={loading}>
-                    {loading ? "Signing off…" : "✓ Confirm sign-off"}
-                  </Btn>
-                  <Btn theme={t} onClick={() => setConfirmed(false)} disabled={loading}>Cancel</Btn>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
-
-      {error && (
-        <div style={{ padding: "9px 12px", borderRadius: t.radius,
-          background: `${t.sev.critical.fg}14`, border: `1px solid ${t.sev.critical.fg}33`,
-          color: t.sev.critical.fg, fontSize: 12 }}>{error}</div>
-      )}
-    </div>
-  );
-}
-
-// ── Finding row ───────────────────────────────────────────────────────────────
-
-function FindingRow({ theme, finding, onOpen, last }) {
-  const [hover, setHover] = useState(false);
-  const t = theme;
-  const meta = t.sev[finding.severity];
-  return (
-    <div onClick={() => onOpen(finding)}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 14,
-        alignItems: "center", padding: "15px 18px", cursor: "pointer",
-        background: hover ? t.c.raised : "transparent",
-        borderBottom: last ? "none" : `1px solid ${t.c.border}`,
-        borderLeft: `3px solid ${hover ? meta.solid : "transparent"}`, transition: "all 0.12s" }}>
-      <Severity theme={t} severity={finding.severity} />
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 13.5, fontWeight: 500, color: t.c.text,
-          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{finding.title}</div>
-        <div style={{ display: "flex", gap: 10, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
-          <span style={{ fontSize: 11.5, color: t.c.text2, fontFamily: t.fontMono, whiteSpace: "nowrap" }}>
-            {finding.file_path}{finding.line_start ? `:${finding.line_start}` : ""}
-          </span>
-          <span style={{ fontSize: 10, color: t.c.text3, fontFamily: t.fontMono,
-            letterSpacing: "0.04em", textTransform: "uppercase" }}>[{finding.source}]</span>
-          {finding.cwe && (
-            <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>{finding.cwe}</span>
-          )}
-        </div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        {finding.disposition
-          ? <DispositionTag theme={t} disposition={finding.disposition} />
-          : <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>untriaged</span>}
-        <span style={{ color: t.c.text3, fontSize: 16 }}>›</span>
-      </div>
-    </div>
-  );
-}
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Submission() {
   const { id }       = useParams();
   const navigate     = useNavigate();
   const { theme }    = useTheme();
-  const [sub,        setSub]        = useState(null);
-  const [findings,   setFindings]   = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [error,      setError]      = useState(null);
   const [showReport, setShowReport] = useState(false);
 
-  useEffect(() => {
-    Promise.all([getSubmission(id), getSubmissionFindings(id)])
-      .then(([s, f]) => { setSub(s); setFindings(f); })
-      .catch(e => setError(e.response?.data?.detail || "Failed to load"))
-      .finally(() => setLoading(false));
-  }, [id]);
+  const subQuery = useSubmission(id);
+  const sub = subQuery.data;
+  const inFlight = !sub || sub.status === "pending" || sub.status === "analyzing";
+  const findingsQuery = useSubmissionFindings(id, inFlight ? "analyzing" : sub.status);
+  const findings = findingsQuery.data || [];
+  const refresh = useInvalidateSubmission(id);
 
   const t = theme;
+  const queryError = subQuery.error || findingsQuery.error;
 
-  if (loading) return (
-    <div style={{ padding: 60, textAlign: "center", color: t.c.text3, fontSize: 12 }}>
-      Loading submission…
-    </div>
-  );
-  if (error) return (
+  if (queryError) return (
     <div style={{ padding: 24 }}>
       <div style={{ padding: 16, background: `${t.sev.critical.fg}14`,
         border: `1px solid ${t.sev.critical.fg}33`, borderRadius: t.radiusLg,
-        color: t.sev.critical.fg }}>{error}</div>
+        color: t.sev.critical.fg }}>{errorMessage(queryError, "Failed to load")}</div>
+    </div>
+  );
+  if (!sub || (!inFlight && findingsQuery.isPending)) return (
+    <div style={{ padding: 60, textAlign: "center", color: t.c.text3, fontSize: 12 }}>
+      Loading submission…
     </div>
   );
 
@@ -616,23 +97,30 @@ export default function Submission() {
 
       {/* Body */}
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "26px 34px" }}>
+        {sub.error_message && (
+          <div style={{ marginBottom: 18, padding: "12px 16px", borderRadius: t.radiusLg,
+            background: `${t.sev.critical.fg}10`, border: `1px solid ${t.sev.critical.fg}33`,
+            color: sub.status === "error" ? t.sev.critical.fg : t.c.text2, fontSize: 12.5,
+            whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            <strong style={{ color: t.sev.critical.fg }}>
+              {sub.status === "error" ? "Analysis failed: " : "Note: "}
+            </strong>
+            {sub.error_message}
+          </div>
+        )}
+
         {/* LLM re-run */}
-        <LlmRerunPanel theme={t} submissionId={id}
-          onComplete={async () => {
-            const [s, f] = await Promise.all([getSubmission(id), getSubmissionFindings(id)]);
-            setSub(s); setFindings(f);
-          }}
-        />
+        {!inFlight && <LlmRerunPanel theme={t} submissionId={id} onComplete={refresh} />}
 
         {/* Two-column layout */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 26, alignItems: "start" }}>
           {/* Findings list */}
           <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-            {sub.status === "analyzing" ? (
+            {inFlight ? (
               <div style={{ padding: "50px 24px", textAlign: "center", color: t.c.text2,
                 background: t.c.surface, border: `1px solid ${t.c.border}`, borderRadius: t.radiusLg }}>
                 <div style={{ fontSize: 14, fontWeight: 600, color: t.c.accent, marginBottom: 8 }}>
-                  Analysis in progress
+                  {sub.status === "pending" ? "Waiting for a worker" : "Analysis in progress"}
                 </div>
                 <div style={{ fontSize: 12.5 }}>
                   SAST tools and the local LLM are still scanning this commit.
@@ -667,10 +155,7 @@ export default function Submission() {
           </div>
 
           {/* Sidebar */}
-          {sub.status !== "analyzing" && (
-            <SummaryPanel theme={t} sub={sub} findings={findings}
-              onSignOff={(updated) => setSub(updated)} />
-          )}
+          {!inFlight && <SummaryPanel theme={t} sub={sub} findings={findings} />}
         </div>
       </div>
 

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { listRepos, deleteRepo, updateRepo } from "../api/repos.js";
-import { useAuth } from "../App.jsx";
 import { useTheme, Icon } from "../App.jsx";
 import { Btn } from "../components/atoms.jsx";
 import { PageHeader, PageWrap } from "../components/ui.jsx";
@@ -78,9 +77,7 @@ function RepoRow({ theme, repo, onToggle, onDelete, last }) {
 }
 
 export default function Repos() {
-  const { user }   = useAuth();
   const { theme }  = useTheme();
-  const isAdmin    = user?.role === "admin";
   const [repos,     setRepos]     = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [showModal, setShowModal] = useState(false);
