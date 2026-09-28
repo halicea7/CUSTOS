@@ -1,13 +1,13 @@
-from uuid import UUID
-
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from access import get_visible_submission
 from auth import get_current_user
-from database import get_db
-from github_client import post_github_check
 from crypto import decrypt
+from database import get_db
+from enums import BLOCKING_SEVERITIES, SubmissionStatus
+from github_client import post_github_check
 from models import AuditLog, Finding, Repo, Submission, User
 from schemas import SignoffRequest, SubmissionResponse
 
@@ -16,40 +16,45 @@ router = APIRouter(prefix="/submissions", tags=["signoff"])
 
 @router.post("/{submission_id}/signoff", response_model=SubmissionResponse)
 async def sign_off(
-    submission_id: UUID,
     body: SignoffRequest,
+    sub: Submission = Depends(get_visible_submission),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    sub = await db.get(Submission, submission_id)
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
-
-    if sub.status == "signed_off":
+    if sub.status == SubmissionStatus.SIGNED_OFF:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Submission already signed off")
+    if sub.status != SubmissionStatus.NEEDS_REVIEW:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="Submission already signed off"
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Submission is '{sub.status}' and cannot be signed off yet",
         )
 
     # Gate: all critical and high findings must have a disposition.
-    result = await db.execute(
-        select(Finding).where(
-            Finding.submission_id == submission_id,
-            Finding.severity.in_(("critical", "high")),
-            Finding.disposition.is_(None),
+    unactioned = (
+        await db.execute(
+            select(func.count())
+            .select_from(Finding)
+            .where(
+                Finding.submission_id == sub.id,
+                Finding.severity.in_(BLOCKING_SEVERITIES),
+                Finding.disposition.is_(None),
+            )
         )
-    )
-    unactioned = result.scalars().all()
+    ).scalar_one()
     if unactioned:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"{len(unactioned)} critical/high finding(s) still require a disposition "
+                f"{unactioned} critical/high finding(s) still require a disposition "
                 "before sign-off is allowed."
             ),
         )
 
-    sub.status = "signed_off"
+    total = (
+        await db.execute(select(func.count()).select_from(Finding).where(Finding.submission_id == sub.id))
+    ).scalar_one()
 
+    sub.status = SubmissionStatus.SIGNED_OFF.value
     db.add(
         AuditLog(
             submission_id=sub.id,
@@ -59,21 +64,21 @@ async def sign_off(
             note=body.note,
         )
     )
-
     await db.commit()
     await db.refresh(sub)
 
-    # Update GitHub Check to success now that a human has reviewed and signed off.
-    repo_rec = await db.execute(select(Repo).where(Repo.repo_full_name == sub.repo_full_name))
-    repo_rec = repo_rec.scalar_one_or_none()
+    # Mark the GitHub check as passed now that a human has reviewed it.
+    repo_rec = (
+        await db.execute(select(Repo).where(Repo.repo_full_name == sub.repo_full_name))
+    ).scalar_one_or_none()
     github_token = decrypt(repo_rec.github_token_enc) if repo_rec else ""
     await post_github_check(
         repo=sub.repo_full_name,
         sha=sub.commit_sha,
         status="completed",
         conclusion="success",
-        finding_count=0,
+        summary=f"Signed off by {current_user.username} after reviewing {total} finding(s).",
         token=github_token,
+        check_run_id=sub.check_run_id,
     )
-
     return sub

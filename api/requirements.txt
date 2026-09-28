@@ -7,9 +7,6 @@ alembic
 arq
 redis[hiredis]
 httpx
-python-jose[cryptography]
+pyjwt>=2.8
+cryptography
 bcrypt
-gitpython
-pygithub
-python-multipart
-textual>=0.80

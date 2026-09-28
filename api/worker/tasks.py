@@ -1,60 +1,135 @@
 import asyncio
-import dataclasses
 import json
 import logging
 import shutil
 import time
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
-from sqlalchemy import delete as sql_delete, select
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import select, update
 
+from app_config import load_app_config
 from config import settings
 from crypto import decrypt
 from database import async_session_factory
+from enums import BLOCKING_SEVERITIES, RunStatus, SubmissionStatus
 from github_client import post_github_check
 from models import AppConfig, Finding, LlmRun, Repo, SelfScan, SelfScanFinding, Submission
-from routers.settings import load_app_config
-from worker.analysis.clone import clone_repo
+from redis_util import LLM_ACTIVE_SET, llm_lock_key, llm_start_key
+from schemas import AppConfigResponse
+from worker.analysis.clone import clone_repo, redact
 from worker.analysis.config_checks import run_config_checks
-from worker.analysis.llm import call_ollama
+from worker.analysis.llm import LlmError, OllamaResult, call_ollama
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
 from worker.analysis.synthesizer import dedup_raw_findings, synthesize
 
 logger = logging.getLogger(__name__)
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _run_llm(repo_path: str, sast_context: list[RawFinding], cfg: AppConfigResponse) -> OllamaResult:
+    return await call_ollama(
+        repo_path=repo_path,
+        sast_context=sast_context,
+        model=cfg.ollama_model,
+        ollama_base_url=cfg.ollama_base_url,
+        ollama_think=cfg.ollama_think,
+        ollama_num_ctx=cfg.ollama_num_ctx,
+        max_content_chars=cfg.llm_max_content_chars,
+        max_file_size_kb=cfg.max_file_size_kb,
+        max_files=cfg.max_files_per_repo,
+    )
+
+
+async def _run_sast(repo_path: str) -> list[RawFinding]:
+    semgrep, gitleaks, deps = await asyncio.gather(
+        run_semgrep(repo_path), run_gitleaks(repo_path), run_dep_audit(repo_path)
+    )
+    return semgrep + gitleaks + deps
+
+
+def _finish_llm_run(run: LlmRun, result: OllamaResult, duration: float) -> None:
+    run.status = RunStatus.COMPLETE.value
+    run.duration_seconds = round(duration, 1)
+    run.findings_count = len(result.findings)
+    run.prompt_tokens = result.prompt_tokens
+    run.completion_tokens = result.completion_tokens
+    run.finished_at = _now()
+    if result.errors:
+        run.error = redact(f"{len(result.errors)}/{result.batches} batch(es) failed: {result.errors[0]}")
+
+
+def _fail_llm_run(run: LlmRun, exc: BaseException, *secrets: str) -> None:
+    run.status = RunStatus.FAILED.value
+    run.error = redact(str(exc) or type(exc).__name__, *secrets)[:2000]
+    run.finished_at = _now()
+
+
+async def _record_llm_duration(db, duration: float) -> None:
+    """Exponential moving average used by the dashboard's progress estimate."""
+    row = await db.get(AppConfig, "llm_avg_duration_seconds")
+    if row:
+        row.value = str(round(0.7 * float(row.value) + 0.3 * duration, 1))
+        row.updated_by = "system"
+    else:
+        db.add(AppConfig(key="llm_avg_duration_seconds", value=str(round(duration, 1)), updated_by="system"))
+
+
+def _check_summary(findings: list[dict], llm_error: str | None) -> str:
+    counts = Counter(f["severity"] for f in findings)
+    parts = [f"{counts[s]} {s}" for s in ("critical", "high", "medium", "low", "info") if counts[s]]
+    summary = f"Found {len(findings)} finding(s)" + (f": {', '.join(parts)}." if parts else ".")
+    if llm_error:
+        summary += "\n\nLLM review did not complete; results are from static analysis only."
+    return summary
+
+
+async def _repo_token(db, repo_full_name: str) -> str:
+    repo_rec = (
+        await db.execute(select(Repo).where(Repo.repo_full_name == repo_full_name))
+    ).scalar_one_or_none()
+    return decrypt(repo_rec.github_token_enc) if repo_rec else ""
+
+
 async def analyze_submission(ctx, submission_id: str) -> None:
     repo_path: str | None = None
 
     async with async_session_factory() as db:
-        result = await db.execute(
-            select(Submission).where(Submission.id == submission_id)
-        )
-        submission = result.scalar_one_or_none()
+        submission = await db.get(Submission, UUID(submission_id))
         if not submission:
             logger.error("Submission %s not found", submission_id)
             return
+        if submission.status not in (SubmissionStatus.PENDING, SubmissionStatus.ANALYZING):
+            logger.info("Submission %s already %s — skipping", submission_id, submission.status)
+            return
 
-        submission.status = "analyzing"
+        # A retried job (worker restart) may have left partial results behind.
+        await db.execute(sql_delete(Finding).where(Finding.submission_id == submission.id))
+        submission.status = SubmissionStatus.ANALYZING.value
+        submission.error_message = None
         await db.commit()
-        await db.refresh(submission)
 
         repo = submission.repo_full_name
         sha = submission.commit_sha
-
         cfg = await load_app_config(db)
+        github_token = await _repo_token(db, repo)
 
-        repo_result = await db.execute(select(Repo).where(Repo.repo_full_name == repo))
-        repo_rec = repo_result.scalar_one_or_none()
-        github_token = decrypt(repo_rec.github_token_enc) if repo_rec else ""
-
+        submission.check_run_id = await post_github_check(
+            repo=repo, sha=sha, status="in_progress", token=github_token,
+            check_run_id=submission.check_run_id,
+        )
         llm_run = LlmRun(
             submission_id=submission.id,
             triggered_by="initial",
             model=cfg.ollama_model,
-            status="running",
-            started_at=datetime.now(timezone.utc),
+            status=RunStatus.RUNNING.value,
+            started_at=_now(),
         )
         db.add(llm_run)
         await db.commit()
@@ -66,78 +141,66 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 base_dir=settings.CLONE_BASE_DIR,
                 github_token=github_token,
             )
+            sast_findings = await _run_sast(repo_path)
 
-            semgrep_findings, gitleaks_findings, dep_findings = await asyncio.gather(
-                run_semgrep(repo_path),
-                run_gitleaks(repo_path),
-                run_dep_audit(repo_path),
-            )
+            llm_findings: list[RawFinding] = []
+            llm_error: str | None = None
+            llm_start = time.monotonic()
+            try:
+                result = await _run_llm(repo_path, sast_findings, cfg)
+                llm_findings = result.findings
+                _finish_llm_run(llm_run, result, time.monotonic() - llm_start)
+                await _record_llm_duration(db, time.monotonic() - llm_start)
+            except LlmError as exc:
+                # Keep the SAST results — a down LLM shouldn't hide real findings.
+                logger.warning("LLM phase failed for %s: %s", submission_id, exc)
+                _fail_llm_run(llm_run, exc, github_token)
+                llm_error = llm_run.error
 
-            llm_start = time.time()
-            ollama_result = await call_ollama(
-                repo_path=repo_path,
-                sast_context=semgrep_findings + gitleaks_findings + dep_findings,
-                model=cfg.ollama_model,
-                ollama_base_url=cfg.ollama_base_url,
-                ollama_think=cfg.ollama_think,
-                ollama_num_ctx=cfg.ollama_num_ctx,
-                max_content_chars=cfg.llm_max_content_chars,
-            )
-            llm_duration = time.time() - llm_start
-
-            all_findings = synthesize(
-                semgrep_findings,
-                gitleaks_findings,
-                dep_findings,
-                ollama_result.findings,
-            )
-
+            all_findings = synthesize(sast_findings, llm_findings)
             for f in all_findings:
                 db.add(Finding(submission_id=submission.id, **f))
 
-            llm_run.status = "complete"
-            llm_run.duration_seconds = round(llm_duration, 1)
-            llm_run.findings_count = len(ollama_result.findings)
-            llm_run.prompt_tokens = ollama_result.prompt_tokens
-            llm_run.completion_tokens = ollama_result.completion_tokens
-            llm_run.finished_at = datetime.now(timezone.utc)
-
-            submission.status = "needs_review"
+            submission.status = SubmissionStatus.NEEDS_REVIEW.value
+            if llm_error:
+                submission.error_message = f"LLM review failed; showing static analysis only. {llm_error}"
             await db.commit()
 
-            has_critical_high = any(
-                f["severity"] in ("critical", "high") for f in all_findings
-            )
+            blocking = any(f["severity"] in BLOCKING_SEVERITIES for f in all_findings)
             await post_github_check(
                 repo=repo,
                 sha=sha,
                 status="completed",
-                conclusion="action_required" if has_critical_high else "neutral",
-                finding_count=len(all_findings),
+                conclusion="action_required" if blocking or llm_error else "neutral",
+                summary=_check_summary(all_findings, llm_error),
                 token=github_token,
+                check_run_id=submission.check_run_id,
             )
-
             logger.info(
                 "Submission %s complete: %d findings (repo=%s sha=%s)",
-                submission_id,
-                len(all_findings),
-                repo,
-                sha[:8],
+                submission_id, len(all_findings), repo, sha[:8],
             )
 
         except Exception as exc:
-            logger.exception(
-                "Analysis failed for submission %s (repo=%s sha=%s)",
-                submission_id,
-                repo,
-                sha[:8],
-            )
-            llm_run.status = "failed"
-            llm_run.error = str(exc)
-            llm_run.finished_at = datetime.now(timezone.utc)
-            submission.status = "error"
-            submission.error_message = str(exc)
+            logger.exception("Analysis failed for submission %s (repo=%s sha=%s)", submission_id, repo, sha[:8])
+            await db.rollback()  # discard half-written findings
+            await db.refresh(submission)
+            await db.refresh(llm_run)
+            message = redact(str(exc) or type(exc).__name__, github_token)[:2000]
+            if llm_run.status == RunStatus.RUNNING:
+                _fail_llm_run(llm_run, exc, github_token)
+            submission.status = SubmissionStatus.ERROR.value
+            submission.error_message = message
             await db.commit()
+            await post_github_check(
+                repo=repo,
+                sha=sha,
+                status="completed",
+                conclusion="failure",
+                summary=f"Custos could not analyse this commit: {message[:500]}",
+                token=github_token,
+                check_run_id=submission.check_run_id,
+            )
             raise
 
         finally:
@@ -151,111 +214,93 @@ async def rerun_llm(ctx, submission_id: str) -> None:
     start_time = time.time()
     arq_redis = ctx.get("redis")
 
-    async with async_session_factory() as db:
-        sub = await db.get(Submission, submission_id)
-        if not sub:
-            logger.error("Submission %s not found for LLM re-run", submission_id)
-            return
+    try:
+        async with async_session_factory() as db:
+            sub = await db.get(Submission, UUID(submission_id))
+            if not sub:
+                logger.error("Submission %s not found for LLM re-run", submission_id)
+                return
 
-        if arq_redis:
-            await arq_redis.set(f"custos:llm_start:{submission_id}", str(start_time), ex=7200)
-
-        cfg = await load_app_config(db)
-
-        result = await db.execute(
-            select(Finding).where(
-                Finding.submission_id == sub.id,
-                Finding.source != "llm",
-            )
-        )
-        sast_context = [
-            RawFinding(
-                source=f.source,
-                severity=f.severity,
-                title=f.title,
-                description=f.description,
-                file_path=f.file_path,
-                line_start=f.line_start,
-                line_end=f.line_end,
-                cwe=f.cwe,
-                code_snippet=f.code_snippet,
-                remediation=f.remediation,
-            )
-            for f in result.scalars().all()
-        ]
-
-        llm_run = LlmRun(
-            submission_id=sub.id,
-            triggered_by="rerun",
-            model=cfg.ollama_model,
-            status="running",
-            started_at=datetime.now(timezone.utc),
-        )
-        db.add(llm_run)
-        await db.commit()
-
-        try:
-            repo_path = await clone_repo(
-                url=sub.repo_url,
-                sha=sub.commit_sha,
-                base_dir=settings.CLONE_BASE_DIR,
-            )
-
-            ollama_result = await call_ollama(
-                repo_path=repo_path,
-                sast_context=sast_context,
-                model=cfg.ollama_model,
-                ollama_base_url=cfg.ollama_base_url,
-                ollama_think=cfg.ollama_think,
-                ollama_num_ctx=cfg.ollama_num_ctx,
-                max_content_chars=cfg.llm_max_content_chars,
-            )
-
-            await db.execute(
-                sql_delete(Finding).where(
-                    Finding.submission_id == sub.id,
-                    Finding.source == "llm",
-                )
-            )
-            for f in ollama_result.findings:
-                db.add(Finding(submission_id=sub.id, **dataclasses.asdict(f)))
-
-            duration = time.time() - start_time
-
-            llm_run.status = "complete"
-            llm_run.duration_seconds = round(duration, 1)
-            llm_run.findings_count = len(ollama_result.findings)
-            llm_run.prompt_tokens = ollama_result.prompt_tokens
-            llm_run.completion_tokens = ollama_result.completion_tokens
-            llm_run.finished_at = datetime.now(timezone.utc)
-            await db.commit()
-
-            logger.info(
-                "LLM re-run complete for %s: %d findings in %.1fs",
-                submission_id, len(ollama_result.findings), duration,
-            )
-
-            avg_row = await db.get(AppConfig, "llm_avg_duration_seconds")
-            if avg_row:
-                avg_row.value = str(round(0.7 * float(avg_row.value) + 0.3 * duration, 1))
-                avg_row.updated_by = "system"
-            else:
-                db.add(AppConfig(key="llm_avg_duration_seconds", value=str(round(duration, 1)), updated_by="system"))
-            await db.commit()
-
-        except Exception as exc:
-            logger.exception("LLM re-run failed for submission %s", submission_id)
-            llm_run.status = "failed"
-            llm_run.error = str(exc)
-            llm_run.finished_at = datetime.now(timezone.utc)
-            await db.commit()
-            raise
-
-        finally:
-            if repo_path:
-                shutil.rmtree(repo_path, ignore_errors=True)
             if arq_redis:
-                await arq_redis.delete(f"custos:llm_start:{submission_id}")
+                await arq_redis.set(llm_start_key(submission_id), str(start_time), ex=7200)
+
+            cfg = await load_app_config(db)
+            github_token = await _repo_token(db, sub.repo_full_name)
+
+            result = await db.execute(
+                select(Finding).where(Finding.submission_id == sub.id, Finding.source != "llm")
+            )
+            sast_context = [
+                RawFinding(
+                    source=f.source,
+                    severity=f.severity,
+                    title=f.title,
+                    description=f.description,
+                    file_path=f.file_path,
+                    line_start=f.line_start,
+                    line_end=f.line_end,
+                    cwe=f.cwe,
+                    code_snippet=f.code_snippet,
+                    remediation=f.remediation,
+                )
+                for f in result.scalars().all()
+            ]
+
+            llm_run = LlmRun(
+                submission_id=sub.id,
+                triggered_by="rerun",
+                model=cfg.ollama_model,
+                status=RunStatus.RUNNING.value,
+                started_at=_now(),
+            )
+            db.add(llm_run)
+            await db.commit()
+
+            try:
+                repo_path = await clone_repo(
+                    url=sub.repo_url,
+                    sha=sub.commit_sha,
+                    base_dir=settings.CLONE_BASE_DIR,
+                    github_token=github_token,
+                )
+                ollama_result = await _run_llm(repo_path, sast_context, cfg)
+
+                # Same dedup as the initial run: drop LLM findings the tools already cover.
+                new_llm = [
+                    f for f in dedup_raw_findings(sast_context + ollama_result.findings)
+                    if f.source == "llm"
+                ]
+                await db.execute(
+                    sql_delete(Finding).where(Finding.submission_id == sub.id, Finding.source == "llm")
+                )
+                for f in synthesize(new_llm):
+                    db.add(Finding(submission_id=sub.id, **f))
+
+                duration = time.time() - start_time
+                ollama_result.findings = new_llm
+                _finish_llm_run(llm_run, ollama_result, duration)
+                if sub.error_message and sub.error_message.startswith("LLM review failed"):
+                    sub.error_message = None
+                await _record_llm_duration(db, duration)
+                await db.commit()
+                logger.info(
+                    "LLM re-run complete for %s: %d findings in %.1fs",
+                    submission_id, len(new_llm), duration,
+                )
+
+            except Exception as exc:
+                logger.exception("LLM re-run failed for submission %s", submission_id)
+                await db.rollback()
+                await db.refresh(llm_run)
+                _fail_llm_run(llm_run, exc, github_token)
+                await db.commit()
+                raise
+    finally:
+        if repo_path:
+            shutil.rmtree(repo_path, ignore_errors=True)
+        if arq_redis:
+            await arq_redis.delete(llm_start_key(submission_id), llm_lock_key(submission_id))
+            await arq_redis.srem(LLM_ACTIVE_SET, submission_id)
 
 
 _SOURCE_CATEGORY = {
@@ -275,54 +320,38 @@ async def scan_self(
     triggered_by_user: str | None = None,
 ) -> None:
     """Full security self-assessment of the Custos codebase."""
-    from uuid import UUID as _UUID
     custos_path = str(Path(__file__).parent.parent)
 
     async with async_session_factory() as db:
-        if existing_scan_id:
-            # Record was pre-created by the API endpoint — reuse it.
-            scan = await db.get(SelfScan, _UUID(existing_scan_id))
-            if not scan:
-                logger.error("SelfScan %s not found — creating new record", existing_scan_id)
-                scan = None
-
-        if not existing_scan_id or scan is None:
+        scan = await db.get(SelfScan, UUID(existing_scan_id)) if existing_scan_id else None
+        if existing_scan_id and scan is None:
+            logger.error("SelfScan %s not found — creating new record", existing_scan_id)
+        if scan is None:
             # Cron path: create the record here.
             scan = SelfScan(
-                status="running",
+                status=RunStatus.RUNNING.value,
                 triggered_by=triggered_by,
                 triggered_by_user=triggered_by_user,
-                started_at=datetime.now(timezone.utc),
+                started_at=_now(),
             )
             db.add(scan)
             await db.commit()
-            await db.refresh(scan)
-
-        scan_id = scan.id
 
         try:
             cfg = await load_app_config(db)
-
-            semgrep_findings, gitleaks_findings, dep_findings, config_findings = await asyncio.gather(
-                run_semgrep(custos_path),
-                run_gitleaks(custos_path),
-                run_dep_audit(custos_path),
-                run_config_checks(db),
+            sast_findings, config_findings = await asyncio.gather(
+                _run_sast(custos_path), run_config_checks(db)
             )
+            sast_context = sast_findings + config_findings
 
-            sast_context = semgrep_findings + gitleaks_findings + dep_findings + config_findings
+            llm_findings: list[RawFinding] = []
+            try:
+                llm_findings = (await _run_llm(custos_path, sast_context, cfg)).findings
+            except LlmError as exc:
+                logger.warning("Self-scan LLM phase failed: %s", exc)
+                scan.error = f"LLM review failed; showing static analysis only. {exc}"[:2000]
 
-            ollama_result = await call_ollama(
-                repo_path=custos_path,
-                sast_context=sast_context,
-                model=cfg.ollama_model,
-                ollama_base_url=cfg.ollama_base_url,
-                ollama_think=cfg.ollama_think,
-                ollama_num_ctx=cfg.ollama_num_ctx,
-                max_content_chars=cfg.llm_max_content_chars,
-            )
-
-            all_findings = dedup_raw_findings(sast_context + ollama_result.findings)
+            all_findings = dedup_raw_findings(sast_context + llm_findings)
             sev_counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
             config_issue_count = 0
 
@@ -331,7 +360,7 @@ async def scan_self(
                 if f.source == "config":
                     config_issue_count += 1
                 db.add(SelfScanFinding(
-                    scan_id=scan_id,
+                    scan_id=scan.id,
                     source=f.source,
                     category=_SOURCE_CATEGORY.get(f.source, "sast"),
                     severity=f.severity,
@@ -342,7 +371,7 @@ async def scan_self(
                     line_end=f.line_end,
                     cwe=f.cwe,
                     remediation=f.remediation,
-                    llm_reasoning=getattr(f, "llm_reasoning", None),
+                    llm_reasoning=f.llm_reasoning,
                 ))
 
             if sev_counts["critical"] > 0:
@@ -352,23 +381,49 @@ async def scan_self(
             else:
                 overall_health = "healthy"
 
-            scan.status = "complete"
+            scan.status = RunStatus.COMPLETE.value
             scan.overall_health = overall_health
             scan.finding_counts = json.dumps(sev_counts)
             scan.config_issue_count = config_issue_count
-            scan.finished_at = datetime.now(timezone.utc)
+            scan.finished_at = _now()
             await db.commit()
-
-            logger.info(
-                "Self-scan complete: %s health, %d findings",
-                overall_health,
-                len(all_findings),
-            )
+            logger.info("Self-scan complete: %s health, %d findings", overall_health, len(all_findings))
 
         except Exception as exc:
             logger.exception("Self-scan failed")
-            scan.status = "failed"
-            scan.error = str(exc)
-            scan.finished_at = datetime.now(timezone.utc)
+            await db.rollback()
+            await db.refresh(scan)
+            scan.status = RunStatus.FAILED.value
+            scan.error = redact(str(exc) or type(exc).__name__)[:2000]
+            scan.finished_at = _now()
             await db.commit()
             raise
+
+
+async def reap_stale_jobs(ctx) -> None:
+    """Fail records left 'running' by a worker that died or a job that hung."""
+    cutoff = _now() - timedelta(minutes=settings.STALE_JOB_MINUTES)
+    msg = f"Timed out: no progress for {settings.STALE_JOB_MINUTES} minutes (worker restarted or job hung)"
+    async with async_session_factory() as db:
+        subs = await db.execute(
+            update(Submission)
+            .where(Submission.status == SubmissionStatus.ANALYZING, Submission.updated_at < cutoff)
+            .values(status=SubmissionStatus.ERROR.value, error_message=msg)
+        )
+        runs = await db.execute(
+            update(LlmRun)
+            .where(LlmRun.status == RunStatus.RUNNING, LlmRun.started_at < cutoff)
+            .values(status=RunStatus.FAILED.value, error=msg, finished_at=_now())
+        )
+        scans = await db.execute(
+            update(SelfScan)
+            .where(SelfScan.status == RunStatus.RUNNING, SelfScan.started_at < cutoff)
+            .values(status=RunStatus.FAILED.value, error=msg, finished_at=_now())
+        )
+        await db.commit()
+    total = subs.rowcount + runs.rowcount + scans.rowcount
+    if total:
+        logger.warning(
+            "Reaped stale jobs: %d submission(s), %d LLM run(s), %d self-scan(s)",
+            subs.rowcount, runs.rowcount, scans.rowcount,
+        )

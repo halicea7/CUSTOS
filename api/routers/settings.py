@@ -1,12 +1,13 @@
+import asyncio
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import get_current_user, require_admin, hash_password, verify_password
-from config import settings
+from app_config import CONFIG_KEYS, load_app_config  # noqa: F401 — re-exported
+from auth import get_current_user, hash_password, require_admin, verify_password
 from database import get_db
 from models import AppConfig, User
 from schemas import (
@@ -20,35 +21,6 @@ from schemas import (
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
-_VALID_ROLES = {"admin", "analyst"}
-
-# Keys stored in app_config; all others fall back to env.
-_CONFIG_KEYS = {
-    "ollama_base_url", "ollama_model", "ollama_think", "ollama_num_ctx",
-    "llm_max_content_chars",
-    "max_file_size_kb", "max_files_per_repo",
-    "access_token_expire_minutes",
-    "worker_max_jobs", "worker_job_timeout",
-}
-
-
-async def load_app_config(db: AsyncSession) -> AppConfigResponse:
-    result = await db.execute(select(AppConfig).where(AppConfig.key.in_(_CONFIG_KEYS)))
-    ov = {row.key: row.value for row in result.scalars()}
-    return AppConfigResponse(
-        ollama_base_url=ov.get("ollama_base_url", settings.OLLAMA_BASE_URL),
-        ollama_model=ov.get("ollama_model", settings.OLLAMA_MODEL),
-        ollama_think=ov.get("ollama_think", "false").lower() == "true",
-        ollama_num_ctx=int(ov.get("ollama_num_ctx", 0)),
-        llm_max_content_chars=int(ov.get("llm_max_content_chars", 96_000)),
-        max_file_size_kb=int(ov.get("max_file_size_kb", settings.MAX_FILE_SIZE_KB)),
-        max_files_per_repo=int(ov.get("max_files_per_repo", settings.MAX_FILES_PER_REPO)),
-        access_token_expire_minutes=int(ov.get("access_token_expire_minutes", settings.ACCESS_TOKEN_EXPIRE_MINUTES)),
-        worker_max_jobs=int(ov.get("worker_max_jobs", 4)),
-        worker_job_timeout=int(ov.get("worker_job_timeout", 600)),
-    )
-
-
 # ── Account (all roles) ────────────────────────────────────────────────────────
 
 @router.patch("/me/password", status_code=status.HTTP_204_NO_CONTENT)
@@ -57,11 +29,9 @@ async def change_password(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not verify_password(body.current_password, current_user.hashed_password):
+    if not await asyncio.to_thread(verify_password, body.current_password, current_user.hashed_password):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password must be at least 8 characters")
-    current_user.hashed_password = hash_password(body.new_password)
+    current_user.hashed_password = await asyncio.to_thread(hash_password, body.new_password)
     await db.commit()
 
 
@@ -82,17 +52,14 @@ async def create_user(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    if body.role not in _VALID_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"role must be one of {sorted(_VALID_ROLES)}",
-        )
-    if len(body.password) < 8:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password must be at least 8 characters")
     existing = await db.execute(select(User).where(User.username == body.username))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
-    user = User(username=body.username, hashed_password=hash_password(body.password), role=body.role)
+    user = User(
+        username=body.username,
+        hashed_password=await asyncio.to_thread(hash_password, body.password),
+        role=body.role.value,
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -106,17 +73,12 @@ async def update_user_role(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    if body.role not in _VALID_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"role must be one of {sorted(_VALID_ROLES)}",
-        )
     if user_id == current_user.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot change your own role")
     target = await db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    target.role = body.role
+    target.role = body.role.value
     await db.commit()
     await db.refresh(target)
     return target
@@ -141,7 +103,7 @@ async def delete_user(
 
 @router.get("/config/test-ollama")
 async def test_ollama(
-    url: str = Query(..., description="Ollama base URL to test"),
+    url: str = Query(..., description="Ollama base URL to test", pattern=r"^https?://[^\s]+$"),
     _: User = Depends(require_admin),
 ):
     try:
@@ -155,7 +117,7 @@ async def test_ollama(
     except httpx.TimeoutException:
         return {"ok": False, "error": "Request timed out after 8s", "models": []}
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "models": []}
+        return {"ok": False, "error": type(exc).__name__, "models": []}
     return {"ok": True, "models": models}
 
 

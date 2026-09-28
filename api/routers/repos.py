@@ -1,14 +1,18 @@
+import re
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, delete as sql_delete
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import get_current_user, require_admin
+from access import can_see_group, restrict_to_visible
+from auth import get_current_user
 from crypto import decrypt, encrypt
 from database import get_db
-from models import Group, GroupMember, Repo, RepoGroup, User
+from enums import Role
+from models import Group, Repo, RepoGroup, User
 from schemas import (
     GroupSummary,
     RepoCreate,
@@ -16,31 +20,58 @@ from schemas import (
     RepoUpdate,
     ValidateTokenRequest,
 )
+from worker.analysis.clone import redact
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 
 
-def _mask(value: str) -> str:
-    return f"••••••••{value[-4:]}" if len(value) >= 4 else "••••••••"
+_REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
-async def _repo_groups(db: AsyncSession, repo_id: UUID) -> list[GroupSummary]:
-    result = await db.execute(
-        select(Group)
-        .join(RepoGroup, RepoGroup.group_id == Group.id)
-        .where(RepoGroup.repo_id == repo_id)
+def _normalise_name(raw: str) -> str:
+    name = raw.strip().strip("/")
+    if not _REPO_NAME.match(name) or any(part in (".", "..") for part in name.split("/")):
+        raise HTTPException(
+            status_code=422,
+            detail="Repository must be in 'owner/name' form",
+        )
+    return name
+
+
+def _preview(last4: str | None) -> str:
+    return f"••••••••{last4}" if last4 else "••••••••"
+
+
+async def _groups_for(db: AsyncSession, repo_ids: list[UUID]) -> dict[UUID, list[GroupSummary]]:
+    if not repo_ids:
+        return {}
+    rows = await db.execute(
+        select(RepoGroup.repo_id, Group.id, Group.name)
+        .join(Group, Group.id == RepoGroup.group_id)
+        .where(RepoGroup.repo_id.in_(repo_ids))
         .order_by(Group.name)
     )
-    return [GroupSummary(id=g.id, name=g.name) for g in result.scalars().all()]
+    out: dict[UUID, list[GroupSummary]] = {}
+    for repo_id, gid, gname in rows:
+        out.setdefault(repo_id, []).append(GroupSummary(id=gid, name=gname))
+    return out
 
 
-async def _to_response(db: AsyncSession, repo: Repo) -> RepoResponse:
-    groups = await _repo_groups(db, repo.id)
-    try:
-        raw_token = decrypt(repo.github_token_enc)
-        preview = _mask(raw_token)
-    except Exception:
-        preview = "••••••••????"
+async def _backfill_last4(db: AsyncSession, repos: list[Repo]) -> None:
+    """Populate token_last4 for rows created before the column existed."""
+    changed = False
+    for repo in repos:
+        if repo.token_last4 is None:
+            try:
+                repo.token_last4 = decrypt(repo.github_token_enc)[-4:]
+                changed = True
+            except Exception:
+                pass
+    if changed:
+        await db.commit()
+
+
+def _response(repo: Repo, groups: list[GroupSummary]) -> RepoResponse:
     return RepoResponse(
         id=repo.id,
         repo_full_name=repo.repo_full_name,
@@ -48,29 +79,22 @@ async def _to_response(db: AsyncSession, repo: Repo) -> RepoResponse:
         added_at=repo.added_at,
         last_push_at=repo.last_push_at,
         enabled=repo.enabled,
-        token_preview=preview,
+        token_preview=_preview(repo.token_last4),
         groups=groups,
     )
 
 
-async def _visible_repo_names(db: AsyncSession, user: User) -> set[str] | None:
-    """Return None (no restriction) for admins, or a set of visible repo names."""
-    if user.role == "admin":
-        return None
-    # Own repos
-    result = await db.execute(select(Repo.repo_full_name).where(Repo.added_by == user.username))
-    names = set(result.scalars().all())
-    # Group repos — repos in any group the user belongs to
-    gm_result = await db.execute(
-        select(RepoGroup.repo_id)
-        .join(GroupMember, GroupMember.group_id == RepoGroup.group_id)
-        .where(GroupMember.username == user.username)
-    )
-    group_repo_ids = [r for r in gm_result.scalars().all()]
-    if group_repo_ids:
-        r2 = await db.execute(select(Repo.repo_full_name).where(Repo.id.in_(group_repo_ids)))
-        names.update(r2.scalars().all())
-    return names
+async def _to_response(db: AsyncSession, repo: Repo) -> RepoResponse:
+    groups = await _groups_for(db, [repo.id])
+    return _response(repo, groups.get(repo.id, []))
+
+
+def _require_owner(repo: Repo | None, user: User) -> Repo:
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    if user.role != Role.ADMIN and repo.added_by != user.username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your repository")
+    return repo
 
 
 @router.get("", response_model=list[RepoResponse])
@@ -78,13 +102,11 @@ async def list_repos(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    visible = await _visible_repo_names(db, current_user)
-    q = select(Repo).order_by(Repo.added_at.desc())
-    if visible is not None:
-        q = q.where(Repo.repo_full_name.in_(visible))
-    result = await db.execute(q)
-    repos = result.scalars().all()
-    return [await _to_response(db, r) for r in repos]
+    q = restrict_to_visible(select(Repo).order_by(Repo.added_at.desc()), current_user, Repo.repo_full_name)
+    repos = list((await db.execute(q)).scalars().all())
+    await _backfill_last4(db, repos)
+    groups = await _groups_for(db, [r.id for r in repos])
+    return [_response(r, groups.get(r.id, [])) for r in repos]
 
 
 @router.post("", response_model=RepoResponse, status_code=status.HTTP_201_CREATED)
@@ -93,7 +115,7 @@ async def add_repo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    name = body.repo_full_name.strip().strip("/")
+    name = _normalise_name(body.repo_full_name)
     existing = await db.execute(select(Repo).where(Repo.repo_full_name == name))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository already registered")
@@ -102,6 +124,7 @@ async def add_repo(
         repo_full_name=name,
         github_token_enc=encrypt(body.github_token),
         webhook_secret_enc=encrypt(body.webhook_secret),
+        token_last4=body.github_token[-4:],
         added_by=current_user.username,
         enabled=True,
     )
@@ -112,10 +135,8 @@ async def add_repo(
         grp = await db.get(Group, gid)
         if not grp:
             continue
-        if current_user.role != "admin":
-            mem = await db.get(GroupMember, (gid, current_user.username))
-            if not mem:
-                continue
+        if not await can_see_group(db, current_user, gid):
+            continue
         db.add(RepoGroup(repo_id=repo.id, group_id=gid))
 
     await db.commit()
@@ -130,14 +151,11 @@ async def update_repo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = await db.get(Repo, repo_id)
-    if not repo:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
-    if current_user.role != "admin" and repo.added_by != current_user.username:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your repository")
+    repo = _require_owner(await db.get(Repo, repo_id), current_user)
 
     if body.github_token is not None:
         repo.github_token_enc = encrypt(body.github_token)
+        repo.token_last4 = body.github_token[-4:]
     if body.webhook_secret is not None:
         repo.webhook_secret_enc = encrypt(body.webhook_secret)
     if body.enabled is not None:
@@ -154,11 +172,7 @@ async def delete_repo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = await db.get(Repo, repo_id)
-    if not repo:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
-    if current_user.role != "admin" and repo.added_by != current_user.username:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your repository")
+    repo = _require_owner(await db.get(Repo, repo_id), current_user)
     await db.delete(repo)
     await db.commit()
 
@@ -170,13 +184,9 @@ async def add_repo_to_group(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = await db.get(Repo, repo_id)
-    if not repo:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
-    if current_user.role != "admin" and repo.added_by != current_user.username:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your repository")
+    _require_owner(await db.get(Repo, repo_id), current_user)
     grp = await db.get(Group, group_id)
-    if not grp:
+    if not grp or not await can_see_group(db, current_user, group_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     existing = await db.get(RepoGroup, (repo_id, group_id))
     if not existing:
@@ -191,11 +201,7 @@ async def remove_repo_from_group(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = await db.get(Repo, repo_id)
-    if not repo:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
-    if current_user.role != "admin" and repo.added_by != current_user.username:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your repository")
+    _require_owner(await db.get(Repo, repo_id), current_user)
     await db.execute(
         sql_delete(RepoGroup).where(RepoGroup.repo_id == repo_id, RepoGroup.group_id == group_id)
     )
@@ -207,13 +213,13 @@ async def validate_token(
     body: ValidateTokenRequest,
     _: User = Depends(get_current_user),
 ):
-    name = body.repo_full_name.strip().strip("/")
+    name = _normalise_name(body.repo_full_name)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"https://api.github.com/repos/{name}",
                 headers={
-                    "Authorization": f"token {body.github_token}",
+                    "Authorization": f"Bearer {body.github_token}",
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
@@ -227,7 +233,7 @@ async def validate_token(
     except httpx.TimeoutException:
         return {"ok": False, "error": "GitHub API timed out"}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": redact(str(exc), body.github_token)}
     return {
         "ok": True,
         "repo_name": data.get("full_name"),
