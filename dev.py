@@ -30,7 +30,7 @@ try:
     from rich.text    import Text
     from rich.rule    import Rule
 except ImportError:
-    sys.exit("rich not found — run: .venv/bin/pip install rich")
+    sys.exit("rich not found — run: .venv/bin/pip install -r api/requirements-dev.txt")
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 API_DIR  = ROOT / "api"
