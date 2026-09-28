@@ -61,7 +61,7 @@ async def list_groups(
             .where(GroupMember.username == current_user.username)
             .order_by(Group.name)
         )
-        groups = result.scalars().all()
+    groups = result.scalars().all()
     counts = await _member_counts(db, [g.id for g in groups])
     return [_response(g, counts.get(g.id, 0)) for g in groups]
 
