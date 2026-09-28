@@ -117,9 +117,9 @@ async def trigger_scan(
     user: User = Depends(require_admin),
 ):
     running_result = await db.execute(
-        select(SelfScan).where(SelfScan.status == "running")
+        select(SelfScan.id).where(SelfScan.status == "running").limit(1)
     )
-    if running_result.scalar_one_or_none():
+    if running_result.first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Scan already in progress")
 
     # Create the record immediately so GET /health/status sees running=true
