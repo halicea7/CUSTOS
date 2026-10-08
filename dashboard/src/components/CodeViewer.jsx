@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useMemo } from "react";
 import hljs from "highlight.js";
 import { useTheme } from "../App.jsx";
 
@@ -32,31 +32,41 @@ const HLJS_LIGHT = `
 .hljs-strong{font-weight:bold}
 `;
 
+// Code comes from untrusted submitted repos — anything rendered via
+// dangerouslySetInnerHTML must be escaped first.
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function highlightSafe(code, language) {
+  try {
+    if (language) {
+      const lang = hljs.getLanguage(language) ? language : "plaintext";
+      return hljs.highlight(code, { language: lang }).value;
+    }
+    return hljs.highlightAuto(code).value;
+  } catch {
+    return escapeHtml(code);
+  }
+}
+
 export default function CodeViewer({ code, language, lineStart, lineEnd, filePath }) {
   const { theme } = useTheme();
   const t = theme;
-  const preRef = useRef(null);
-  const [highlighted, setHighlighted] = useState("");
-
-  useEffect(() => {
-    if (!code) return;
-    let result;
-    try {
-      if (language) {
-        const lang = hljs.getLanguage(language) ? language : "plaintext";
-        result = hljs.highlight(code, { language: lang });
-      } else {
-        result = hljs.highlightAuto(code);
-      }
-      setHighlighted(result.value);
-    } catch {
-      setHighlighted(code.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
-    }
-  }, [code, language]);
+  // Computed synchronously so the first render never sees raw, unescaped code.
+  const highlighted = useMemo(
+    () => (code ? highlightSafe(code, language) : ""),
+    [code, language]
+  );
 
   if (!code) return null;
 
-  const lines = (highlighted || code).split("\n");
+  const lines = highlighted.split("\n");
   const startNum = typeof lineStart === "number" ? lineStart : 1;
 
   const isLight = t.mode === "light";

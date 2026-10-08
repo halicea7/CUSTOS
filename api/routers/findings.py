@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from access import get_accessible_finding
 from auth import get_current_user
 from database import get_db
 from models import AuditLog, Finding, User
@@ -16,14 +17,7 @@ _VALID_DISPOSITIONS = {"confirmed", "false_positive", "escalated"}
 
 
 @router.get("/{finding_id}", response_model=FindingResponse)
-async def get_finding(
-    finding_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    finding = await db.get(Finding, finding_id)
-    if not finding:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Finding not found")
+async def get_finding(finding: Finding = Depends(get_accessible_finding)):
     return finding
 
 
@@ -33,6 +27,7 @@ async def set_disposition(
     body: DispositionRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    finding: Finding = Depends(get_accessible_finding),
 ):
     if body.disposition not in _VALID_DISPOSITIONS:
         raise HTTPException(
@@ -40,13 +35,9 @@ async def set_disposition(
             detail=f"disposition must be one of {sorted(_VALID_DISPOSITIONS)}",
         )
 
-    finding = await db.get(Finding, finding_id)
-    if not finding:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Finding not found")
-
     finding.disposition = body.disposition
     finding.disposed_by = current_user.username
-    finding.disposed_at = datetime.utcnow()
+    finding.disposed_at = datetime.now(timezone.utc)
 
     db.add(
         AuditLog(
@@ -67,12 +58,8 @@ async def set_disposition(
 async def get_finding_audit(
     finding_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: Finding = Depends(get_accessible_finding),
 ):
-    finding = await db.get(Finding, finding_id)
-    if not finding:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Finding not found")
-
     result = await db.execute(
         select(AuditLog)
         .where(AuditLog.finding_id == finding_id)

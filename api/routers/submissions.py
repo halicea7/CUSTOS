@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from access import get_accessible_submission, is_group_member, visible_repo_names
 from auth import get_current_user
 from database import get_db
-from models import AppConfig, Finding, LlmRun, Submission, User
-from routers.repos import _visible_repo_names
+from models import AppConfig, Finding, LlmRun, Repo, RepoGroup, Submission, User
 from schemas import FindingResponse, SubmissionListResponse, SubmissionResponse
 
 
@@ -48,37 +48,31 @@ async def list_submissions(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from models import Repo, RepoGroup
-    from sqlalchemy import select as _select
-
     q = select(Submission)
     if status_filter:
         q = q.where(Submission.status == status_filter)
 
+    visible = await visible_repo_names(db, current_user)
     if group_id is not None:
-        # Filter to repos in this specific group.
-        rg = await db.execute(_select(Repo.repo_full_name).join(RepoGroup, RepoGroup.repo_id == Repo.id).where(RepoGroup.group_id == group_id))
-        group_repos = set(rg.scalars().all())
-        q = q.where(Submission.repo_full_name.in_(group_repos))
-    else:
-        visible = await _visible_repo_names(db, current_user)
-        if visible is not None:
-            q = q.where(Submission.repo_full_name.in_(visible))
+        # Non-admins may only filter by groups they belong to.
+        if not await is_group_member(db, current_user, group_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+        rg = await db.execute(
+            select(Repo.repo_full_name)
+            .join(RepoGroup, RepoGroup.repo_id == Repo.id)
+            .where(RepoGroup.group_id == group_id)
+        )
+        q = q.where(Submission.repo_full_name.in_(set(rg.scalars().all())))
+    if visible is not None:
+        q = q.where(Submission.repo_full_name.in_(visible))
     result = await db.execute(q)
     submissions = result.scalars().all()
 
     # Sort: unreviewed critical/high count DESC, then created_at DESC.
-    counts = {s.id: await _unreviewed_critical_high(db, s.id) for s in submissions}
+    unreviewed = await _unreviewed_critical_high_counts(db, [s.id for s in submissions])
     sorted_subs = sorted(
         submissions,
-        key=lambda s: (-counts[s.id], s.created_at.timestamp()),
-        reverse=True,
-    )
-    # reverse=True flips created_at to DESC while -count already inverts that field.
-    # Re-sort correctly: primary key is count DESC, secondary is created_at DESC.
-    sorted_subs = sorted(
-        submissions,
-        key=lambda s: (-counts[s.id], -s.created_at.timestamp()),
+        key=lambda s: (-unreviewed.get(s.id, 0), -s.created_at.timestamp()),
     )
 
     counts_map = await _finding_counts(db, [s.id for s in sorted_subs])
@@ -92,11 +86,8 @@ async def list_submissions(
 async def list_llm_runs(
     submission_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: Submission = Depends(get_accessible_submission),
 ):
-    sub = await db.get(Submission, submission_id)
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
     result = await db.execute(
         select(LlmRun)
         .where(LlmRun.submission_id == submission_id)
@@ -128,8 +119,10 @@ async def llm_active_jobs(
 ):
     """Return submission IDs that currently have an active LLM re-run."""
     redis = request.app.state.redis
-    keys = await redis.keys("custos:llm_running:*")
-    ids = [k.replace("custos:llm_running:", "") for k in keys]
+    ids = [
+        k.replace("custos:llm_running:", "")
+        async for k in redis.scan_iter(match="custos:llm_running:*")
+    ]
     return {"active": ids}
 
 
@@ -137,11 +130,8 @@ async def llm_active_jobs(
 async def get_submission(
     submission_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    sub: Submission = Depends(get_accessible_submission),
 ):
-    sub = await db.get(Submission, submission_id)
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
     counts_map = await _finding_counts(db, [submission_id])
     return _with_counts(sub, counts_map.get(str(submission_id)))
 
@@ -150,12 +140,8 @@ async def get_submission(
 async def list_findings_for_submission(
     submission_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: Submission = Depends(get_accessible_submission),
 ):
-    sub = await db.get(Submission, submission_id)
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
-
     result = await db.execute(
         select(Finding).where(Finding.submission_id == submission_id)
     )
@@ -167,13 +153,8 @@ async def list_findings_for_submission(
 async def rerun_llm_endpoint(
     submission_id: UUID,
     request: Request,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: Submission = Depends(get_accessible_submission),
 ):
-    sub = await db.get(Submission, submission_id)
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
-
     # Prevent concurrent re-runs.
     redis = request.app.state.redis
     lock_key = f"custos:llm_running:{submission_id}"
@@ -191,7 +172,7 @@ async def llm_status(
     submission_id: UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: Submission = Depends(get_accessible_submission),
 ):
     redis = request.app.state.redis
     job_id = await redis.get(f"custos:llm_job:{submission_id}")
@@ -226,14 +207,17 @@ async def llm_status(
     return {"status": "failed", "elapsed": round(elapsed, 1), "estimated": estimated, "progress": 0}
 
 
-async def _unreviewed_critical_high(db: AsyncSession, submission_id: UUID) -> int:
-    result = await db.execute(
-        select(func.count())
-        .select_from(Finding)
+async def _unreviewed_critical_high_counts(db: AsyncSession, submission_ids: list) -> dict:
+    """Return {submission_id: count of critical/high findings with no disposition}."""
+    if not submission_ids:
+        return {}
+    rows = await db.execute(
+        select(Finding.submission_id, func.count())
         .where(
-            Finding.submission_id == submission_id,
+            Finding.submission_id.in_(submission_ids),
             Finding.severity.in_(("critical", "high")),
             Finding.disposition.is_(None),
         )
+        .group_by(Finding.submission_id)
     )
-    return result.scalar_one()
+    return {sid: c for sid, c in rows.all()}

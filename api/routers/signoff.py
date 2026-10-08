@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from access import get_accessible_submission
 from auth import get_current_user
 from database import get_db
 from github_client import post_github_check
@@ -20,11 +21,8 @@ async def sign_off(
     body: SignoffRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    sub: Submission = Depends(get_accessible_submission),
 ):
-    sub = await db.get(Submission, submission_id)
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
-
     if sub.status == "signed_off":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Submission already signed off"

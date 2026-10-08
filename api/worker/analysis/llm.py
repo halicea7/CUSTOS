@@ -13,7 +13,7 @@ from typing import Optional
 import httpx
 
 from config import settings
-from worker.analysis.sast import RawFinding
+from worker.analysis.sast import RawFinding, safe_repo_file
 
 logger = logging.getLogger(__name__)
 
@@ -103,13 +103,18 @@ async def call_ollama(
     ollama_think: bool = False,
     ollama_num_ctx: int = 0,
     max_content_chars: int = 96_000,
+    max_file_size_kb: int | None = None,
+    max_files: int | None = None,
 ) -> OllamaResult:
     """Call the local Ollama instance and return findings + token counts.
 
     Returns an OllamaResult with empty findings on any connection/parsing failure.
     """
     base_url = ollama_base_url or settings.OLLAMA_BASE_URL
-    file_chunks = _select_files(repo_path, sast_context, max_content_chars)
+    file_chunks = _select_files(
+        repo_path, sast_context, max_content_chars,
+        max_file_size_kb=max_file_size_kb, max_files=max_files,
+    )
     if not file_chunks:
         logger.info("No files selected for LLM review")
         return OllamaResult([], None, None)
@@ -268,12 +273,15 @@ def _select_files(
     repo_path: str,
     sast_context: list[RawFinding],
     max_content_chars: int = 96_000,
+    max_file_size_kb: int | None = None,
+    max_files: int | None = None,
 ) -> list[tuple[str, str]]:
-    """Return (rel_path, content) pairs within the token budget.
+    """Return (rel_path, content) pairs within the char budget and file cap.
 
     Priority: files referenced by SAST → entry/auth files → other src files.
     """
-    max_file_bytes = settings.MAX_FILE_SIZE_KB * 1024
+    max_file_bytes = (max_file_size_kb or settings.MAX_FILE_SIZE_KB) * 1024
+    max_files = max_files or settings.MAX_FILES_PER_REPO
     sast_files = {f.file_path for f in sast_context if f.file_path}
     results: list[tuple[str, str]] = []
     total_chars = 0
@@ -282,8 +290,12 @@ def _select_files(
         nonlocal total_chars
         if any(rel == r for r, _ in results):
             return True  # already included
-        abs_path = os.path.join(repo_path, rel)
-        if not os.path.isfile(abs_path):
+        if len(results) >= max_files:
+            return False  # file cap reached
+        if _is_env_file(os.path.basename(rel)):
+            return True
+        abs_path = safe_repo_file(repo_path, rel)
+        if abs_path is None:
             return True
         if os.path.getsize(abs_path) > max_file_bytes:
             return True
@@ -334,6 +346,14 @@ def _select_files(
             return results
 
     return results
+
+
+def _is_env_file(fname: str) -> bool:
+    """Real env files hold live secrets (e.g. Custos's own api/.env during
+    self-scan) — keep them out of the prompt. Gitleaks still covers them."""
+    if fname in (".env.example", ".env.sample", ".env.template"):
+        return False
+    return fname == ".env" or fname.startswith(".env.")
 
 
 def _finding_to_context(f: RawFinding) -> dict:

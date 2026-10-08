@@ -7,7 +7,7 @@ from arq.connections import RedisSettings
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
-from config import settings
+from config import settings, validate_secrets
 from database import engine
 from routers import auth as auth_router
 from routers import findings as findings_router
@@ -24,11 +24,12 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 
 def _arq_settings() -> RedisSettings:
     url = urlparse(settings.REDIS_URL)
-    return RedisSettings(host=url.hostname or "localhost", port=url.port or 6379)
+    return RedisSettings(host=url.hostname or "localhost", port=url.port or 6379, password=url.password)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_secrets(settings)
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     app.state.arq_pool = await create_pool(_arq_settings())
     yield

@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import get_current_user, require_admin
+from access import is_group_member, visible_repo_names
+from auth import get_current_user
 from crypto import decrypt, encrypt
 from database import get_db
 from models import Group, GroupMember, Repo, RepoGroup, User
@@ -53,32 +54,12 @@ async def _to_response(db: AsyncSession, repo: Repo) -> RepoResponse:
     )
 
 
-async def _visible_repo_names(db: AsyncSession, user: User) -> set[str] | None:
-    """Return None (no restriction) for admins, or a set of visible repo names."""
-    if user.role == "admin":
-        return None
-    # Own repos
-    result = await db.execute(select(Repo.repo_full_name).where(Repo.added_by == user.username))
-    names = set(result.scalars().all())
-    # Group repos — repos in any group the user belongs to
-    gm_result = await db.execute(
-        select(RepoGroup.repo_id)
-        .join(GroupMember, GroupMember.group_id == RepoGroup.group_id)
-        .where(GroupMember.username == user.username)
-    )
-    group_repo_ids = [r for r in gm_result.scalars().all()]
-    if group_repo_ids:
-        r2 = await db.execute(select(Repo.repo_full_name).where(Repo.id.in_(group_repo_ids)))
-        names.update(r2.scalars().all())
-    return names
-
-
 @router.get("", response_model=list[RepoResponse])
 async def list_repos(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    visible = await _visible_repo_names(db, current_user)
+    visible = await visible_repo_names(db, current_user)
     q = select(Repo).order_by(Repo.added_at.desc())
     if visible is not None:
         q = q.where(Repo.repo_full_name.in_(visible))
@@ -176,7 +157,7 @@ async def add_repo_to_group(
     if current_user.role != "admin" and repo.added_by != current_user.username:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your repository")
     grp = await db.get(Group, group_id)
-    if not grp:
+    if not grp or not await is_group_member(db, current_user, group_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     existing = await db.get(RepoGroup, (repo_id, group_id))
     if not existing:

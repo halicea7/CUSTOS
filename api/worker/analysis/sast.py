@@ -59,7 +59,11 @@ _SEMGREP_SEVERITY = {
 # ── Semgrep ───────────────────────────────────────────────────────────────────
 
 async def run_semgrep(repo_path: str) -> list[RawFinding]:
-    cmd = ["semgrep", "scan", "--config=auto", "--json", "--quiet", repo_path]
+    from config import settings
+    cmd = ["semgrep", "scan", f"--config={settings.SEMGREP_CONFIG}", "--json", "--quiet"]
+    if settings.SEMGREP_CONFIG != "auto":
+        cmd.append("--metrics=off")  # --config=auto refuses to run with metrics off
+    cmd.append(repo_path)
     rc, stdout, stderr = await _run(cmd)
     # semgrep exits 1 when findings exist — that is normal.
     if rc not in (0, 1):
@@ -152,7 +156,7 @@ async def _pip_audit(repo_path: str) -> list[RawFinding]:
     req_paths: list[Path] = []
     root = Path(repo_path)
     for candidate in [root / "requirements.txt", *root.glob("requirements/*.txt")]:
-        if candidate.is_file():
+        if safe_repo_file(repo_path, str(candidate.relative_to(root))):
             req_paths.append(candidate)
     if not req_paths:
         return []
@@ -202,7 +206,7 @@ _NPM_SEVERITY = {
 
 
 async def _npm_audit(repo_path: str) -> list[RawFinding]:
-    if not (Path(repo_path) / "package.json").is_file():
+    if not safe_repo_file(repo_path, "package.json"):
         return []
 
     cmd = ["npm", "audit", "--json"]
@@ -239,6 +243,25 @@ async def _npm_audit(repo_path: str) -> list[RawFinding]:
 
 
 # ── util ──────────────────────────────────────────────────────────────────────
+
+def safe_repo_file(repo_path: str, rel: str) -> str | None:
+    """Return the absolute path of *rel* if it is a regular file inside the repo.
+
+    Submitted repos are untrusted: a committed symlink such as
+    ``app.py -> /proc/self/environ`` must never be followed, or host secrets
+    end up in the LLM prompt and from there in findings shown to analysts.
+    """
+    root = os.path.realpath(repo_path)
+    abs_path = os.path.normpath(os.path.join(root, rel))
+    if not abs_path.startswith(root + os.sep):
+        return None  # ../ traversal or absolute path
+    # Reject the file itself or any parent directory being a symlink.
+    if os.path.realpath(abs_path) != abs_path:
+        return None
+    if not os.path.isfile(abs_path):
+        return None
+    return abs_path
+
 
 def _rel(repo_path: str, path: str) -> str | None:
     if not path:
