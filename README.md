@@ -12,171 +12,64 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 
 ## Table of contents
 
-1. [Prerequisites](#prerequisites)
-2. [Quick start — Docker](#quick-start--docker)
-3. [Local development setup](#local-development-setup)
+1. [Deploy (Docker)](#deploy-docker)
+2. [Local development](#local-development)
+3. [Managing users](#managing-users)
 4. [Configuration reference](#configuration-reference)
 5. [Ollama setup](#ollama-setup)
 6. [SAST tool installation](#sast-tool-installation)
 7. [GitHub webhook setup](#github-webhook-setup)
-8. [Creating users](#creating-users)
-9. [Useful commands](#useful-commands)
+
+Everything goes through one launcher, `./custos`. It only needs `python3` to run and checks for everything else itself. Run `./custos --help` for all commands.
+
+> **Ollama note:** Custos deliberately keeps the LLM local — no code leaves your infrastructure. Ollama must be running and reachable from the API/worker. See [Ollama setup](#ollama-setup).
 
 ---
 
-## Prerequisites
+## Deploy (Docker)
 
-| Requirement | Docker path | Local path |
-|---|---|---|
-| Docker + Docker Compose | required | — |
-| Python 3.12+ | — | required |
-| Node.js 20+ | — | required |
-| PostgreSQL 16 | provided by compose | required |
-| Redis 7 | provided by compose | required |
-| Ollama | running separately | running separately |
-| Semgrep | included in image | install on host |
-| Gitleaks | included in image | install on host |
-| pip-audit | included in image | installed via requirements |
-
-> **Ollama note:** Custos deliberately keeps the LLM local — no code leaves your infrastructure. Ollama must be running and reachable on a host or VM accessible to the API/worker process. See [Ollama setup](#ollama-setup).
-
----
-
-## Quick start — Docker
-
-### 1. Clone and configure
+Requires Docker with Compose, and an Ollama instance.
 
 ```bash
 git clone https://github.com/halicea7/CUSTOS.git
 cd CUSTOS
-
-# Create the .env file at the project root (used by docker-compose)
-cp api/.env.example .env
+./custos deploy
 ```
 
-Edit `.env` and fill in the required values. For Docker, the service hostnames are `postgres` and `redis` (not `localhost`):
+On first run this:
 
-```bash
-# .env (project root, for Docker)
-SECRET_KEY=<run: python3 -c "import secrets; print(secrets.token_hex(32))">
-ENCRYPTION_KEY=<a second, different value generated the same way>
-DATABASE_URL=postgresql+asyncpg://Custos:Custos@postgres:5432/Custos
-REDIS_URL=redis://redis:6379
-OLLAMA_BASE_URL=http://host.docker.internal:11434   # or your Ollama host
-OLLAMA_MODEL=qwen2.5-coder:32b
-```
+1. asks for your Ollama URL and model (Enter accepts the defaults),
+2. writes `.env` with a generated `SECRET_KEY`, `ENCRYPTION_KEY` and database password (file mode 600),
+3. builds the images (Semgrep, Gitleaks, pip-audit included) and starts everything; migrations run automatically,
+4. creates the first admin account — choose a password, or leave it blank to generate one.
 
-GitHub tokens and webhook secrets are configured per repository in the dashboard (Repos page), not in `.env`.
+It finishes by printing the dashboard URL (port 3000) and the webhook URL to register on GitHub. Postgres and Redis are only reachable on the internal Docker network. Put a TLS reverse proxy in front before exposing Custos to the internet.
 
-### 2. Start services
+**Upgrading:** `git pull && ./custos deploy` — rebuilds, migrates, and keeps your existing `.env`.
 
-```bash
-docker compose up --build -d
-```
+**Back up `.env`.** Losing `ENCRYPTION_KEY` means re-entering every repo token.
 
-This starts: PostgreSQL, Redis, API (port 8000), ARQ worker, and Dashboard (port 3000).
-
-### 3. Database migrations
-
-The `migrate` service runs `alembic upgrade head` automatically before the API and worker start. Postgres and Redis are only reachable on the compose network (no host ports).
-
-### 4. Create the first admin user
-
-```bash
-docker compose exec api python create_user.py admin yourpassword admin
-```
-
-### 5. Open the dashboard
-
-```
-http://localhost:3000
-```
-
-Log in with the credentials you just created.
+Other commands: `./custos logs`, `./custos stop`. Add `--yes` (`./custos --yes deploy`) for an unattended install; a generated admin password is printed once.
 
 ---
 
-## Local development setup
+## Local development
 
-This path runs everything on your host machine with hot reload for the API and dashboard.
-
-### 1. Clone and set up Python environment
+Requires Python 3.12+, Node.js 20+, PostgreSQL 16, Redis and git (on macOS: `brew install python@3.12 node postgresql@16 redis`).
 
 ```bash
-git clone https://github.com/halicea7/CUSTOS.git
-cd CUSTOS
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r api/requirements-dev.txt
+./custos dev
 ```
 
-### 2. Start PostgreSQL and Redis
+The first run sets everything up, and later runs only redo what changed:
 
-If you use Homebrew on macOS:
+- creates `.venv` and installs Python and dashboard dependencies,
+- installs Semgrep into the venv and Gitleaks via Homebrew (on Linux, install Gitleaks yourself — scans skip it otherwise),
+- starts PostgreSQL if needed and creates the `Custos` role and database,
+- writes `api/.env` with generated keys,
+- runs migrations and creates your first admin account,
 
-```bash
-brew install postgresql@16 redis
-brew services start postgresql@16
-brew services start redis
-```
-
-Or start them manually however you prefer.
-
-### 3. Create the database
-
-```bash
-make db
-# equivalent to:
-# psql postgres -c "CREATE USER \"Custos\" WITH PASSWORD 'Custos';"
-# psql postgres -c "CREATE DATABASE \"Custos\" OWNER \"Custos\";"
-```
-
-### 4. Configure
-
-```bash
-cp api/.env.example api/.env
-```
-
-Edit `api/.env`. For local dev, leave `DATABASE_URL` and `REDIS_URL` pointing at `localhost`:
-
-```bash
-# api/.env
-SECRET_KEY=<run: python3 -c "import secrets; print(secrets.token_hex(32))">
-ENCRYPTION_KEY=<a second, different value generated the same way>
-DATABASE_URL=postgresql+asyncpg://Custos:Custos@localhost:5432/Custos
-REDIS_URL=redis://localhost:6379
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5-coder:32b
-```
-
-### 5. Run migrations
-
-```bash
-alembic upgrade head
-```
-
-### 6. Create the first admin user
-
-```bash
-cd api
-python create_user.py admin yourpassword admin
-cd ..
-```
-
-### 7. Install SAST tools
-
-See [SAST tool installation](#sast-tool-installation).
-
-### 8. Start everything
-
-The `dev.sh` script launches the API, ARQ worker, and Vite dev server together, tails all logs to your terminal, and shuts down cleanly on Ctrl+C:
-
-```bash
-./dev.sh
-```
-
-Services will be available at:
+then opens the dev console, which runs Redis, the API, the worker and the dashboard with live reload:
 
 | Service | URL |
 |---|---|
@@ -184,24 +77,31 @@ Services will be available at:
 | API | http://localhost:8000 |
 | API docs (Swagger) | http://localhost:8000/docs |
 
-Alternatively, start each piece manually in separate terminals:
+Console keys: `n` toggle an ngrok tunnel for webhooks, `b` toggle binding to `0.0.0.0` (e.g. Tailscale), `r` restart all, `q` quit. Start with them on using `./custos dev --ngrok --bind-all`. Logs are also written to `.dev-logs/`.
+
+`./custos setup` does the setup without starting the console. `./custos test` runs the test suite (integration tests use a separate `custos_test` database, skipped if it doesn't exist — create it with `createdb -O Custos custos_test`).
+
+**Upgrading from an older checkout** whose `api/.env` has no `SECRET_KEY`: just run `./custos dev`. It generates the keys and re-encrypts your stored repo tokens, which were encrypted with the old default key. The previous file is kept as `api/.env.bak`.
+
+---
+
+## Managing users
+
+Custos has two roles: `analyst` (triage findings, sign off) and `admin` (all analyst actions + Settings page + trigger self-scans). There is no self-registration — accounts are created from the shell:
 
 ```bash
-# Terminal 1 — API
-cd api && uvicorn main:app --reload --host 127.0.0.1 --port 8000
-
-# Terminal 2 — ARQ worker
-cd api && python -m arq worker.queue.WorkerSettings
-
-# Terminal 3 — Dashboard
-cd dashboard && npm run dev
+./custos user add alice --role admin
+./custos user add bob                  # analyst
+./custos user reset alice              # new password
 ```
+
+This works for both the Docker deployment and local setup (it detects which is running). Passwords are prompted for, or read from stdin when piped, so they never appear in shell history.
 
 ---
 
 ## Configuration reference
 
-All settings are read from environment variables (or `api/.env` for local dev / `.env` at project root for Docker).
+All settings are read from environment variables (or `api/.env` for local dev / `.env` at project root for Docker). `./custos` generates both files; edit them and restart to change settings.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -220,24 +120,11 @@ All settings are read from environment variables (or `api/.env` for local dev / 
 
 ### Rotating the encryption key
 
-Repo credentials are encrypted at rest. To change `ENCRYPTION_KEY` (or `SECRET_KEY`, if `ENCRYPTION_KEY` is unset) without losing them:
+Repo credentials are encrypted at rest. `./custos` handles the upgrade from older versions automatically. To change `ENCRYPTION_KEY` yourself without losing credentials:
 
 1. Set the new key, and put the old one in `PREVIOUS_ENCRYPTION_KEYS`.
-2. `cd api && python rotate_keys.py`
+2. Run `python manage.py rotate-keys` from `api/` (Docker: `docker compose exec api python manage.py rotate-keys`).
 3. Remove `PREVIOUS_ENCRYPTION_KEYS`.
-
-Installs that previously ran on the default `changeme` key should do this with `PREVIOUS_ENCRYPTION_KEYS=changeme`.
-
-Additional runtime settings (editable through the dashboard Settings page):
-
-| Key | Description |
-|---|---|
-| `ollama_model` | Override the default model at runtime |
-| `ollama_num_ctx` | Context window size in tokens (0 = use Modelfile default) |
-| `ollama_think` | Enable extended thinking for supported models |
-| `llm_max_content_chars` | Maximum characters of source code sent per LLM call |
-| `max_file_size_kb` / `max_files_per_repo` | Override the env limits above; take effect on the next job |
-| `worker_max_jobs` / `worker_job_timeout` | Worker concurrency and per-job timeout; take effect on worker restart |
 
 ---
 
@@ -283,7 +170,7 @@ Or set `ollama_num_ctx` in the dashboard Settings page (overrides the Modelfile 
 
 ## SAST tool installation
 
-The worker expects `semgrep`, `gitleaks`, and `pip-audit` to be available on `PATH`. Missing tools are logged as warnings and skipped — they do not cause scans to fail.
+Docker images and `./custos dev` install these for you (except Gitleaks on Linux); this section is for manual setups. The worker expects `semgrep`, `gitleaks`, and `pip-audit` to be available on `PATH`. Missing tools are logged as warnings and skipped — they do not cause scans to fail.
 
 ### Semgrep
 
@@ -327,16 +214,16 @@ Required permissions:
 - **Contents:** Read-only
 - **Checks:** Read and write
 
-Set `GITHUB_TOKEN` in your `.env` to the generated token.
+Enter the token when adding the repository on the dashboard's **Repos** page. Tokens are stored per repository, encrypted.
 
 ### 2. Register the webhook
 
 In each repository (or once at the organisation level for all repos):
 
 1. Go to **Settings → Webhooks → Add webhook**
-2. **Payload URL:** `https://<your-host>/webhook/github`
+2. **Payload URL:** `https://<your-host>/api/webhook/github` (Docker, via the dashboard proxy) or `http://<host>:8000/webhook/github` (API directly)
 3. **Content type:** `application/json`
-4. **Secret:** same value as `GITHUB_WEBHOOK_SECRET` in your `.env`
+4. **Secret:** the webhook secret you entered for this repo on the **Repos** page
 5. **Events:** select *Pushes* and *Pull requests*
 
 ### Local development (exposing the webhook)
@@ -344,9 +231,9 @@ In each repository (or once at the organisation level for all repos):
 Your local API needs to be reachable from GitHub. Use a tunnel:
 
 ```bash
-# Option A — ngrok
-ngrok http 8000
-# Use the https://xxxx.ngrok.io URL as your webhook Payload URL
+# Option A — ngrok, built into the dev console (press n, or start with it on)
+./custos dev --ngrok
+# The console prints the webhook URL to use as the Payload URL
 
 # Option B — smee.io (no account required)
 npm install -g smee-client
@@ -366,7 +253,7 @@ gh repo list YOUR_ORG --limit 200 --json nameWithOwner -q '.[].nameWithOwner' | 
     --field "name=web" \
     --field "config[url]=https://<your-host>/webhook/github" \
     --field "config[content_type]=json" \
-    --field "config[secret]=$GITHUB_WEBHOOK_SECRET" \
+    --field "config[secret]=$WEBHOOK_SECRET" \
     --field "events[]=push" \
     --field "events[]=pull_request" \
     --field "active=true"
@@ -376,56 +263,16 @@ Or configure a single **organisation-level webhook** under **Organisation → Se
 
 ---
 
-## Creating users
-
-Custos has two roles: `analyst` (triage findings, sign off) and `admin` (all analyst actions + Settings page + trigger self-scans).
-
-```bash
-# From the api/ directory with the venv active:
-python create_user.py <username> <password> [role]
-
-# Examples
-python create_user.py alice password123 admin
-python create_user.py bob  password456 analyst
-```
-
-There is no self-registration endpoint — all accounts are created by a shell-level admin.
-
----
-
 ## Useful commands
 
 ```bash
-# Start full dev stack (API + worker + dashboard + Redis)
-./dev.sh
+./custos --help                 # all launcher commands
+./custos dev                    # local stack with live reload
+./custos deploy                 # Docker deploy / upgrade
+./custos logs | stop            # Docker logs / shutdown
+./custos user add NAME          # create a login
+./custos test                   # run tests (args pass through to pytest)
 
-# Run database migrations
-alembic upgrade head
-
-# Check API health
-curl http://localhost:8000/healthz
-
-# Interactive API docs
-open http://localhost:8000/docs
-
-# Create a user
-cd api && python create_user.py <user> <pass> <role>
-
-# Tail dev logs
-tail -f .dev-logs/api.log .dev-logs/worker.log .dev-logs/dashboard.log
-
-# Build the dashboard for production
-cd dashboard && npm run build
-
-# Docker: rebuild and restart
-docker compose up --build -d
-
-# Docker: view logs
-docker compose logs -f api worker
-
-# Docker: stop everything
-docker compose down
-
-# Docker: stop and remove the database volume
-docker compose down -v
+curl http://localhost:8000/healthz      # API health
+docker compose down -v                  # Docker: stop and DELETE the database volume
 ```

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # keys can be rotated without losing stored credentials.
     ENCRYPTION_KEY: str = ""
     # Comma-separated old encryption keys still accepted for decryption.
-    # Use with rotate_keys.py when changing ENCRYPTION_KEY (or SECRET_KEY).
+    # Used by `manage.py rotate-keys` (run automatically by ./custos) on key changes.
     PREVIOUS_ENCRYPTION_KEYS: str = ""
 
     DATABASE_URL: str = "postgresql+asyncpg://Custos:Custos@localhost:5432/Custos"
@@ -44,10 +44,8 @@ def validate_secrets(s: Settings) -> None:
     if s.SECRET_KEY in _WEAK_SECRETS or len(s.SECRET_KEY) < 32:
         raise RuntimeError(
             "SECRET_KEY is unset, a known default, or shorter than 32 chars. "
-            "Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\" "
-            "and set it in api/.env. If existing repo credentials were encrypted "
-            "with the old key, also set PREVIOUS_ENCRYPTION_KEYS=<old key> and run "
-            "rotate_keys.py."
+            "Run ./custos setup (local) or ./custos deploy (Docker) to generate "
+            "keys — it also migrates repo credentials encrypted with the old key."
         )
 
 

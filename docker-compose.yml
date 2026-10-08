@@ -17,6 +17,10 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    extra_hosts:
+      # Lets OLLAMA_BASE_URL=http://host.docker.internal:11434 reach an
+      # Ollama running on the host (automatic on macOS, needed on Linux).
+      - "host.docker.internal:host-gateway"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -29,6 +33,10 @@ services:
       context: .
       dockerfile: api/Dockerfile
     env_file: .env
+    extra_hosts:
+      # Lets OLLAMA_BASE_URL=http://host.docker.internal:11434 reach an
+      # Ollama running on the host (automatic on macOS, needed on Linux).
+      - "host.docker.internal:host-gateway"
     depends_on:
       migrate:
         condition: service_completed_successfully

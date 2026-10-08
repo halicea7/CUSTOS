@@ -11,9 +11,11 @@ build/
 *.egg
 pip-wheel-metadata/
 
-# Environment
+# Environment (and the backups ./custos makes when updating them)
 .env
+.env.bak
 api/.env
+api/.env.bak
 *.env.local
 
 # Alembic
