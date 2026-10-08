@@ -68,6 +68,7 @@ Each element of "findings" must match this schema exactly:
 
 If you find no issues, return: {"findings": []}"""
 
+# Filled with str.format(): literal braces must be doubled.
 _USER_PROMPT_TEMPLATE = """\
 STATIC ANALYSIS FINDINGS (from automated tools — use as context):
 {sast_json}
@@ -86,7 +87,7 @@ Review the above code for the following vulnerability classes:
 - Dependency risks not covered by the audit tool findings above
 - Any other high-confidence security issues
 
-Return your findings as {"findings": [...]} per the schema in your instructions."""
+Return your findings as {{"findings": [...]}} per the schema in your instructions."""
 
 # Structured-output schema passed to Ollama's `format` field. Ollama constrains
 # generation to this schema, so the response is always an object with a
