@@ -195,6 +195,7 @@ class AppConfigResponse(BaseModel):
     # Worker (requires worker restart to take effect)
     worker_max_jobs: int
     worker_job_timeout: int
+    repo_check_interval_hours: int
 
 
 class AppConfigUpdateRequest(BaseModel):
@@ -230,6 +231,7 @@ class AppConfigUpdateRequest(BaseModel):
     access_token_expire_minutes: int | None = Field(None, ge=5, le=10_080)
     worker_max_jobs: int | None = Field(None, ge=1, le=64)
     worker_job_timeout: int | None = Field(None, ge=60, le=86_400)
+    repo_check_interval_hours: int | None = Field(None, ge=0, le=720)
 
 
 class TestS1Request(BaseModel):
@@ -274,6 +276,7 @@ class RepoResponse(BaseModel):
     added_by: str
     added_at: datetime
     last_push_at: datetime | None = None
+    last_checked_at: datetime | None = None
     enabled: bool
     token_preview: str
     groups: list[GroupSummary] = []

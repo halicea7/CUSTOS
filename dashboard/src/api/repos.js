@@ -7,3 +7,4 @@ export const deleteRepo = (id) => api.delete(`/repos/${id}`);
 export const validateToken = (body) => api.post("/repos/validate-token", body).then(r => r.data);
 export const addRepoToGroup = (repoId, groupId) => api.post(`/repos/${repoId}/groups/${groupId}`);
 export const removeRepoFromGroup = (repoId, groupId) => api.delete(`/repos/${repoId}/groups/${groupId}`);
+export const checkRepoUpdates = (id) => api.post(`/repos/${id}/check-updates`).then(r => r.data);

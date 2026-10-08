@@ -2,7 +2,7 @@ import re
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,7 @@ from auth import get_current_user
 from crypto import decrypt, encrypt
 from database import get_db
 from enums import Role
+from intake import check_repo_for_updates
 from models import Group, Repo, RepoGroup, User
 from schemas import (
     GroupSummary,
@@ -78,6 +79,7 @@ def _response(repo: Repo, groups: list[GroupSummary]) -> RepoResponse:
         added_by=repo.added_by,
         added_at=repo.added_at,
         last_push_at=repo.last_push_at,
+        last_checked_at=repo.last_checked_at,
         enabled=repo.enabled,
         token_preview=_preview(repo.token_last4),
         groups=groups,
@@ -164,6 +166,33 @@ async def update_repo(
     await db.commit()
     await db.refresh(repo)
     return await _to_response(db, repo)
+
+
+@router.post("/{repo_id}/check-updates")
+async def check_updates(
+    repo_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Look for unscanned commits (default branch head, open PRs) and queue them.
+
+    The webhook-free way to keep a repo scanned: outbound calls to GitHub only.
+    """
+    repo = _require_owner(await db.get(Repo, repo_id), current_user)
+    if not repo.enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository is disabled")
+    try:
+        return await check_repo_for_updates(
+            db, request.app.state.redis, request.app.state.arq_pool, repo
+        )
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        hint = {401: "the token was rejected", 403: "the token lacks access or hit a rate limit",
+                404: "repository not found, or the token can't see it"}.get(code, "unexpected response")
+        raise HTTPException(status_code=502, detail=f"GitHub returned {code}: {hint}") from None
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach GitHub ({type(exc).__name__})") from None
 
 
 @router.delete("/{repo_id}", status_code=status.HTTP_204_NO_CONTENT)

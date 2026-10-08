@@ -1,9 +1,9 @@
 # Custos
 
-Automated code security review for university IT teams. Custos receives GitHub webhooks on push/PR events, fetches the commit, runs static analysis (Semgrep, Gitleaks, pip-audit/npm-audit), feeds the results to an LLM (a local Ollama model by default, or any OpenAI Responses API-compatible service), and surfaces prioritised findings in a dashboard where analysts can triage, annotate, and sign off.
+Automated code security review for university IT teams. Custos picks up new commits on push/PR (by checking GitHub on a schedule or on demand, or from webhooks), fetches the commit, runs static analysis (Semgrep, Gitleaks, pip-audit/npm-audit), feeds the results to an LLM (a local Ollama model by default, or any OpenAI Responses API-compatible service), and surfaces prioritised findings in a dashboard where analysts can triage, annotate, and sign off.
 
 ```
-GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
+GitHub ← update check (scheduled / button) or → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
                                    ↘ GitHub check run (one per commit, updated in place)
 ```
 
@@ -216,7 +216,7 @@ Custos can review its own updates the same way it reviews any repository, and de
 
 **Setup:**
 
-1. **Register the repo.** Add the Custos repository on the **Repos** page, with its webhook, like any other.
+1. **Register the repo.** Add the Custos repository on the **Repos** page like any other.
 2. **Mark it as Custos.** On **Settings → Analysis → Self-update**, select that repository.
 3. **Schedule the updater.** On the server, run `./custos update` from cron or a systemd timer, for example:
 
@@ -256,18 +256,24 @@ brew install gitleaks   # or download a release binary from github.com/gitleaks/
 
 ## Connecting repositories
 
-Repositories are connected from the dashboard **Repos → Add repository** wizard. Each repo has its own GitHub token and webhook secret, stored encrypted.
+Repositories are connected from the dashboard **Repos → Add repository** wizard. Each repo has its own GitHub token (and optional webhook secret), stored encrypted.
 
-1. Create a fine-grained PAT with **Contents: Read** and **Checks: Read and write** on the repo.
-2. In the wizard, paste the token (it is validated against the GitHub API) and copy the generated webhook secret.
-3. In the repo on GitHub: **Settings → Webhooks → Add webhook**
+1. Create a fine-grained PAT with **Contents: Read** and **Pull requests: Read** on the repo (and **Checks: Read and write** for results on GitHub).
+2. In the wizard, paste the token (it is validated against the GitHub API).
+
+That's all an internal deployment needs: Custos asks GitHub for new commits (the default branch head and every open PR's head) and queues any it hasn't scanned. This needs outbound HTTPS to GitHub only; GitHub never has to reach Custos.
+
+- **On demand:** **Repos → Check for updates** on a repository.
+- **On a schedule:** every **Settings → Repository updates → Check every (hours)** (default 48; `0` = on demand only). The worker checks hourly which repos are due.
+
+**Optional: webhooks for instant scans**, only if GitHub can reach Custos. Copy the generated webhook secret from the wizard, then in the repo on GitHub: **Settings → Webhooks → Add webhook**
    - Payload URL: `https://<your-host>/api/webhook/github` (Docker) or `http://localhost:8000/webhook/github` behind a tunnel (local)
    - Content type: `application/json`, Secret: the generated secret
    - Events: *Pushes* and *Pull requests*
 
 Custos posts one **Custos Security Review** check run per commit and updates it as analysis progresses: `action_required` when critical/high findings exist (or the LLM phase failed), `neutral` otherwise, `failure` if analysis errored, and `success` once an analyst signs off.
 
-For local development, expose the API with the dev console's ngrok toggle or with [smee.io](https://smee.io).
+To test webhooks in local development, expose the API with the dev console's ngrok toggle or with [smee.io](https://smee.io). Both make it reachable from the internet; use update checks instead when that isn't wanted.
 
 ---
 

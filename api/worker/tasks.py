@@ -18,6 +18,7 @@ from crypto import decrypt
 from database import async_session_factory
 from enums import BLOCKING_SEVERITIES, RunStatus, SubmissionStatus
 from github_client import post_github_check
+from intake import check_repo_for_updates
 from models import AppConfig, Finding, LlmRun, Repo, SelfScan, SelfScanFinding, Submission
 from redis_util import LLM_ACTIVE_SET, llm_lock_key, llm_start_key
 from schemas import AppConfigResponse
@@ -558,3 +559,30 @@ async def reap_stale_jobs(ctx) -> None:
             "Reaped stale jobs: %d submission(s), %d LLM run(s), %d self-scan(s)",
             subs.rowcount, runs.rowcount, scans.rowcount,
         )
+
+
+async def check_repos_for_updates(ctx) -> None:
+    """Scheduled "Check for updates": queue unscanned commits of repos that are due.
+
+    Runs hourly; a repo is due once repo_check_interval_hours have passed since
+    its last check (manual or scheduled). 0 turns the schedule off.
+    """
+    redis = ctx["redis"]  # ArqRedis: also the job pool, on Custos's queue
+    async with async_session_factory() as db:
+        cfg = await load_app_config(db)
+        if cfg.repo_check_interval_hours <= 0:
+            return
+        cutoff = _now() - timedelta(hours=cfg.repo_check_interval_hours)
+        due = (await db.execute(
+            select(Repo.id, Repo.repo_full_name).where(
+                Repo.enabled.is_(True),
+                (Repo.last_checked_at.is_(None)) | (Repo.last_checked_at <= cutoff),
+            )
+        )).all()
+        # Loaded one at a time: a failure's rollback expires every loaded object.
+        for repo_id, name in due:
+            try:
+                await check_repo_for_updates(db, redis, redis, await db.get(Repo, repo_id))
+            except Exception as exc:
+                await db.rollback()
+                logger.warning("Scheduled update check failed for %s: %s", name, redact(str(exc)))

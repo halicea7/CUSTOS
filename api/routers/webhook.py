@@ -1,6 +1,5 @@
 import json
 import logging
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -8,9 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from crypto import decrypt
 from database import get_db
-from enums import SubmissionStatus
-from github_client import post_github_check, verify_github_signature
-from models import Repo, Submission
+from github_client import verify_github_signature
+from intake import claim_commit, queue_submission
+from models import Repo
 from schemas import WebhookResponse
 
 logger = logging.getLogger(__name__)
@@ -74,41 +73,14 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         pr_number = payload["number"]
 
     # Redis dedup: prevent double-processing if GitHub retries the webhook.
-    redis = request.app.state.redis
-    dedup_key = f"Custos:dedup:{repo_full_name}:{commit_sha}"
-    is_new = await redis.set(dedup_key, "1", nx=True, ex=300)
-    if not is_new:
+    if not await claim_commit(request.app.state.redis, repo_full_name, commit_sha):
         logger.info("Duplicate webhook for %s@%s — skipping", repo_full_name, commit_sha)
         return WebhookResponse(status="deduplicated")
 
-    try:
-        submission = Submission(
-            repo_full_name=repo_full_name,
-            repo_url=repo_url,
-            commit_sha=commit_sha,
-            branch=branch,
-            submitter=submitter,
-            event_type=event_type,
-            pr_number=pr_number,
-            status=SubmissionStatus.PENDING.value,
-        )
-        db.add(submission)
-        repo_rec.last_push_at = datetime.now(UTC)
-        await db.commit()
-
-        github_token = decrypt(repo_rec.github_token_enc)
-        submission.check_run_id = await post_github_check(
-            repo=repo_full_name, sha=commit_sha, status="queued", token=github_token
-        )
-        await db.commit()
-
-        await request.app.state.arq_pool.enqueue_job("analyze_submission", str(submission.id))
-    except Exception:
-        # Let GitHub's redelivery retry instead of being swallowed by the dedup key.
-        await redis.delete(dedup_key)
-        raise
-
-    logger.info(
-        "Enqueued analysis for submission %s (%s@%s)", submission.id, repo_full_name, commit_sha
+    # On failure the claim is released, so GitHub's redelivery can retry.
+    submission = await queue_submission(
+        db, request.app.state.redis, request.app.state.arq_pool, repo_rec,
+        repo_url=repo_url, commit_sha=commit_sha, branch=branch,
+        submitter=submitter, event_type=event_type, pr_number=pr_number,
     )
     return WebhookResponse(status="accepted", submission_id=str(submission.id))

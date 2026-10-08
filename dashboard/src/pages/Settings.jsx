@@ -319,6 +319,7 @@ function validate(d, cfg) {
   if (!intIn(d.access_token_expire_minutes, 5, 10080)) e.access_token_expire_minutes = "5 – 10,080 minutes";
   if (!intIn(d.worker_max_jobs, 1, 64)) e.worker_max_jobs = "1 – 64 jobs";
   if (!intIn(d.worker_job_timeout, 60, 86400)) e.worker_job_timeout = "60 – 86,400 seconds";
+  if (!intIn(d.repo_check_interval_hours, 0, 720)) e.repo_check_interval_hours = "0 – 720 hours";
   return e;
 }
 
@@ -555,6 +556,7 @@ function AnalysisTab({ theme }) {
         access_token_expire_minutes: Number(draft.access_token_expire_minutes),
         worker_max_jobs: Number(draft.worker_max_jobs),
         worker_job_timeout: Number(draft.worker_job_timeout),
+        repo_check_interval_hours: Number(draft.repo_check_interval_hours),
       });
       setCfg(updated); setDraft(updated); setRespTest(null); setS1Test(null);
       setFb({ msg: "Saved", type: "success" });
@@ -924,6 +926,16 @@ function AnalysisTab({ theme }) {
           </Field>
           <Field theme={t} label="Max files sent to LLM" hint="most relevant first" error={errors.max_files_per_repo}>
             <TextInput theme={t} type="number" value={draft.max_files_per_repo ?? ""} onChange={set("max_files_per_repo")} mono />
+          </Field>
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="Repository updates"
+        subtitle="Custos asks GitHub for new commits (default branch and open PRs); GitHub never needs to reach this server">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+          <Field theme={t} label="Check every (hours)" hint="0 = only when someone presses Check for updates"
+            error={errors.repo_check_interval_hours}>
+            <TextInput theme={t} type="number" value={draft.repo_check_interval_hours ?? ""} onChange={set("repo_check_interval_hours")} mono />
           </Field>
         </div>
       </SectionCard>

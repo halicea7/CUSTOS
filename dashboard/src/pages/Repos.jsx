@@ -1,24 +1,47 @@
 import React, { useEffect, useState } from "react";
-import { listRepos, deleteRepo, updateRepo } from "../api/repos.js";
+import { listRepos, deleteRepo, updateRepo, checkRepoUpdates } from "../api/repos.js";
+import { errorMessage } from "../api/errors.js";
 import { useTheme, Icon } from "../App.jsx";
 import { Btn } from "../components/atoms.jsx";
 import { PageHeader, PageWrap } from "../components/ui.jsx";
 import AddRepoModal from "../components/AddRepoModal.jsx";
 
-function fmtDay(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+function fmtWhen(ts) {
+  if (!ts) return "Never";
+  return new Date(ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-function RepoRow({ theme, repo, onToggle, onDelete, last }) {
+function checkSummary(result) {
+  const n = result.queued.length;
+  if (!n) return "Up to date: no new commits.";
+  return `Queued ${n} scan${n !== 1 ? "s" : ""}: ` + result.queued
+    .map(q => q.pr_number ? `PR #${q.pr_number}` : q.branch).join(", ");
+}
+
+function RepoRow({ theme, repo, onToggle, onDelete, onChecked, last }) {
   const [confirming, setConfirming] = useState(false);
   const [hover,      setHover]      = useState(false);
+  const [checking,   setChecking]   = useState(false);
+  const [checkMsg,   setCheckMsg]   = useState(null);  // { ok, text }
+
+  const checkNow = async () => {
+    setChecking(true); setCheckMsg(null);
+    try {
+      const result = await checkRepoUpdates(repo.id);
+      setCheckMsg({ ok: true, text: checkSummary(result) });
+      onChecked();
+    } catch (err) {
+      setCheckMsg({ ok: false, text: errorMessage(err, "Check failed") });
+    } finally {
+      setChecking(false);
+    }
+  };
   const t = theme;
   const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
 
   return (
     <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      style={{ display: "grid", gridTemplateColumns: "1fr 130px 110px 110px 190px", gap: 14,
+      style={{ display: "grid", gridTemplateColumns: GRID, gap: 14,
         alignItems: "center", padding: "14px 18px",
         borderBottom: last ? "none" : `1px solid ${t.c.border}`,
         background: hover ? t.c.raised : "transparent", transition: "background 0.12s",
@@ -41,15 +64,25 @@ function RepoRow({ theme, repo, onToggle, onDelete, last }) {
             ))}
           </div>
         )}
+        {checkMsg && (
+          <div role="status" style={{ marginTop: 7, paddingLeft: 23, fontSize: 12,
+            color: checkMsg.ok ? t.c.text2 : "var(--red)" }}>
+            {checkMsg.text}
+          </div>
+        )}
       </div>
 
       <span style={{ fontSize: 12, color: t.c.text3, fontFamily: t.fontMono }}>
         {repo.token_preview || "—"}
       </span>
       <span style={{ fontSize: 12.5, color: t.c.text2 }}>{repo.added_by}</span>
-      <span style={{ fontSize: 12, color: t.c.text3 }}>{fmtDay(repo.last_push_at)}</span>
+      <span title={repo.last_push_at ? `Last scan queued ${fmtWhen(repo.last_push_at)}` : undefined}
+        style={{ fontSize: 12, color: t.c.text3 }}>{fmtWhen(repo.last_checked_at)}</span>
 
       <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "flex-end" }}>
+        <Btn theme={t} size="sm" disabled={checking || !repo.enabled} onClick={checkNow}>
+          {checking ? "Checking…" : "↻ Check for updates"}
+        </Btn>
         <button onClick={() => onToggle(repo)} style={{ display: "inline-flex", alignItems: "center",
           gap: 6, background: "none", border: "none", cursor: "pointer", fontSize: 12.5,
           fontWeight: 500, fontFamily: t.fontUi, color: repo.enabled ? green : t.c.text3,
@@ -76,6 +109,8 @@ function RepoRow({ theme, repo, onToggle, onDelete, last }) {
   );
 }
 
+const GRID = "1fr 130px 100px 120px 330px";
+
 export default function Repos() {
   const { theme }  = useTheme();
   const [repos,     setRepos]     = useState([]);
@@ -90,6 +125,9 @@ export default function Repos() {
 
   useEffect(() => { load(); }, []);
 
+  // Quiet refresh (no loading state) so a row's check result stays on screen.
+  const refresh = () => { listRepos().then(setRepos).catch(() => {}); };
+
   const handleDelete = async (id) => {
     await deleteRepo(id).catch(() => {});
     setRepos(prev => prev.filter(r => r.id !== id));
@@ -103,16 +141,16 @@ export default function Repos() {
   return (
     <PageWrap theme={t} max={1080}>
       <PageHeader theme={t} title="Repositories"
-        subtitle={`${repos.length} repositories connected to webhooks`}
+        subtitle={`${repos.length} ${repos.length === 1 ? "repository" : "repositories"} · checked for new commits on a schedule or on demand`}
         right={<Btn theme={t} variant="primary" onClick={() => setShowModal(true)}>+ Add repository</Btn>}
       />
 
       <div style={{ border: `1px solid ${t.c.border}`, borderRadius: t.radiusLg,
         overflow: "hidden", background: t.c.surface, boxShadow: t.c.shadow }}>
         {/* Header row */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 110px 110px 190px", gap: 14,
+        <div style={{ display: "grid", gridTemplateColumns: GRID, gap: 14,
           padding: "11px 18px", background: t.c.raised, borderBottom: `1px solid ${t.c.border}` }}>
-          {["Repository", "Token", "Added by", "Last push", ""].map((h, i) => (
+          {["Repository", "Token", "Added by", "Last checked", ""].map((h, i) => (
             <span key={i} style={{ fontSize: 11, fontWeight: 600, color: t.c.text3,
               letterSpacing: "0.04em", textTransform: "uppercase",
               textAlign: i === 4 ? "right" : "left" }}>{h}</span>
@@ -133,7 +171,7 @@ export default function Repos() {
         ) : (
           repos.map((repo, i) => (
             <RepoRow key={repo.id} theme={t} repo={repo}
-              onToggle={handleToggle} onDelete={handleDelete} last={i === repos.length - 1} />
+              onToggle={handleToggle} onDelete={handleDelete} onChecked={refresh} last={i === repos.length - 1} />
           ))
         )}
       </div>

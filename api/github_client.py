@@ -67,3 +67,50 @@ async def post_github_check(
     except Exception as exc:
         logger.warning("Failed to post GitHub check for %s@%s: %s", repo, sha[:8], exc)
         return check_run_id
+
+
+# Open PRs looked at per "Check for updates"; the newest are returned first.
+MAX_OPEN_PRS = 50
+
+
+async def list_scan_targets(repo: str, token: str) -> list[dict]:
+    """Commits Custos would scan for *repo* now: its default branch head and open PR heads.
+
+    Each target matches what the webhook would have queued: commit_sha, branch,
+    submitter, event_type ("push" or "pull_request"), pr_number and repo_url.
+    Raises httpx.HTTPError when GitHub can't be reached or refuses the token.
+    """
+    async with httpx.AsyncClient(timeout=15, headers=_headers(token)) as client:
+        meta = await client.get(f"{_API}/repos/{repo}")
+        meta.raise_for_status()
+        info = meta.json()
+        default_branch, repo_url = info["default_branch"], info["clone_url"]
+
+        head = await client.get(f"{_API}/repos/{repo}/commits/{default_branch}")
+        head.raise_for_status()
+        commit = head.json()
+        targets = [{
+            "commit_sha": commit["sha"],
+            "branch": default_branch,
+            "submitter": (commit.get("author") or {}).get("login")
+            or (commit.get("commit", {}).get("author") or {}).get("name"),
+            "event_type": "push",
+            "pr_number": None,
+            "repo_url": repo_url,
+        }]
+
+        pulls = await client.get(
+            f"{_API}/repos/{repo}/pulls",
+            params={"state": "open", "sort": "updated", "direction": "desc", "per_page": MAX_OPEN_PRS},
+        )
+        pulls.raise_for_status()
+        for pr in pulls.json():
+            targets.append({
+                "commit_sha": pr["head"]["sha"],
+                "branch": pr["head"]["ref"],
+                "submitter": (pr.get("user") or {}).get("login"),
+                "event_type": "pull_request",
+                "pr_number": pr["number"],
+                "repo_url": repo_url,
+            })
+    return targets

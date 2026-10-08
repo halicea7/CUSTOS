@@ -178,6 +178,8 @@ class Repo(Base):
     added_by: Mapped[str] = mapped_column(Text, nullable=False)
     added_at: Mapped[datetime] = _created_at()
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last "Check for updates" (manual or scheduled): polling instead of a webhook.
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
 
 

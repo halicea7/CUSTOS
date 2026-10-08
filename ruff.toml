@@ -12,6 +12,6 @@ ignore = [
 [lint.isort]
 known-first-party = [
   "access", "app_config", "auth", "config", "crypto", "database", "enums",
-  "github_client", "models", "redis_util", "routers", "schemas", "worker",
+  "github_client", "intake", "models", "redis_util", "routers", "schemas", "worker",
 ]
 known-third-party = ["alembic"]

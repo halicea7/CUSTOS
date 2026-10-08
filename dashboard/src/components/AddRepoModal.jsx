@@ -194,7 +194,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
                     {showToken ? "HIDE" : "SHOW"}
                   </button>
                 </div>
-                <p style={S.hint}>Classic token: select <strong style={{color:"var(--text-2)"}}>repo</strong> (full). Fine-grained: Contents (read) + Commit statuses (read/write)</p>
+                <p style={S.hint}>Classic token: select <strong style={{color:"var(--text-2)"}}>repo</strong> (full). Fine-grained: Contents (read) + Pull requests (read), plus Checks (read/write) to post results on GitHub</p>
               </div>
 
               <div style={S.row}>
@@ -246,9 +246,19 @@ export default function AddRepoModal({ onClose, onAdded }) {
 
           {step === 2 && (
             <>
-              <p style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "16px", marginTop: 0 }}>
-                Token verified ✓ — now configure the webhook on GitHub.
+              <p style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "12px", marginTop: 0 }}>
+                Token verified ✓
               </p>
+              <p style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "16px", marginTop: 0, lineHeight: 1.6 }}>
+                Custos checks the repository for new commits on a schedule (Settings), and
+                you can press <span style={{ color: "var(--text)" }}>Check for updates</span> on
+                the Repositories page at any time. Neither needs GitHub to reach this server.
+              </p>
+
+              <details>
+                <summary style={{ cursor: "pointer", fontSize: "12px", color: "var(--text-2)", marginBottom: "12px" }}>
+                  Optional: webhook for instant scans (only if GitHub can reach this server)
+                </summary>
 
               <div style={S.row}>
                 <label style={S.label}>PAYLOAD URL</label>
@@ -276,6 +286,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
                   <li>Click <span style={{ color: "var(--text)" }}>Add webhook</span></li>
                 </ol>
               </div>
+              </details>
 
               {error && <p style={{ color: "var(--red, #f87171)", fontSize: "12px" }}>{error}</p>}
             </>
@@ -288,7 +299,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
                 {repoName} connected
               </p>
               <p style={{ fontSize: "12px", color: "var(--text-3)" }}>
-                Custos will scan it on the next push or pull request.
+                Press Check for updates to scan it now; otherwise Custos picks it up on its next scheduled check.
               </p>
             </div>
           )}
@@ -311,7 +322,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
             <>
               <button onClick={() => setStep(1)} style={S.btn()}>← BACK</button>
               <button onClick={handleSave} disabled={saving} style={{ ...S.btn("primary"), opacity: saving ? 0.5 : 1 }}>
-                {saving ? "SAVING..." : "I'VE ADDED THE WEBHOOK →"}
+                {saving ? "SAVING..." : "SAVE REPOSITORY →"}
               </button>
             </>
           )}

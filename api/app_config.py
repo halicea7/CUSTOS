@@ -43,10 +43,13 @@ CONFIG_KEYS = {
     "max_file_size_kb", "max_files_per_repo",
     "access_token_expire_minutes",
     "worker_max_jobs", "worker_job_timeout",
+    "repo_check_interval_hours",
 }
 
 DEFAULT_WORKER_MAX_JOBS = 4
 DEFAULT_WORKER_JOB_TIMEOUT = 900
+# Scheduled "Check for updates" on every enabled repo; 0 = manual only.
+DEFAULT_REPO_CHECK_INTERVAL_HOURS = 48
 
 
 async def load_app_config(db: AsyncSession) -> AppConfigResponse:
@@ -90,6 +93,9 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
         ),
         worker_max_jobs=int(ov.get("worker_max_jobs", DEFAULT_WORKER_MAX_JOBS)),
         worker_job_timeout=int(ov.get("worker_job_timeout", DEFAULT_WORKER_JOB_TIMEOUT)),
+        repo_check_interval_hours=int(
+            ov.get("repo_check_interval_hours", DEFAULT_REPO_CHECK_INTERVAL_HOURS)
+        ),
     )
 
 
