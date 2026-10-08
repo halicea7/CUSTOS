@@ -3,6 +3,10 @@
 
 x-backend-env: &backend-env
   env_file: .env
+  extra_hosts:
+    # OLLAMA_BASE_URL=http://host.docker.internal:11434 reaches an Ollama on
+    # the Docker host (automatic on macOS/Windows, needs this on Linux).
+    - "host.docker.internal:host-gateway"
   environment:
     DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-custos}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-custos}
     REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0

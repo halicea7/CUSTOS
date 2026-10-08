@@ -41,12 +41,17 @@ class CloneError(RuntimeError):
     pass
 
 
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
 async def clone_repo(url: str, sha: str, base_dir: str, github_token: str = "") -> str:
     """Fetch *sha* from *url* into a new temp dir under *base_dir*.
 
     Uses a depth-1 fetch of the exact commit, so only one tree is downloaded.
     Returns the absolute path; the caller is responsible for removing it.
     """
+    if not _SHA_RE.match(sha):
+        raise CloneError(f"Refusing to fetch: {sha[:50]!r} is not a commit SHA")
     Path(base_dir).mkdir(parents=True, exist_ok=True)
     tmpdir = tempfile.mkdtemp(dir=base_dir, prefix="Custos_")
     env = _git_env(github_token)

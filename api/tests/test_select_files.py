@@ -49,3 +49,16 @@ def test_budget_skips_files_that_do_not_fit(tmp_path):
     _write(tmp_path, "other.py", "y" * 10)
     files = dict(_select_files(str(tmp_path), [], 10_000, 50, max_total_chars=50))
     assert list(files) == ["other.py"]
+
+
+def test_secret_files_never_reach_the_prompt(tmp_path):
+    _write(tmp_path, ".env", "SECRET_KEY=live")
+    _write(tmp_path, "config/.env.production", "DB_PASSWORD=live")
+    _write(tmp_path, "deploy/server.pem", "-----BEGIN PRIVATE KEY-----")
+    _write(tmp_path, ".ssh/id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----")
+    _write(tmp_path, ".env.example", "SECRET_KEY=")
+    _write(tmp_path, "app.py", "print('hi')")
+    # Even when a scanner points straight at them.
+    sast = [RawFinding("gitleaks", "high", "secret", file_path=".env")]
+    files = dict(_select_files(str(tmp_path), sast, max_file_bytes=10_000, max_files=50, max_total_chars=10_000))
+    assert set(files) == {".env.example", "app.py"}

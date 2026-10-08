@@ -57,8 +57,11 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     repo_url: str = repo["clone_url"]
 
     if event_type == "push":
+        ref = payload.get("ref", "")
         if payload.get("deleted") or set(payload.get("after", "")) == {"0"}:
             return WebhookResponse(status="ignored")
+        if not ref.startswith("refs/heads/"):
+            return WebhookResponse(status="ignored")  # tag pushes
         commit_sha: str = payload["after"]
         branch: str = payload.get("ref", "").replace("refs/heads/", "")
         submitter: str | None = payload.get("pusher", {}).get("name")

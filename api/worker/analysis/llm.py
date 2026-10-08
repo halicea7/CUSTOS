@@ -364,6 +364,21 @@ def _batch_files(files: list[tuple[str, str]], max_chars: int) -> list[list[tupl
     return batches
 
 
+_SECRET_FILE_NAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".pgpass", ".npmrc", ".pypirc"}
+_SECRET_FILE_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".keystore", ".jks"}
+
+
+def _is_secret_file(name: str) -> bool:
+    """Files that hold live credentials never go into the prompt: real env
+    files (e.g. Custos's own api/.env during a local self-scan), private keys
+    and credential stores. Templates are fine. Gitleaks still scans them all."""
+    if name in (".env.example", ".env.sample", ".env.template"):
+        return False
+    if name == ".env" or name.startswith(".env."):
+        return True
+    return name in _SECRET_FILE_NAMES or Path(name).suffix.lower() in _SECRET_FILE_SUFFIXES
+
+
 def _safe_read(repo_root: Path, rel: str, max_file_bytes: int) -> str | None:
     """Read *rel* if it is a regular file inside the repo; never follow symlinks.
 
@@ -371,6 +386,8 @@ def _safe_read(repo_root: Path, rel: str, max_file_bytes: int) -> str | None:
     have the worker's secrets sent to the model and echoed back in findings.
     """
     path = repo_root / rel
+    if _is_secret_file(path.name):
+        return None
     try:
         if path.is_symlink() or not path.is_file():
             return None

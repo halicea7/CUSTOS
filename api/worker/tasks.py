@@ -4,6 +4,7 @@ import logging
 import shutil
 import time
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -31,6 +32,29 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+class JobTimeout(RuntimeError):
+    pass
+
+
+@asynccontextmanager
+async def _job_deadline(job_timeout: int):
+    """Fail the job ourselves shortly before ARQ's own timeout fires.
+
+    ARQ enforces job_timeout by cancelling the task, which is indistinguishable
+    from a worker shutdown (where we *want* the row left as-is so the retry can
+    resume). Raising an ordinary exception first lets the normal error path
+    record the failure immediately instead of waiting for the stale-job reaper.
+    """
+    budget = max(job_timeout - 30, 1)
+    try:
+        async with asyncio.timeout(budget) as cm:
+            yield
+    except TimeoutError:
+        if cm.expired():
+            raise JobTimeout(f"Job exceeded its {job_timeout}s time limit") from None
+        raise
 
 
 async def _run_llm(repo_path: str, sast_context: list[RawFinding], cfg: AppConfigResponse) -> OllamaResult:
@@ -135,51 +159,52 @@ async def analyze_submission(ctx, submission_id: str) -> None:
         await db.commit()
 
         try:
-            repo_path = await clone_repo(
-                url=submission.repo_url,
-                sha=sha,
-                base_dir=settings.CLONE_BASE_DIR,
-                github_token=github_token,
-            )
-            sast_findings = await _run_sast(repo_path)
+            async with _job_deadline(cfg.worker_job_timeout):
+                repo_path = await clone_repo(
+                    url=submission.repo_url,
+                    sha=sha,
+                    base_dir=settings.CLONE_BASE_DIR,
+                    github_token=github_token,
+                )
+                sast_findings = await _run_sast(repo_path)
 
-            llm_findings: list[RawFinding] = []
-            llm_error: str | None = None
-            llm_start = time.monotonic()
-            try:
-                result = await _run_llm(repo_path, sast_findings, cfg)
-                llm_findings = result.findings
-                _finish_llm_run(llm_run, result, time.monotonic() - llm_start)
-                await _record_llm_duration(db, time.monotonic() - llm_start)
-            except LlmError as exc:
-                # Keep the SAST results — a down LLM shouldn't hide real findings.
-                logger.warning("LLM phase failed for %s: %s", submission_id, exc)
-                _fail_llm_run(llm_run, exc, github_token)
-                llm_error = llm_run.error
+                llm_findings: list[RawFinding] = []
+                llm_error: str | None = None
+                llm_start = time.monotonic()
+                try:
+                    result = await _run_llm(repo_path, sast_findings, cfg)
+                    llm_findings = result.findings
+                    _finish_llm_run(llm_run, result, time.monotonic() - llm_start)
+                    await _record_llm_duration(db, time.monotonic() - llm_start)
+                except LlmError as exc:
+                    # Keep the SAST results — a down LLM shouldn't hide real findings.
+                    logger.warning("LLM phase failed for %s: %s", submission_id, exc)
+                    _fail_llm_run(llm_run, exc, github_token)
+                    llm_error = llm_run.error
 
-            all_findings = synthesize(sast_findings, llm_findings)
-            for f in all_findings:
-                db.add(Finding(submission_id=submission.id, **f))
+                all_findings = synthesize(sast_findings, llm_findings)
+                for f in all_findings:
+                    db.add(Finding(submission_id=submission.id, **f))
 
-            submission.status = SubmissionStatus.NEEDS_REVIEW.value
-            if llm_error:
-                submission.error_message = f"LLM review failed; showing static analysis only. {llm_error}"
-            await db.commit()
+                submission.status = SubmissionStatus.NEEDS_REVIEW.value
+                if llm_error:
+                    submission.error_message = f"LLM review failed; showing static analysis only. {llm_error}"
+                await db.commit()
 
-            blocking = any(f["severity"] in BLOCKING_SEVERITIES for f in all_findings)
-            await post_github_check(
-                repo=repo,
-                sha=sha,
-                status="completed",
-                conclusion="action_required" if blocking or llm_error else "neutral",
-                summary=_check_summary(all_findings, llm_error),
-                token=github_token,
-                check_run_id=submission.check_run_id,
-            )
-            logger.info(
-                "Submission %s complete: %d findings (repo=%s sha=%s)",
-                submission_id, len(all_findings), repo, sha[:8],
-            )
+                blocking = any(f["severity"] in BLOCKING_SEVERITIES for f in all_findings)
+                await post_github_check(
+                    repo=repo,
+                    sha=sha,
+                    status="completed",
+                    conclusion="action_required" if blocking or llm_error else "neutral",
+                    summary=_check_summary(all_findings, llm_error),
+                    token=github_token,
+                    check_run_id=submission.check_run_id,
+                )
+                logger.info(
+                    "Submission %s complete: %d findings (repo=%s sha=%s)",
+                    submission_id, len(all_findings), repo, sha[:8],
+                )
 
         except Exception as exc:
             logger.exception("Analysis failed for submission %s (repo=%s sha=%s)", submission_id, repo, sha[:8])
@@ -257,36 +282,37 @@ async def rerun_llm(ctx, submission_id: str) -> None:
             await db.commit()
 
             try:
-                repo_path = await clone_repo(
-                    url=sub.repo_url,
-                    sha=sub.commit_sha,
-                    base_dir=settings.CLONE_BASE_DIR,
-                    github_token=github_token,
-                )
-                ollama_result = await _run_llm(repo_path, sast_context, cfg)
+                async with _job_deadline(cfg.worker_job_timeout):
+                    repo_path = await clone_repo(
+                        url=sub.repo_url,
+                        sha=sub.commit_sha,
+                        base_dir=settings.CLONE_BASE_DIR,
+                        github_token=github_token,
+                    )
+                    ollama_result = await _run_llm(repo_path, sast_context, cfg)
 
-                # Same dedup as the initial run: drop LLM findings the tools already cover.
-                new_llm = [
-                    f for f in dedup_raw_findings(sast_context + ollama_result.findings)
-                    if f.source == "llm"
-                ]
-                await db.execute(
-                    sql_delete(Finding).where(Finding.submission_id == sub.id, Finding.source == "llm")
-                )
-                for f in synthesize(new_llm):
-                    db.add(Finding(submission_id=sub.id, **f))
+                    # Same dedup as the initial run: drop LLM findings the tools already cover.
+                    new_llm = [
+                        f for f in dedup_raw_findings(sast_context + ollama_result.findings)
+                        if f.source == "llm"
+                    ]
+                    await db.execute(
+                        sql_delete(Finding).where(Finding.submission_id == sub.id, Finding.source == "llm")
+                    )
+                    for f in synthesize(new_llm):
+                        db.add(Finding(submission_id=sub.id, **f))
 
-                duration = time.time() - start_time
-                ollama_result.findings = new_llm
-                _finish_llm_run(llm_run, ollama_result, duration)
-                if sub.error_message and sub.error_message.startswith("LLM review failed"):
-                    sub.error_message = None
-                await _record_llm_duration(db, duration)
-                await db.commit()
-                logger.info(
-                    "LLM re-run complete for %s: %d findings in %.1fs",
-                    submission_id, len(new_llm), duration,
-                )
+                    duration = time.time() - start_time
+                    ollama_result.findings = new_llm
+                    _finish_llm_run(llm_run, ollama_result, duration)
+                    if sub.error_message and sub.error_message.startswith("LLM review failed"):
+                        sub.error_message = None
+                    await _record_llm_duration(db, duration)
+                    await db.commit()
+                    logger.info(
+                        "LLM re-run complete for %s: %d findings in %.1fs",
+                        submission_id, len(new_llm), duration,
+                    )
 
             except Exception as exc:
                 logger.exception("LLM re-run failed for submission %s", submission_id)
@@ -339,55 +365,56 @@ async def scan_self(
 
         try:
             cfg = await load_app_config(db)
-            sast_findings, config_findings = await asyncio.gather(
-                _run_sast(custos_path), run_config_checks(db)
-            )
-            sast_context = sast_findings + config_findings
+            async with _job_deadline(cfg.worker_job_timeout):
+                sast_findings, config_findings = await asyncio.gather(
+                    _run_sast(custos_path), run_config_checks(db)
+                )
+                sast_context = sast_findings + config_findings
 
-            llm_findings: list[RawFinding] = []
-            try:
-                llm_findings = (await _run_llm(custos_path, sast_context, cfg)).findings
-            except LlmError as exc:
-                logger.warning("Self-scan LLM phase failed: %s", exc)
-                scan.error = f"LLM review failed; showing static analysis only. {exc}"[:2000]
+                llm_findings: list[RawFinding] = []
+                try:
+                    llm_findings = (await _run_llm(custos_path, sast_context, cfg)).findings
+                except LlmError as exc:
+                    logger.warning("Self-scan LLM phase failed: %s", exc)
+                    scan.error = f"LLM review failed; showing static analysis only. {exc}"[:2000]
 
-            all_findings = dedup_raw_findings(sast_context + llm_findings)
-            sev_counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-            config_issue_count = 0
+                all_findings = dedup_raw_findings(sast_context + llm_findings)
+                sev_counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+                config_issue_count = 0
 
-            for f in all_findings:
-                sev_counts[f.severity] = sev_counts.get(f.severity, 0) + 1
-                if f.source == "config":
-                    config_issue_count += 1
-                db.add(SelfScanFinding(
-                    scan_id=scan.id,
-                    source=f.source,
-                    category=_SOURCE_CATEGORY.get(f.source, "sast"),
-                    severity=f.severity,
-                    title=f.title,
-                    description=f.description,
-                    file_path=f.file_path,
-                    line_start=f.line_start,
-                    line_end=f.line_end,
-                    cwe=f.cwe,
-                    remediation=f.remediation,
-                    llm_reasoning=f.llm_reasoning,
-                ))
+                for f in all_findings:
+                    sev_counts[f.severity] = sev_counts.get(f.severity, 0) + 1
+                    if f.source == "config":
+                        config_issue_count += 1
+                    db.add(SelfScanFinding(
+                        scan_id=scan.id,
+                        source=f.source,
+                        category=_SOURCE_CATEGORY.get(f.source, "sast"),
+                        severity=f.severity,
+                        title=f.title,
+                        description=f.description,
+                        file_path=f.file_path,
+                        line_start=f.line_start,
+                        line_end=f.line_end,
+                        cwe=f.cwe,
+                        remediation=f.remediation,
+                        llm_reasoning=f.llm_reasoning,
+                    ))
 
-            if sev_counts["critical"] > 0:
-                overall_health = "urgent"
-            elif sev_counts["high"] > 0:
-                overall_health = "warning"
-            else:
-                overall_health = "healthy"
+                if sev_counts["critical"] > 0:
+                    overall_health = "urgent"
+                elif sev_counts["high"] > 0:
+                    overall_health = "warning"
+                else:
+                    overall_health = "healthy"
 
-            scan.status = RunStatus.COMPLETE.value
-            scan.overall_health = overall_health
-            scan.finding_counts = json.dumps(sev_counts)
-            scan.config_issue_count = config_issue_count
-            scan.finished_at = _now()
-            await db.commit()
-            logger.info("Self-scan complete: %s health, %d findings", overall_health, len(all_findings))
+                scan.status = RunStatus.COMPLETE.value
+                scan.overall_health = overall_health
+                scan.finding_counts = json.dumps(sev_counts)
+                scan.config_issue_count = config_issue_count
+                scan.finished_at = _now()
+                await db.commit()
+                logger.info("Self-scan complete: %s health, %d findings", overall_health, len(all_findings))
 
         except Exception as exc:
             logger.exception("Self-scan failed")

@@ -69,3 +69,12 @@ async def test_login_and_rate_limit(client, db):
 
 async def test_bad_token_rejected(client, db):
     assert (await client.get("/auth/me", headers={"Authorization": "Bearer junk"})).status_code == 401
+
+
+async def test_tag_push_is_ignored(client, db):
+    await make_repo(db, "org/r", owner="x", secret="right")
+    body, headers = _signed({**_push(), "ref": "refs/tags/v1.0"}, "right")
+    resp = await client.post("/webhook/github", content=body, headers=headers)
+    assert resp.json()["status"] == "ignored"
+    assert (await db.execute(select(Submission))).scalars().all() == []
+

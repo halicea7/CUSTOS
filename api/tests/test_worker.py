@@ -128,3 +128,51 @@ async def test_reaper_fails_stale_records(db):
     f, _, _ = await _load(db, fresh.id)
     assert s.status == "error" and runs[0].status == "failed"
     assert f.status == "analyzing"
+
+
+async def test_timeout_fails_job_immediately(db, pipeline, monkeypatch):
+    """A job that overruns is recorded as failed by its own deadline, not left
+    'analyzing' until the stale-job reaper notices."""
+    import asyncio
+
+    from models import AppConfig
+
+    await make_repo(db, "org/r", owner="x")
+    sub = await make_submission(db, "org/r", status="pending")
+    db.add(AppConfig(key="worker_job_timeout", value="31", updated_by="test"))  # 1s budget
+    await db.commit()
+
+    async def slow_sast(path):
+        await asyncio.sleep(5)
+        return []
+
+    monkeypatch.setattr(tasks, "_run_sast", slow_sast)
+    with pytest.raises(tasks.JobTimeout):
+        await tasks.analyze_submission({}, str(sub.id))
+
+    sub, findings, runs = await _load(db, sub.id)
+    assert sub.status == "error" and "time limit" in sub.error_message
+    assert runs[0].status == "failed"
+    assert pipeline["checks"][-1]["conclusion"] == "failure"
+
+
+async def test_job_deadline_leaves_other_timeouts_alone():
+    import asyncio
+
+    async def inner():
+        raise TimeoutError("ollama read timeout")
+
+    with pytest.raises(TimeoutError, match="ollama"):
+        async with tasks._job_deadline(600):
+            await inner()
+    with pytest.raises(tasks.JobTimeout):
+        async with tasks._job_deadline(31):
+            await asyncio.sleep(3)
+
+
+async def test_clone_rejects_non_sha(tmp_path):
+    from worker.analysis.clone import CloneError, clone_repo
+
+    with pytest.raises(CloneError):
+        await clone_repo("https://github.com/a/b.git", "--upload-pack=touch /tmp/x", str(tmp_path))
+    assert list(tmp_path.iterdir()) == []  # nothing created
