@@ -9,9 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
     CONFIG_KEYS,
     RESPONSES_API_KEY,
+    RESPONSES_API_KEY_ORIGIN,
     is_local_url,
     load_app_config,
     load_responses_api_key,
+    url_origin,
 )
 from auth import get_current_user, hash_password, require_admin, verify_password
 from crypto import encrypt
@@ -146,9 +148,16 @@ async def test_responses(
 ):
     """Check a Responses API server and list its models (GET {base}/models).
 
-    Uses the API key from the request if given, else the stored one.
+    Uses the API key from the request if given. Otherwise the saved key is
+    used only if *base_url* is the origin it was saved for, so this endpoint
+    can't be pointed at another server to capture it.
     """
-    api_key = (body.api_key or "").strip() or await load_responses_api_key(db)
+    api_key = (body.api_key or "").strip() or await load_responses_api_key(db, body.base_url)
+    if not api_key:
+        saved_origin = (await load_app_config(db)).responses_api_key_origin
+        if saved_origin and saved_origin != url_origin(body.base_url):
+            return {"ok": False, "models": [],
+                    "error": f"The saved key is only sent to {saved_origin} — enter the key to test this host"}
     _check_responses_target(body.base_url, bool(api_key))
     models_url = responses_endpoint(body.base_url).removesuffix("/responses") + "/models"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -197,21 +206,33 @@ async def update_config(
 
     current = await load_app_config(db)
     provider = updates.get("llm_provider", current.llm_provider)
-    base_url = updates.get("responses_base_url", current.responses_base_url)
-    key_set = bool(api_key) if api_key is not None else current.responses_api_key_set
+    base_url = updates.get("responses_base_url", current.responses_base_url).rstrip("/")
+    saved_origin = current.responses_api_key_origin
+    if api_key is None and saved_origin and url_origin(base_url) != saved_origin:
+        # Otherwise changing the URL would silently redirect the saved key.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"The saved API key is bound to {saved_origin}. Re-enter the key (or remove it) "
+            "to use a different host.",
+        )
+    key_set = bool(api_key) if api_key is not None else bool(
+        await load_responses_api_key(db, base_url)
+    )
     _check_responses_target(base_url, key_set)
     if provider == "responses" and not updates.get("responses_model", current.responses_model):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Set a model for the Responses API provider")
 
     if api_key is not None:
-        row = await db.get(AppConfig, RESPONSES_API_KEY)
-        if api_key:
-            if row:
-                row.value, row.updated_by = encrypt(api_key), current_user.username
+        stored = {RESPONSES_API_KEY: encrypt(api_key), RESPONSES_API_KEY_ORIGIN: url_origin(base_url)}
+        for key, value in stored.items():
+            row = await db.get(AppConfig, key)
+            if not api_key:
+                if row:
+                    await db.delete(row)
+            elif row:
+                row.value, row.updated_by = value, current_user.username
             else:
-                db.add(AppConfig(key=RESPONSES_API_KEY, value=encrypt(api_key), updated_by=current_user.username))
-        elif row:
-            await db.delete(row)
+                db.add(AppConfig(key=key, value=value, updated_by=current_user.username))
 
     for key, value in updates.items():
         existing = await db.get(AppConfig, key)

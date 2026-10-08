@@ -359,14 +359,20 @@ function AnalysisTab({ theme }) {
               <TextInput theme={t} value={draft?.responses_model || ""} onChange={set("responses_model")}
                 mono placeholder="e.g. gpt-5.1-codex" />
             </Field>
-            <Field theme={t} label="API key" hint="stored encrypted; never shown again">
+            <Field theme={t} label="API key" hint="stored encrypted; only ever sent to the host it was saved for">
               <TextInput theme={t} type="password" value={draft?.responses_api_key_input || ""}
                 onChange={e => { setDraft(d => ({ ...d, responses_api_key_input: e.target.value,
                   responses_api_key_clear: false })); setRespTest(null); }}
                 mono placeholder={cfg?.responses_api_key_set && !draft?.responses_api_key_clear
                   ? `Saved key ••••${cfg.responses_api_key_last4 || ""} — leave blank to keep`
                   : "sk-…"} />
-              {cfg?.responses_api_key_set && (
+              {cfg?.responses_api_key_origin && (
+                <div style={{ marginTop: 6, fontSize: 11.5, color: t.c.text3 }}>
+                  Saved key is bound to <code>{cfg.responses_api_key_origin}</code>. Changing to another
+                  host requires entering the key again.
+                </div>
+              )}
+              {cfg?.responses_api_key_origin && (
                 <div style={{ marginTop: 6, fontSize: 11.5, color: t.c.text3 }}>
                   {draft?.responses_api_key_clear ? (
                     <>Saved key will be removed on save. <a href="#" onClick={e => { e.preventDefault();

@@ -155,8 +155,11 @@ class AppConfigResponse(BaseModel):
     responses_base_url: str
     responses_model: str
     # The key itself is write-only.
+    # Whether a key will be sent to responses_base_url, and which origin a
+    # saved key is bound to (it is never sent anywhere else).
     responses_api_key_set: bool
     responses_api_key_last4: str | None = None
+    responses_api_key_origin: str | None = None
     # Ollama
     ollama_base_url: str
     ollama_model: str

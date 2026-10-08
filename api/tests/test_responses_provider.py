@@ -196,7 +196,8 @@ async def test_connection_test_uses_stored_key_and_lists_models(client, db, monk
 
     await make_user(db, "root", role="admin")
     h = auth_headers("root")
-    await client.patch("/settings/config", headers=h, json={"responses_api_key": KEY})
+    await client.patch("/settings/config", headers=h, json={
+        "responses_base_url": "https://llm.example/v1", "responses_api_key": KEY})
 
     seen = {}
 
@@ -225,3 +226,73 @@ async def test_worker_builds_provider_from_settings(client, db):
     assert (provider.kind, provider.model, provider.api_key) == ("responses", "gpt-x", KEY)
     assert provider.label == "gpt-x (Responses API)"
     assert KEY not in repr(provider)
+
+
+# ── The saved key is bound to its origin ──────────────────────────────────────
+
+async def _save_key(client, h, base_url="https://llm.example/v1"):
+    resp = await client.patch("/settings/config", headers=h, json={
+        "llm_provider": "responses", "responses_model": "gpt-x",
+        "responses_base_url": base_url, "responses_api_key": KEY,
+    })
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def test_test_endpoint_never_sends_saved_key_to_another_host(client, db, monkeypatch):
+    from routers import settings as settings_router
+
+    await make_user(db, "root", role="admin")
+    h = auth_headers("root")
+    cfg = await _save_key(client, h)
+    assert cfg["responses_api_key_origin"] == "https://llm.example:443"
+
+    sent = []
+    monkeypatch.setattr(settings_router.httpx, "AsyncClient", functools.partial(
+        httpx.AsyncClient, transport=httpx.MockTransport(
+            lambda r: sent.append(r.headers.get("Authorization")) or httpx.Response(200, json={"data": []}))))
+
+    # Attacker-chosen host: no key leaves the server.
+    evil = await client.post("/settings/config/test-responses", headers=h,
+                             json={"base_url": "https://attacker.example/v1"})
+    assert evil.json()["ok"] is False and "only sent to https://llm.example:443" in evil.json()["error"]
+    assert sent == []
+    # Same origin, different path/trailing slash: allowed.
+    same = await client.post("/settings/config/test-responses", headers=h,
+                             json={"base_url": "https://llm.example:443/v1/"})
+    assert same.json()["ok"] is True and sent == [f"Bearer {KEY}"]
+
+
+async def test_changing_host_requires_re_entering_the_key(client, db):
+    await make_user(db, "root", role="admin")
+    h = auth_headers("root")
+    await _save_key(client, h)
+
+    moved = await client.patch("/settings/config", headers=h,
+                               json={"responses_base_url": "https://attacker.example/v1"})
+    assert moved.status_code == 422 and "bound to https://llm.example:443" in moved.text
+    # Path changes on the same origin are fine.
+    assert (await client.patch("/settings/config", headers=h,
+                               json={"responses_base_url": "https://llm.example/v2"})).status_code == 200
+    # Re-entering the key with the new host rebinds it.
+    rebound = await client.patch("/settings/config", headers=h, json={
+        "responses_base_url": "https://other.example/v1", "responses_api_key": KEY + "2"})
+    assert rebound.status_code == 200
+    assert rebound.json()["responses_api_key_origin"] == "https://other.example:443"
+
+
+async def test_worker_only_gets_the_key_for_its_origin(db, client, monkeypatch):
+    from app_config import load_responses_api_key
+    from config import settings
+
+    await make_user(db, "root", role="admin")
+    await _save_key(client, auth_headers("root"))
+    assert await load_responses_api_key(db, "https://llm.example/v1") == KEY
+    assert await load_responses_api_key(db, "https://attacker.example/v1") == ""
+    assert await load_responses_api_key(db, "http://llm.example/v1") == ""  # scheme is part of the origin
+
+    # An env key is bound to the env base URL the same way.
+    monkeypatch.setattr(settings, "RESPONSES_API_KEY", "sk-env")
+    monkeypatch.setattr(settings, "RESPONSES_BASE_URL", "https://env-llm.example/v1")
+    assert await load_responses_api_key(db, "https://env-llm.example/v1") == "sk-env"
+    assert await load_responses_api_key(db, "https://attacker.example/v1") == ""

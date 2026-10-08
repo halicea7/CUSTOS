@@ -63,7 +63,7 @@ async def _llm_provider(db, cfg: AppConfigResponse) -> LlmProvider:
             kind=PROVIDER_RESPONSES,
             base_url=cfg.responses_base_url,
             model=cfg.responses_model,
-            api_key=await load_responses_api_key(db),
+            api_key=await load_responses_api_key(db, cfg.responses_base_url),
         )
     return LlmProvider(
         kind=PROVIDER_OLLAMA,

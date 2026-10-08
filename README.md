@@ -168,6 +168,7 @@ Instead of Ollama, Custos can use any server that implements the OpenAI **Respon
 - **Base URL**: for example `https://api.openai.com/v1`. Requests go to `{base}/responses`, and **Test** lists models from `{base}/models`.
 - **Model**: the provider's model name (click one from the Test results).
 - **API key**: sent as a bearer token. It is stored encrypted with `ENCRYPTION_KEY` and is write-only: the API only ever reports whether a key is set and its last 4 characters. **Remove saved key** deletes it. It can also come from `RESPONSES_API_KEY` in the env.
+- **The key is bound to its host.** A saved key is only ever sent to the origin (scheme, host and port) it was saved for, and an env key only to `RESPONSES_BASE_URL`'s origin. Neither the Test button nor a changed base URL can send it to another server. To switch hosts, enter the key again (or remove it).
 
 How requests are made:
 
@@ -232,7 +233,7 @@ Custos analyses untrusted code, so the worker treats every repository as hostile
 - **No repo-controlled execution.** Git hooks are disabled and the `file://` protocol is blocked; `pip-audit` runs with `--no-deps` (no package builds); `npm audit` is pinned to the public registry so a hostile `.npmrc` can't redirect it.
 - **No escaping the checkout.** Files sent to the LLM must be regular files inside the checkout; symlinks are never followed (so a repo can't exfiltrate e.g. `/app/.env` through the model). Env files, private keys and credential stores are never sent to the model at all (Gitleaks still reports them). Only real 40-hex commit SHAs are ever passed to git.
 - **Jobs can't hang.** Each job enforces its own deadline just inside `worker_job_timeout`, so an overrun is recorded as failed immediately; a worker restart mid-job leaves the row for ARQ's retry to resume, and a reaper catches anything else.
-- **Where code goes.** With the default Ollama provider, code never leaves your infrastructure. With the Responses API provider it is sent to the configured server (`store: false`). Its API key is encrypted at rest, write-only through the API, and never sent over plain HTTP to a non-local host.
+- **Where code goes.** With the default Ollama provider, code never leaves your infrastructure. With the Responses API provider it is sent to the configured server (`store: false`). Its API key is encrypted at rest, write-only through the API, bound to the host it was saved for (so changing settings can't redirect it), and never sent over plain HTTP to a non-local host.
 - **Prompt injection.** The system prompt is fixed in code and instructs the model to ignore instructions embedded in the source.
 - **Rendering.** Code snippets are always HTML-escaped (via highlight.js or an explicit escape) before display; nginx sends a strict Content-Security-Policy.
 - **Secrets at rest.** Repo tokens and webhook secrets are encrypted with `ENCRYPTION_KEY` (separate from the JWT key, rotatable).
