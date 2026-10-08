@@ -1,10 +1,12 @@
 .git
 .venv
+.venv-s1cns
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
-**/.env
-.env
+# Every env file and backup (they hold secrets), except the template.
+**/.env*
+!**/.env.example
 dashboard/node_modules
 dashboard/dist
 .dev-logs

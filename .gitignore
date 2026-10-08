@@ -17,6 +17,8 @@ pip-wheel-metadata/
 .env.bak
 api/.env
 api/.env.bak
+.env.rotate-pending
+api/.env.rotate-pending
 *.env.local
 
 # Alembic

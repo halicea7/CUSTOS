@@ -66,6 +66,7 @@ def test_weak_secret_replaced_and_reported_for_migration(launcher, tmp_path):
 def test_existing_encryption_key_means_no_migration(launcher, tmp_path):
     env_path = tmp_path / ".env"
     launcher.ensure_env(env_path, {})
+    launcher.rotation_done(env_path)  # the setup run completed its migration
     before = env_path.read_text()
     assert launcher.ensure_env(env_path, {}) is None
     assert env_path.read_text() == before
@@ -119,3 +120,26 @@ async def test_rotate_keys_migrates_rows_from_the_old_default_key(db):
     # Now readable under the configured keys alone (test SECRET_KEY differs).
     assert crypto.decrypt(repo.github_token_enc) == "ghp_old"
     assert crypto.decrypt(repo.webhook_secret_enc) == "hook"
+
+
+def test_interrupted_run_resumes_credential_migration(launcher, tmp_path):
+    """Keys are written before migrations run; if the run stops in between,
+    the next run must still migrate the stored credentials."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("OLLAMA_MODEL=llama3\n")
+    assert launcher.ensure_env(env_path, {}) == "changeme"
+    pending = tmp_path / ".env.rotate-pending"
+    assert pending.read_text() == "changeme" and oct(pending.stat().st_mode & 0o777) == "0o600"
+
+    # Run stopped (e.g. a migration failed). Keys now exist, but the
+    # migration is still owed on the next run.
+    assert launcher.ensure_env(env_path, {}) == "changeme"
+
+    launcher.rotation_done(env_path)
+    assert not pending.exists()
+    assert launcher.ensure_env(env_path, {}) is None
+
+
+def test_dockerignore_excludes_every_env_file():
+    patterns = (ROOT / ".dockerignore").read_text().splitlines()
+    assert "**/.env*" in patterns and "!**/.env.example" in patterns

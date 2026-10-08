@@ -145,6 +145,14 @@ def write_env(path: Path, updates: dict[str, str]) -> None:
     path.chmod(0o600)
 
 
+def _pending_rotation(env_path: Path) -> Path:
+    return env_path.with_name(".env.rotate-pending")
+
+
+def rotation_done(env_path: Path) -> None:
+    _pending_rotation(env_path).unlink(missing_ok=True)
+
+
 def ensure_env(path: Path, defaults: dict[str, str]) -> str | None:
     """Make sure *path* has strong keys plus *defaults* for anything missing.
 
@@ -155,7 +163,10 @@ def ensure_env(path: Path, defaults: dict[str, str]) -> str | None:
     """
     env = read_env(path)
     updates = {k: v for k, v in defaults.items() if not env.get(k)}
-    old_secret = None
+    # A previous run may have written new keys but stopped before migrating
+    # the stored credentials; resume that migration.
+    pending = _pending_rotation(path)
+    old_secret = pending.read_text() if pending.exists() else None
 
     if _is_weak(env.get("SECRET_KEY", "")):
         updates["SECRET_KEY"] = gen_secret()
@@ -163,6 +174,10 @@ def ensure_env(path: Path, defaults: dict[str, str]) -> str | None:
     if not env.get("ENCRYPTION_KEY"):
         updates["ENCRYPTION_KEY"] = gen_fernet_key()
         old_secret = env.get("SECRET_KEY") or _LEGACY_DEFAULT_KEY
+        # Recorded before the new key is written, removed only once the
+        # credentials have actually been re-encrypted (see rotation_done).
+        pending.write_text(old_secret)
+        pending.chmod(0o600)
         ok("Generated ENCRYPTION_KEY")
 
     if updates:
@@ -293,6 +308,7 @@ def cmd_deploy(args) -> None:
         step("Moving stored credentials to the new ENCRYPTION_KEY")
         report(run(compose + ["exec", "-T", "-e", f"SECRET_KEY={old_secret}",
                               "api", "python", "manage.py", "rotate-keys"], capture=True))
+        rotation_done(DOCKER_ENV)
 
     step("Admin account")
     bootstrap_admin(_docker_manage())
@@ -479,13 +495,25 @@ def cmd_setup(args) -> None:
     })
 
     step("Database migrations")
-    run([VENV / "bin" / "alembic", "upgrade", "head"], cwd=ROOT, capture=True)
+    res = run([VENV / "bin" / "alembic", "upgrade", "head"], cwd=ROOT, capture=True, check=False)
+    if res.returncode != 0:
+        lines = (res.stdout + res.stderr).strip().splitlines()
+        errors = [ln for ln in lines if "Error" in ln or "error" in ln] or lines
+        for line in errors[-4:]:
+            print("    " + line[:300])
+        hint = ""
+        if "already exists" in res.stdout + res.stderr:
+            hint = (" The database already has a table this migration creates, so its version record is"
+                    " behind. Check `.venv/bin/alembic current`, and if that table matches the"
+                    " migration, `.venv/bin/alembic stamp <that revision>`.")
+        die("Database migration failed." + hint + " Fix it and re-run — completed steps are kept.")
     ok("Schema up to date")
 
     if old_secret:
         step("Moving stored credentials to the new ENCRYPTION_KEY")
         report(run(_local_manage() + ["rotate-keys"],
                    env={"SECRET_KEY": old_secret}, capture=True))
+        rotation_done(LOCAL_ENV)
 
     step("Admin account")
     bootstrap_admin(_local_manage())
