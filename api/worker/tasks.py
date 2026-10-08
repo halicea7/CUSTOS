@@ -24,6 +24,29 @@ from worker.analysis.synthesizer import dedup_raw_findings, synthesize
 logger = logging.getLogger(__name__)
 
 
+async def _repo_token(db, repo_full_name: str) -> str:
+    result = await db.execute(select(Repo).where(Repo.repo_full_name == repo_full_name))
+    repo_rec = result.scalar_one_or_none()
+    return decrypt(repo_rec.github_token_enc) if repo_rec else ""
+
+
+def _llm_kwargs(cfg) -> dict:
+    return dict(
+        model=cfg.ollama_model,
+        ollama_base_url=cfg.ollama_base_url,
+        ollama_think=cfg.ollama_think,
+        ollama_num_ctx=cfg.ollama_num_ctx,
+        max_content_chars=cfg.llm_max_content_chars,
+        max_file_size_kb=cfg.max_file_size_kb,
+        max_files=cfg.max_files_per_repo,
+    )
+
+
+# ARQ cancels a job on timeout by raising CancelledError, which is a
+# BaseException — catch it explicitly so rows never stay "analyzing"/"running".
+_JOB_FAILURES = (Exception, asyncio.CancelledError)
+
+
 async def analyze_submission(ctx, submission_id: str) -> None:
     repo_path: str | None = None
 
@@ -45,9 +68,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
 
         cfg = await load_app_config(db)
 
-        repo_result = await db.execute(select(Repo).where(Repo.repo_full_name == repo))
-        repo_rec = repo_result.scalar_one_or_none()
-        github_token = decrypt(repo_rec.github_token_enc) if repo_rec else ""
+        github_token = await _repo_token(db, repo)
 
         llm_run = LlmRun(
             submission_id=submission.id,
@@ -77,11 +98,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
             ollama_result = await call_ollama(
                 repo_path=repo_path,
                 sast_context=semgrep_findings + gitleaks_findings + dep_findings,
-                model=cfg.ollama_model,
-                ollama_base_url=cfg.ollama_base_url,
-                ollama_think=cfg.ollama_think,
-                ollama_num_ctx=cfg.ollama_num_ctx,
-                max_content_chars=cfg.llm_max_content_chars,
+                **_llm_kwargs(cfg),
             )
             llm_duration = time.time() - llm_start
 
@@ -125,7 +142,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 sha[:8],
             )
 
-        except Exception as exc:
+        except _JOB_FAILURES as exc:
             logger.exception(
                 "Analysis failed for submission %s (repo=%s sha=%s)",
                 submission_id,
@@ -133,10 +150,10 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 sha[:8],
             )
             llm_run.status = "failed"
-            llm_run.error = str(exc)
+            llm_run.error = _error_text(exc)
             llm_run.finished_at = datetime.now(timezone.utc)
             submission.status = "error"
-            submission.error_message = str(exc)
+            submission.error_message = _error_text(exc)
             await db.commit()
             raise
 
@@ -199,16 +216,13 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                 url=sub.repo_url,
                 sha=sub.commit_sha,
                 base_dir=settings.CLONE_BASE_DIR,
+                github_token=await _repo_token(db, sub.repo_full_name),
             )
 
             ollama_result = await call_ollama(
                 repo_path=repo_path,
                 sast_context=sast_context,
-                model=cfg.ollama_model,
-                ollama_base_url=cfg.ollama_base_url,
-                ollama_think=cfg.ollama_think,
-                ollama_num_ctx=cfg.ollama_num_ctx,
-                max_content_chars=cfg.llm_max_content_chars,
+                **_llm_kwargs(cfg),
             )
 
             await db.execute(
@@ -243,10 +257,10 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                 db.add(AppConfig(key="llm_avg_duration_seconds", value=str(round(duration, 1)), updated_by="system"))
             await db.commit()
 
-        except Exception as exc:
+        except _JOB_FAILURES as exc:
             logger.exception("LLM re-run failed for submission %s", submission_id)
             llm_run.status = "failed"
-            llm_run.error = str(exc)
+            llm_run.error = _error_text(exc)
             llm_run.finished_at = datetime.now(timezone.utc)
             await db.commit()
             raise
@@ -256,6 +270,12 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                 shutil.rmtree(repo_path, ignore_errors=True)
             if arq_redis:
                 await arq_redis.delete(f"custos:llm_start:{submission_id}")
+
+
+def _error_text(exc: BaseException) -> str:
+    if isinstance(exc, asyncio.CancelledError):
+        return "Job cancelled (timed out or worker shut down)"
+    return str(exc) or type(exc).__name__
 
 
 _SOURCE_CATEGORY = {
@@ -315,11 +335,7 @@ async def scan_self(
             ollama_result = await call_ollama(
                 repo_path=custos_path,
                 sast_context=sast_context,
-                model=cfg.ollama_model,
-                ollama_base_url=cfg.ollama_base_url,
-                ollama_think=cfg.ollama_think,
-                ollama_num_ctx=cfg.ollama_num_ctx,
-                max_content_chars=cfg.llm_max_content_chars,
+                **_llm_kwargs(cfg),
             )
 
             all_findings = dedup_raw_findings(sast_context + ollama_result.findings)
@@ -365,10 +381,10 @@ async def scan_self(
                 len(all_findings),
             )
 
-        except Exception as exc:
+        except _JOB_FAILURES as exc:
             logger.exception("Self-scan failed")
             scan.status = "failed"
-            scan.error = str(exc)
+            scan.error = _error_text(exc)
             scan.finished_at = datetime.now(timezone.utc)
             await db.commit()
             raise

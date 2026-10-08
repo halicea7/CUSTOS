@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -164,13 +164,13 @@ class AppConfigUpdateRequest(BaseModel):
     ollama_base_url: Optional[str] = None
     ollama_model: Optional[str] = None
     ollama_think: Optional[bool] = None
-    ollama_num_ctx: Optional[int] = None
-    llm_max_content_chars: Optional[int] = None
-    max_file_size_kb: Optional[int] = None
-    max_files_per_repo: Optional[int] = None
-    access_token_expire_minutes: Optional[int] = None
-    worker_max_jobs: Optional[int] = None
-    worker_job_timeout: Optional[int] = None
+    ollama_num_ctx: Optional[int] = Field(None, ge=0)
+    llm_max_content_chars: Optional[int] = Field(None, gt=0)
+    max_file_size_kb: Optional[int] = Field(None, gt=0)
+    max_files_per_repo: Optional[int] = Field(None, gt=0)
+    access_token_expire_minutes: Optional[int] = Field(None, gt=0, le=60 * 24 * 7)
+    worker_max_jobs: Optional[int] = Field(None, gt=0, le=64)
+    worker_job_timeout: Optional[int] = Field(None, ge=60)
 
 
 # ── Repo schemas ───────────────────────────────────────────────────────────────

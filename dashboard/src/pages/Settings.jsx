@@ -357,7 +357,7 @@ function AnalysisTab({ theme }) {
           <Field theme={t} label="Max file size (KB)">
             <TextInput theme={t} type="number" value={draft?.max_file_size_kb || ""} onChange={set("max_file_size_kb")} mono />
           </Field>
-          <Field theme={t} label="Max files per repo">
+          <Field theme={t} label="Max files sent to LLM">
             <TextInput theme={t} type="number" value={draft?.max_files_per_repo || ""} onChange={set("max_files_per_repo")} mono />
           </Field>
         </div>

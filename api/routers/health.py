@@ -1,12 +1,12 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import get_current_user
+from auth import get_current_user, require_admin
 from database import get_db
 from models import SelfScan, SelfScanFinding, User
 
@@ -116,16 +116,20 @@ async def scan_findings(
 async def trigger_scan(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
-    if user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
-
     running_result = await db.execute(
         select(SelfScan).where(SelfScan.status == "running")
     )
-    if running_result.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Scan already in progress")
+    stale_before = datetime.now(timezone.utc) - timedelta(hours=1)
+    for running in running_result.scalars().all():
+        if running.started_at and running.started_at < stale_before:
+            # Far past any job timeout — the worker died; don't block new scans forever.
+            running.status = "failed"
+            running.error = "Scan never finished (worker stopped)"
+            running.finished_at = datetime.now(timezone.utc)
+        else:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Scan already in progress")
 
     # Create the record immediately so GET /health/status sees running=true
     # on the very next poll — before the ARQ worker starts executing.

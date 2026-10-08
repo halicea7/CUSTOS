@@ -58,8 +58,12 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     repo_url: str = repo["clone_url"]
 
     if event_type == "push":
+        ref: str = payload.get("ref", "")
+        # Branch deletions carry an all-zero "after" SHA; tag pushes aren't code reviews.
+        if payload.get("deleted") or not ref.startswith("refs/heads/"):
+            return WebhookResponse(status="ignored")
         commit_sha: str = payload["after"]
-        branch: str = payload.get("ref", "").replace("refs/heads/", "")
+        branch: str = ref.removeprefix("refs/heads/")
         submitter: str | None = payload.get("pusher", {}).get("name")
         pr_number: int | None = None
     else:
@@ -90,7 +94,12 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     db.add(submission)
 
     repo_rec.last_push_at = datetime.now(timezone.utc)
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        # Release the dedup key so GitHub's retry isn't dropped.
+        await redis.delete(dedup_key)
+        raise
     await db.refresh(submission)
 
     submission_id = str(submission.id)
