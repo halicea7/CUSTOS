@@ -1,13 +1,14 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user, require_admin
 from database import get_db
+from enums import SEVERITY_ORDER
 from models import SelfScan, SelfScanFinding, User
 
 router = APIRouter(prefix="/health", tags=["health-dashboard"])
@@ -101,15 +102,12 @@ async def scan_findings(
     if not scan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
 
-    _SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     result = await db.execute(
-        select(SelfScanFinding).where(SelfScanFinding.scan_id == scan_id)
+        select(SelfScanFinding)
+        .where(SelfScanFinding.scan_id == scan_id)
+        .order_by(case(SEVERITY_ORDER, value=SelfScanFinding.severity, else_=99))
     )
-    findings = result.scalars().all()
-    return sorted(
-        [_finding_to_dict(f) for f in findings],
-        key=lambda f: _SEV_ORDER.get(f["severity"], 99),
-    )
+    return [_finding_to_dict(f) for f in result.scalars().all()]
 
 
 @router.post("/scan", status_code=status.HTTP_202_ACCEPTED)
@@ -119,17 +117,10 @@ async def trigger_scan(
     user: User = Depends(require_admin),
 ):
     running_result = await db.execute(
-        select(SelfScan).where(SelfScan.status == "running")
+        select(SelfScan.id).where(SelfScan.status == "running").limit(1)
     )
-    stale_before = datetime.now(timezone.utc) - timedelta(hours=1)
-    for running in running_result.scalars().all():
-        if running.started_at and running.started_at < stale_before:
-            # Far past any job timeout — the worker died; don't block new scans forever.
-            running.status = "failed"
-            running.error = "Scan never finished (worker stopped)"
-            running.finished_at = datetime.now(timezone.utc)
-        else:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Scan already in progress")
+    if running_result.first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Scan already in progress")
 
     # Create the record immediately so GET /health/status sees running=true
     # on the very next poll — before the ARQ worker starts executing.
@@ -137,7 +128,7 @@ async def trigger_scan(
         status="running",
         triggered_by="manual",
         triggered_by_user=user.username,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
     db.add(scan)
     await db.commit()

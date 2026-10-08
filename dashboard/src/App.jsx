@@ -1,18 +1,21 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, lazy, Suspense, useContext, useState, useEffect, useMemo } from "react";
 import {
   BrowserRouter, Routes, Route, Navigate,
   useNavigate, useLocation,
 } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { getMe } from "./api/client.js";
 import { makeTheme, applyCssVars } from "./theme.js";
 import Login from "./pages/Login.jsx";
 import Queue from "./pages/Queue.jsx";
-import Submission from "./pages/Submission.jsx";
-import Finding from "./pages/Finding.jsx";
-import Health from "./pages/Health.jsx";
-import Repos from "./pages/Repos.jsx";
-import Groups from "./pages/Groups.jsx";
-import Settings from "./pages/Settings.jsx";
+
+// Less-visited pages load on demand to keep the initial bundle small.
+const Submission = lazy(() => import("./pages/Submission.jsx"));
+const Finding    = lazy(() => import("./pages/Finding.jsx"));
+const Health     = lazy(() => import("./pages/Health.jsx"));
+const Repos      = lazy(() => import("./pages/Repos.jsx"));
+const Groups     = lazy(() => import("./pages/Groups.jsx"));
+const Settings   = lazy(() => import("./pages/Settings.jsx"));
 
 // ── Auth context ──────────────────────────────────────────────────────────────
 
@@ -21,6 +24,7 @@ export const useAuth = () => useContext(AuthCtx);
 
 function AuthProvider({ children }) {
   const [user, setUser] = useState(undefined);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const token = localStorage.getItem("custos_token");
@@ -36,6 +40,7 @@ function AuthProvider({ children }) {
   };
   const logout = () => {
     localStorage.removeItem("custos_token");
+    queryClient.clear(); // don't leak the previous user's cached data
     setUser(null);
   };
 
@@ -52,17 +57,15 @@ const ThemeCtx = createContext(null);
 export const useTheme = () => useContext(ThemeCtx);
 
 function ThemeProvider({ children }) {
-  const [mode, setMode] = useState(
-    () => localStorage.getItem("custos_mode") || "dark"
-  );
-  const theme = makeTheme(mode);
+  const [mode, setMode] = useState(() => {
+    try { return localStorage.getItem("custos_mode") || "dark"; } catch { return "dark"; }
+  });
+  const theme = useMemo(() => makeTheme(mode), [mode]);
 
   useEffect(() => {
-    localStorage.setItem("custos_mode", mode);
+    try { localStorage.setItem("custos_mode", mode); } catch { /* storage unavailable */ }
     applyCssVars(theme);
-  }, [mode]);
-
-  useEffect(() => { applyCssVars(theme); }, []);
+  }, [mode, theme]);
 
   const setModeAndPersist = (m) => setMode(m);
 
@@ -189,7 +192,7 @@ function SideRail({ theme, mode, setMode }) {
         <div style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
           <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em",
             color: theme.c.text, fontFamily: theme.fontDisplay }}>CUSTOS</span>
-          <span style={{ fontSize: 10, color: theme.c.text3, fontFamily: theme.fontMono }}>v1.0</span>
+          <span style={{ fontSize: 10, color: theme.c.text3, fontFamily: theme.fontMono }}>v1.1</span>
         </div>
       </div>
 
@@ -264,6 +267,7 @@ function AppShell() {
               <div style={{ display: "flex", minHeight: "100vh", background: theme.c.bg }}>
                 <SideRail theme={theme} mode={mode} setMode={setMode} />
                 <main style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+                  <Suspense fallback={<Splash />}>
                   <Routes>
                     <Route path="/"                 element={<Queue />} />
                     <Route path="/submissions/:id"  element={<Submission />} />
@@ -273,6 +277,7 @@ function AppShell() {
                     <Route path="/groups"           element={<RequireAdmin><Groups /></RequireAdmin>} />
                     <Route path="/settings"         element={<Settings />} />
                   </Routes>
+                  </Suspense>
                 </main>
               </div>
             </RequireAuth>

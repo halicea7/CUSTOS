@@ -4,10 +4,10 @@ import { useTheme } from "../App.jsx";
 import {
   getUsers, createUser, updateUserRole, deleteUser,
   changePassword, getConfig, updateConfig, testOllama,
-  getGitHubConfig, updateGitHubConfig, testGitHubToken,
 } from "../api/settings.js";
 import { Btn, Avatar, RoleBadge } from "../components/atoms.jsx";
 import { PageHeader, PageWrap, SectionCard, Field, TextInput, SelectInput, Toggle, Tabs, Feedback } from "../components/ui.jsx";
+import { errorMessage } from "../api/errors.js";
 
 // ── Account ───────────────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ function AccountTab({ theme, username }) {
       setFb({ msg: "Password changed successfully", type: "success" });
       setForm({ current_password: "", new_password: "", confirm: "" });
     } catch (e) {
-      setFb({ msg: e.response?.data?.detail || "Failed to change password", type: "error" });
+      setFb({ msg: errorMessage(e, "Failed to change password"), type: "error" });
     } finally { setLoading(false); }
   };
 
@@ -100,7 +100,7 @@ function UsersTab({ theme, currentUser }) {
       cancelRole(u.id);
       setFb({ msg: `${u.username} is now ${updated.role}`, type: "success" });
     } catch (e) {
-      setFb({ msg: e.response?.data?.detail || "Failed to update role", type: "error" });
+      setFb({ msg: errorMessage(e, "Failed to update role"), type: "error" });
     } finally { setSavingRole(null); }
   };
 
@@ -113,7 +113,7 @@ function UsersTab({ theme, currentUser }) {
       setCreating(false);
       setFb({ msg: `User '${u.username}' created`, type: "success" });
     } catch (e) {
-      setFb({ msg: e.response?.data?.detail || "Failed to create user", type: "error" });
+      setFb({ msg: errorMessage(e, "Failed to create user"), type: "error" });
     }
   };
 
@@ -124,7 +124,7 @@ function UsersTab({ theme, currentUser }) {
       setDeleteConfirm(null);
       setFb({ msg: "User deleted", type: "success" });
     } catch (e) {
-      setFb({ msg: e.response?.data?.detail || "Failed to delete user", type: "error" });
+      setFb({ msg: errorMessage(e, "Failed to delete user"), type: "error" });
     }
   };
 
@@ -269,7 +269,7 @@ function AnalysisTab({ theme }) {
       setCfg(updated); setDraft(updated);
       setFb({ msg: "Configuration saved", type: "success" });
     } catch (e) {
-      setFb({ msg: e.response?.data?.detail || "Failed to save", type: "error" });
+      setFb({ msg: errorMessage(e, "Failed to save"), type: "error" });
     } finally { setSaving(false); }
   };
 
@@ -357,7 +357,7 @@ function AnalysisTab({ theme }) {
           <Field theme={t} label="Max file size (KB)">
             <TextInput theme={t} type="number" value={draft?.max_file_size_kb || ""} onChange={set("max_file_size_kb")} mono />
           </Field>
-          <Field theme={t} label="Max files sent to LLM">
+          <Field theme={t} label="Max files per repo">
             <TextInput theme={t} type="number" value={draft?.max_files_per_repo || ""} onChange={set("max_files_per_repo")} mono />
           </Field>
         </div>
@@ -386,165 +386,6 @@ function AnalysisTab({ theme }) {
   );
 }
 
-// ── GitHub ────────────────────────────────────────────────────────────────────
-
-function SecretField({ theme, label, hint, preview, isSet, onSave }) {
-  const [editing, setEditing] = useState(false);
-  const [val,     setVal]     = useState("");
-  const [saving,  setSaving]  = useState(false);
-  const [fb,      setFb]      = useState(null);
-  const t = theme;
-  const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
-
-  const handleSave = async () => {
-    if (!val.trim()) return;
-    setSaving(true); setFb(null);
-    try {
-      await onSave(val.trim());
-      setEditing(false); setVal(""); setFb({ msg: "Saved", type: "success" });
-    } catch (e) {
-      setFb({ msg: e.response?.data?.detail || "Failed to save", type: "error" });
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: t.c.text2, letterSpacing: "0.02em",
-        textTransform: "uppercase", marginBottom: 8 }}>
-        {label}
-        {hint && <span style={{ marginLeft: 8, textTransform: "none", fontWeight: 400, color: t.c.text3 }}>{hint}</span>}
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <div style={{ flex: 1, padding: "9px 12px", borderRadius: t.radius, background: t.c.bg,
-          border: `1px solid ${t.c.border}`, fontFamily: t.fontMono, fontSize: 12.5,
-          display: "flex", alignItems: "center", gap: 10 }}>
-          {isSet ? (
-            <>
-              <span style={{ color: green, fontWeight: 600, fontSize: 11 }}>● SET</span>
-              <span style={{ color: t.c.text3 }}>{preview}</span>
-            </>
-          ) : (
-            <span style={{ color: t.c.text3, fontStyle: "italic" }}>not configured</span>
-          )}
-        </div>
-        <Btn theme={t} size="md" onClick={() => { setEditing(e => !e); setVal(""); setFb(null); }}>
-          {editing ? "Cancel" : isSet ? "Rotate" : "Set"}
-        </Btn>
-      </div>
-      {editing && (
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <TextInput theme={t} type="password" value={val} onChange={e => setVal(e.target.value)}
-            placeholder="Paste new value…" mono autoFocus
-            onKeyDown={e => e.key === "Enter" && handleSave()} />
-          <Btn theme={t} variant="primary" onClick={handleSave} disabled={saving || !val.trim()}>
-            {saving ? "…" : "Save"}
-          </Btn>
-        </div>
-      )}
-      <Feedback theme={t} {...(fb || {})} />
-    </div>
-  );
-}
-
-function GitHubTab({ theme }) {
-  const [cfg,   setCfg]   = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [tokenTest, setTokenTest] = useState(null);
-  const t = theme;
-  const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
-
-  useEffect(() => {
-    getGitHubConfig().then(setCfg).catch(() => {}).finally(() => setLoading(false));
-  }, []);
-
-  const handleTestToken = async () => {
-    setTokenTest("testing");
-    try { setTokenTest(await testGitHubToken()); }
-    catch { setTokenTest({ ok: false, error: "Request failed", login: null, scopes: [] }); }
-  };
-
-  if (loading) return <SectionCard theme={t} title="GitHub"><div style={{ color: t.c.text3 }}>Loading…</div></SectionCard>;
-
-  return (
-    <>
-      <SectionCard theme={t} title="Webhook">
-        <div style={{ maxWidth: 560 }}>
-          <div style={{ padding: "14px 16px", borderRadius: t.radius, background: t.c.raised,
-            border: `1px solid ${t.c.border}`, marginBottom: 18, fontSize: 12.5,
-            lineHeight: 1.8, color: t.c.text2 }}>
-            <div style={{ fontWeight: 600, color: t.c.text, marginBottom: 6 }}>Setup steps</div>
-            <ol style={{ paddingLeft: 18, display: "flex", flexDirection: "column", gap: 3, color: t.c.text2 }}>
-              <li>Repo → <strong style={{ color: t.c.text }}>Settings → Webhooks → Add webhook</strong></li>
-              <li>Payload URL: <span style={{ fontFamily: t.fontMono, color: t.c.accent }}>https://&lt;host&gt;/webhook/github</span></li>
-              <li>Content type: <span style={{ fontFamily: t.fontMono }}>application/json</span></li>
-              <li>Events: <strong style={{ color: t.c.text }}>Pushes</strong> and <strong style={{ color: t.c.text }}>Pull requests</strong></li>
-            </ol>
-          </div>
-          <SecretField theme={t} label="Webhook secret" hint="— validates HMAC-SHA256 signatures"
-            isSet={cfg?.webhook_secret_set} preview={cfg?.webhook_secret_preview}
-            onSave={async (value) => setCfg(await updateGitHubConfig({ webhook_secret: value }))} />
-        </div>
-      </SectionCard>
-
-      <SectionCard theme={t} title="GitHub token">
-        <div style={{ maxWidth: 560 }}>
-          <div style={{ padding: "14px 16px", borderRadius: t.radius, background: t.c.raised,
-            border: `1px solid ${t.c.border}`, marginBottom: 18, fontSize: 12.5,
-            lineHeight: 1.8, color: t.c.text2 }}>
-            <div style={{ fontWeight: 600, color: t.c.text, marginBottom: 6 }}>Required permissions</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <div><span style={{ color: green, marginRight: 8 }}>✓</span>
-                <span style={{ fontFamily: t.fontMono, color: t.c.text }}>repo</span> — read access to clone private repos</div>
-              <div><span style={{ color: green, marginRight: 8 }}>✓</span>
-                <span style={{ fontFamily: t.fontMono, color: t.c.text }}>checks:write</span> — post check status back to PRs</div>
-            </div>
-          </div>
-          <SecretField theme={t} label="Personal access token" hint="— clones repos and posts check runs"
-            isSet={cfg?.token_set} preview={cfg?.token_preview}
-            onSave={async (value) => { setCfg(await updateGitHubConfig({ token: value })); setTokenTest(null); }} />
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Btn theme={t} size="md"
-              variant={tokenTest && tokenTest !== "testing" ? (tokenTest.ok ? "success" : "danger") : "ghost"}
-              onClick={handleTestToken} disabled={!cfg?.token_set || tokenTest === "testing"}>
-              {tokenTest === "testing" ? "Testing…" : "Test token"}
-            </Btn>
-            {!cfg?.token_set && <span style={{ fontSize: 11, color: t.c.text3 }}>Set a token to enable testing</span>}
-          </div>
-          {tokenTest && tokenTest !== "testing" && (
-            <div style={{ marginTop: 11, padding: "11px 14px", borderRadius: t.radius, fontSize: 12.5,
-              background: `${tokenTest.ok ? green : t.sev.critical.fg}14`,
-              border: `1px solid ${tokenTest.ok ? green : t.sev.critical.fg}33` }}>
-              {tokenTest.ok ? (
-                <div>
-                  <span style={{ color: green, fontWeight: 600 }}>✓ Valid</span>
-                  {tokenTest.login && (
-                    <span style={{ color: t.c.text2, marginLeft: 8 }}>
-                      authenticated as <span style={{ fontFamily: t.fontMono }}>{tokenTest.login}</span>
-                    </span>
-                  )}
-                  {tokenTest.scopes?.length > 0 && (
-                    <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {tokenTest.scopes.map(s => (
-                        <span key={s} style={{ padding: "1px 8px", borderRadius: 999,
-                          fontFamily: t.fontMono, fontSize: 11.5,
-                          background: `${green}1a`, border: `1px solid ${green}33`, color: green }}>{s}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <span style={{ color: t.sev.critical.fg }}>✗ {tokenTest.error}</span>
-              )}
-            </div>
-          )}
-        </div>
-      </SectionCard>
-    </>
-  );
-}
-
-// ── Page ──────────────────────────────────────────────────────────────────────
-
 export default function Settings() {
   const { user }  = useAuth();
   const { theme } = useTheme();
@@ -556,7 +397,6 @@ export default function Settings() {
     ...(isAdmin ? [
       { key: "users",  label: "Users" },
       { key: "config", label: "Analysis" },
-      { key: "github", label: "GitHub" },
     ] : []),
   ];
   const [tab, setTab] = useState("account");
@@ -564,12 +404,11 @@ export default function Settings() {
   return (
     <PageWrap theme={t} max={840}>
       <PageHeader theme={t} title="Settings"
-        subtitle={isAdmin ? "Account, users, analysis engine, and GitHub integration" : "Manage your account"} />
+        subtitle={isAdmin ? "Account, users, and analysis engine" : "Manage your account"} />
       <Tabs theme={t} tabs={tabs} active={tab} onChange={setTab} />
       {tab === "account" && <AccountTab  theme={t} username={user?.username} />}
       {tab === "users"   && isAdmin && <UsersTab    theme={t} currentUser={user?.username} />}
       {tab === "config"  && isAdmin && <AnalysisTab theme={t} />}
-      {tab === "github"  && isAdmin && <GitHubTab   theme={t} />}
     </PageWrap>
   );
 }

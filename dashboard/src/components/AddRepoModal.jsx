@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { addRepo, validateToken } from "../api/repos.js";
 import { listGroups } from "../api/groups.js";
+import { errorMessage } from "../api/errors.js";
 
 function generateSecret() {
   const arr = new Uint8Array(24);
@@ -135,7 +136,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
       setStep(3);
       onAdded?.(repo);
     } catch (e) {
-      setError(e?.response?.data?.detail || "Failed to add repository.");
+      setError(errorMessage(e, "Failed to add repository."));
     } finally {
       setSaving(false);
     }
@@ -208,7 +209,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
                     REGEN
                   </button>
                 </div>
-                <p style={S.hint}>You'll paste this into GitHub in the next step</p>
+                <p style={S.hint}>You&apos;ll paste this into GitHub in the next step</p>
               </div>
 
               {groups.length > 0 && (

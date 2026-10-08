@@ -1,105 +1,50 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
 
-from arq.connections import RedisSettings
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import create_async_engine
-
-from config import settings, validate_secrets
-from database import async_session_factory, engine
 from arq import cron as arq_cron
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
-from models import AppConfig, LlmRun, SelfScan, Submission
-from worker.tasks import analyze_submission, rerun_llm, scan_self
+from app_config import DEFAULT_WORKER_JOB_TIMEOUT, DEFAULT_WORKER_MAX_JOBS, load_app_config
+from config import assert_secure_settings, settings
+from database import engine
+from redis_util import arq_redis_settings
+from worker.tasks import analyze_submission, reap_stale_jobs, rerun_llm, scan_self
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_JOBS = 4
-_DEFAULT_JOB_TIMEOUT = 600
-
-
-def get_redis_settings() -> RedisSettings:
-    url = urlparse(settings.REDIS_URL)
-    return RedisSettings(
-        host=url.hostname or "localhost",
-        port=url.port or 6379,
-        password=url.password,
-    )
-
 
 def _load_worker_limits() -> tuple[int, int]:
-    """Read worker_max_jobs / worker_job_timeout from app_config at import time.
+    """Read worker_max_jobs / worker_job_timeout from app_config at startup.
 
-    ARQ needs these as class attributes before its event loop starts, so this
-    uses a throwaway engine on a throwaway loop. Falls back to defaults if the
-    DB is unreachable. Changes take effect on worker restart.
+    ARQ reads these from the settings class before its event loop starts, so
+    this uses a throwaway engine on a private loop. Falls back to defaults if
+    the database is unreachable. Changes apply on the next worker restart.
     """
-    async def _read() -> dict[str, str]:
-        tmp_engine = create_async_engine(settings.DATABASE_URL)
+
+    async def fetch() -> tuple[int, int]:
+        tmp_engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
         try:
-            async with tmp_engine.connect() as conn:
-                rows = await conn.execute(
-                    select(AppConfig.key, AppConfig.value).where(
-                        AppConfig.key.in_(("worker_max_jobs", "worker_job_timeout"))
-                    )
-                )
-                return {k: v for k, v in rows.all()}
+            async with async_sessionmaker(tmp_engine)() as db:
+                cfg = await load_app_config(db)
+                return cfg.worker_max_jobs, cfg.worker_job_timeout
         finally:
             await tmp_engine.dispose()
 
     try:
-        ov = asyncio.run(_read())
-        return (
-            int(ov.get("worker_max_jobs", _DEFAULT_MAX_JOBS)),
-            int(ov.get("worker_job_timeout", _DEFAULT_JOB_TIMEOUT)),
-        )
-    except Exception as exc:
+        return asyncio.run(fetch())
+    except Exception as exc:  # pragma: no cover — depends on DB availability
         logger.warning("Could not load worker limits from DB (%s); using defaults", exc)
-        return _DEFAULT_MAX_JOBS, _DEFAULT_JOB_TIMEOUT
-
-
-_MAX_JOBS, _JOB_TIMEOUT = _load_worker_limits()
-
-
-async def _reap_stale_jobs() -> None:
-    """Fail rows left mid-flight by a crashed or killed worker.
-
-    Anything still analyzing/running well past the job timeout can't still be
-    executing, so it's safe to mark failed even with several workers.
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_JOB_TIMEOUT * 2)
-    msg = "Worker stopped before the job finished"
-    now = datetime.now(timezone.utc)
-    async with async_session_factory() as db:
-        subs = await db.execute(
-            update(Submission)
-            .where(Submission.status == "analyzing", Submission.updated_at < cutoff)
-            .values(status="error", error_message=msg)
-        )
-        runs = await db.execute(
-            update(LlmRun)
-            .where(LlmRun.status == "running", LlmRun.started_at < cutoff)
-            .values(status="failed", error=msg, finished_at=now)
-        )
-        scans = await db.execute(
-            update(SelfScan)
-            .where(SelfScan.status == "running", SelfScan.started_at < cutoff)
-            .values(status="failed", error=msg, finished_at=now)
-        )
-        await db.commit()
-    reaped = subs.rowcount + runs.rowcount + scans.rowcount
-    if reaped:
-        logger.warning("Reaped %d stale job row(s)", reaped)
+        return DEFAULT_WORKER_MAX_JOBS, DEFAULT_WORKER_JOB_TIMEOUT
 
 
 async def startup(ctx: dict) -> None:
-    import logging as _logging
-    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    validate_secrets(settings)
-    logger.info("Worker starting up (max_jobs=%d, job_timeout=%ds)", _MAX_JOBS, _JOB_TIMEOUT)
-    await _reap_stale_jobs()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    assert_secure_settings()
+    logger.info(
+        "Worker starting up (max_jobs=%d, job_timeout=%ds)",
+        WorkerSettings.max_jobs, WorkerSettings.job_timeout,
+    )
 
 
 async def shutdown(ctx: dict) -> None:
@@ -107,13 +52,19 @@ async def shutdown(ctx: dict) -> None:
     logger.info("Worker shut down")
 
 
+_max_jobs, _job_timeout = _load_worker_limits()
+
+
 class WorkerSettings:
     functions = [analyze_submission, rerun_llm, scan_self]
     cron_jobs = [
         arq_cron(scan_self, weekday={0}, hour=2, minute=0),  # Monday 02:00 UTC
+        arq_cron(reap_stale_jobs, minute=set(range(0, 60, 10)), run_at_startup=True),
     ]
-    redis_settings = get_redis_settings()
+    redis_settings = arq_redis_settings()
     on_startup = startup
     on_shutdown = shutdown
-    max_jobs = _MAX_JOBS
-    job_timeout = _JOB_TIMEOUT
+    max_jobs = _max_jobs
+    job_timeout = _job_timeout
+    # A job whose worker died is retried once; tasks are idempotent on re-entry.
+    max_tries = 2

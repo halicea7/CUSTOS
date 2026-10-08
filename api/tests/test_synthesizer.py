@@ -2,32 +2,36 @@ from worker.analysis.sast import RawFinding
 from worker.analysis.synthesizer import dedup_raw_findings, synthesize
 
 
-def _f(source, title, path="app.py", line=10, sev="high"):
-    return RawFinding(source=source, severity=sev, title=title, file_path=path, line_start=line)
+def f(source, title, path="app.py", line=10, **kw):
+    return RawFinding(source=source, severity="high", title=title, file_path=path, line_start=line, **kw)
 
 
-def test_exact_duplicate_prefers_tool_over_llm():
-    out = dedup_raw_findings([_f("llm", "SQL injection"), _f("semgrep", "SQL injection")])
-    assert [f.source for f in out] == ["semgrep"]
+def test_exact_duplicates_collapse_with_tool_winning():
+    out = dedup_raw_findings([f("llm", "SQL injection"), f("semgrep", "SQL injection")])
+    assert [x.source for x in out] == ["semgrep"]
 
 
-def test_semantic_llm_duplicate_dropped():
+def test_llm_rewording_at_same_location_is_dropped():
     out = dedup_raw_findings([
-        _f("semgrep", "python.sqlalchemy.security.sqlalchemy-execute-raw-query", line=5),
-        _f("llm", "Raw query execution allows injection", path=None, line=None),
+        f("semgrep", "python.lang.security.sql-injection.formatted-query", line=10),
+        f("llm", "Formatted SQL query allows injection", line=12),
     ])
-    assert [f.source for f in out] == ["semgrep"]
+    assert [x.source for x in out] == ["semgrep"]
 
 
-def test_unrelated_llm_finding_kept():
+def test_same_words_in_different_file_are_kept():
     out = dedup_raw_findings([
-        _f("semgrep", "hardcoded-password"),
-        _f("llm", "Missing CSRF protection on forms", line=99),
+        f("semgrep", "sql-injection", path="reports.py"),
+        f("llm", "SQL injection in login handler", path="login.py"),
     ])
-    assert {f.source for f in out} == {"semgrep", "llm"}
+    assert len(out) == 2
 
 
-def test_synthesize_returns_db_dicts():
-    [d] = synthesize([_f("gitleaks", "Secret detected: aws")], [])
-    assert d["source"] == "gitleaks" and d["file_path"] == "app.py"
-    assert set(d) >= {"severity", "title", "llm_reasoning", "code_snippet"}
+def test_same_file_far_apart_is_kept():
+    out = dedup_raw_findings([f("semgrep", "sql-injection", line=10), f("llm", "SQL injection", line=200)])
+    assert len(out) == 2
+
+
+def test_synthesize_returns_column_dicts():
+    (row,) = synthesize([f("semgrep", "x", cwe="CWE-89")])
+    assert row["cwe"] == "CWE-89" and row["source"] == "semgrep" and "llm_reasoning" in row

@@ -1,8 +1,11 @@
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 from uuid import UUID
+
 from pydantic import BaseModel, Field, field_validator
+
+from enums import Disposition, Role
 
 
 class LoginRequest(BaseModel):
@@ -27,20 +30,20 @@ class SubmissionResponse(BaseModel):
     repo_full_name: str
     repo_url: str
     commit_sha: str
-    branch: Optional[str] = None
-    submitter: Optional[str] = None
-    github_actor: Optional[str] = None
-    event_type: Optional[str] = None
-    pr_number: Optional[int] = None
+    branch: str | None = None
+    submitter: str | None = None
+    github_actor: str | None = None
+    event_type: str | None = None
+    pr_number: int | None = None
     status: str
-    error_message: Optional[str] = None
+    error_message: str | None = None
     created_at: datetime
     updated_at: datetime
-    finding_counts: Optional[dict] = None
+    finding_counts: dict | None = None
 
     @field_validator("finding_counts", mode="before")
     @classmethod
-    def parse_finding_counts(cls, v: Any) -> Optional[dict]:
+    def parse_finding_counts(cls, v: Any) -> dict | None:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -61,39 +64,55 @@ class FindingResponse(BaseModel):
     submission_id: UUID
     source: str
     severity: str
-    cwe: Optional[str] = None
+    cwe: str | None = None
     title: str
-    description: Optional[str] = None
-    file_path: Optional[str] = None
-    line_start: Optional[int] = None
-    line_end: Optional[int] = None
-    code_snippet: Optional[str] = None
-    remediation: Optional[str] = None
-    llm_reasoning: Optional[str] = None
-    disposition: Optional[str] = None
-    disposed_by: Optional[str] = None
-    disposed_at: Optional[datetime] = None
+    description: str | None = None
+    file_path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    code_snippet: str | None = None
+    remediation: str | None = None
+    llm_reasoning: str | None = None
+    disposition: str | None = None
+    disposed_by: str | None = None
+    disposed_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
+class LlmRunResponse(BaseModel):
+    id: UUID
+    triggered_by: str
+    model: str
+    status: str
+    duration_seconds: float | None = None
+    findings_count: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class DispositionRequest(BaseModel):
-    disposition: str  # confirmed | false_positive | escalated
-    note: Optional[str] = None
+    disposition: Disposition
+    note: str | None = Field(None, max_length=5000)
 
 
 class SignoffRequest(BaseModel):
-    note: Optional[str] = None
+    note: str | None = Field(None, max_length=5000)
 
 
 class AuditLogResponse(BaseModel):
     id: UUID
     submission_id: UUID
-    finding_id: Optional[UUID] = None
+    finding_id: UUID | None = None
     analyst: str
     action: str
-    note: Optional[str] = None
+    note: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -101,20 +120,20 @@ class AuditLogResponse(BaseModel):
 
 class WebhookResponse(BaseModel):
     status: str
-    submission_id: Optional[str] = None
+    submission_id: str | None = None
 
 
 # Settings schemas
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Field(min_length=8, max_length=256)
 
 
 class CreateUserRequest(BaseModel):
-    username: str
-    password: str
-    role: str = "analyst"
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=8, max_length=256)
+    role: Role = Role.ANALYST
 
 
 class UserListResponse(BaseModel):
@@ -127,19 +146,7 @@ class UserListResponse(BaseModel):
 
 
 class UpdateUserRoleRequest(BaseModel):
-    role: str
-
-
-class GitHubConfigResponse(BaseModel):
-    webhook_secret_set: bool
-    webhook_secret_preview: str
-    token_set: bool
-    token_preview: str
-
-
-class GitHubConfigUpdateRequest(BaseModel):
-    webhook_secret: Optional[str] = None
-    token: Optional[str] = None
+    role: Role
 
 
 class AppConfigResponse(BaseModel):
@@ -161,16 +168,16 @@ class AppConfigResponse(BaseModel):
 
 
 class AppConfigUpdateRequest(BaseModel):
-    ollama_base_url: Optional[str] = None
-    ollama_model: Optional[str] = None
-    ollama_think: Optional[bool] = None
-    ollama_num_ctx: Optional[int] = Field(None, ge=0)
-    llm_max_content_chars: Optional[int] = Field(None, gt=0)
-    max_file_size_kb: Optional[int] = Field(None, gt=0)
-    max_files_per_repo: Optional[int] = Field(None, gt=0)
-    access_token_expire_minutes: Optional[int] = Field(None, gt=0, le=60 * 24 * 7)
-    worker_max_jobs: Optional[int] = Field(None, gt=0, le=64)
-    worker_job_timeout: Optional[int] = Field(None, ge=60)
+    ollama_base_url: str | None = Field(None, pattern=r"^https?://[^\s]+$", max_length=500)
+    ollama_model: str | None = Field(None, min_length=1, max_length=200)
+    ollama_think: bool | None = None
+    ollama_num_ctx: int | None = Field(None, ge=0, le=1_048_576)
+    llm_max_content_chars: int | None = Field(None, ge=1_000, le=2_000_000)
+    max_file_size_kb: int | None = Field(None, ge=1, le=10_240)
+    max_files_per_repo: int | None = Field(None, ge=1, le=10_000)
+    access_token_expire_minutes: int | None = Field(None, ge=5, le=10_080)
+    worker_max_jobs: int | None = Field(None, ge=1, le=64)
+    worker_job_timeout: int | None = Field(None, ge=60, le=86_400)
 
 
 # ── Repo schemas ───────────────────────────────────────────────────────────────
@@ -190,9 +197,9 @@ class RepoCreate(BaseModel):
 
 
 class RepoUpdate(BaseModel):
-    github_token: Optional[str] = None
-    webhook_secret: Optional[str] = None
-    enabled: Optional[bool] = None
+    github_token: str | None = None
+    webhook_secret: str | None = None
+    enabled: bool | None = None
 
 
 class RepoResponse(BaseModel):
@@ -200,7 +207,7 @@ class RepoResponse(BaseModel):
     repo_full_name: str
     added_by: str
     added_at: datetime
-    last_push_at: Optional[datetime] = None
+    last_push_at: datetime | None = None
     enabled: bool
     token_preview: str
     groups: list[GroupSummary] = []
@@ -217,12 +224,12 @@ class ValidateTokenRequest(BaseModel):
 
 class GroupCreate(BaseModel):
     name: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class GroupUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
+    name: str | None = None
+    description: str | None = None
 
 
 class GroupMemberAdd(BaseModel):
@@ -238,7 +245,7 @@ class GroupMemberResponse(BaseModel):
 class GroupResponse(BaseModel):
     id: UUID
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     created_by: str
     created_at: datetime
     member_count: int = 0

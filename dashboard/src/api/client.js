@@ -11,7 +11,9 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    // A failed login is a 401 too; let the login form show the error.
+    const isLogin = err.config?.url?.endsWith("/auth/login");
+    if (err.response?.status === 401 && !isLogin) {
       localStorage.removeItem("custos_token");
       window.location.href = "/login";
     }

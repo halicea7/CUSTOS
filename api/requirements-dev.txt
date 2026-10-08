@@ -1,5 +1,6 @@
 -r requirements.txt
-# Local tooling: the dev console (./custos dev) and the test suite.
+pytest>=8
+pytest-asyncio>=0.24
+fakeredis>=2.20
+ruff>=0.6
 rich
-pytest
-pytest-asyncio

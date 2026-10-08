@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Make api/ importable when running alembic from the project root.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api"))
 
+import models  # noqa: E402, F401  — registers ORM models on Base.metadata
 from config import settings  # noqa: E402
 from database import Base  # noqa: E402
-import models  # noqa: E402, F401  — registers ORM models on Base.metadata
 
 config = context.config
 

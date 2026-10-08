@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Custos dev console — live log stream with interactive controls.
 
-Started by `./custos dev` (after setup); not meant to be run directly.
+  ./dev.py
 
   n  toggle ngrok (webhook tunnel)
   b  toggle bind-all (0.0.0.0 for Tailscale)
@@ -10,7 +10,7 @@ Started by `./custos dev` (after setup); not meant to be run directly.
 """
 from __future__ import annotations
 
-import argparse, os, re, select, shutil, signal, socket, sys, termios, threading, tty
+import os, re, select, shutil, signal, socket, sys, termios, threading, tty
 import subprocess
 from datetime import datetime
 from pathlib  import Path
@@ -20,11 +20,9 @@ from time     import sleep
 from typing   import Optional
 
 # ── auto-venv ─────────────────────────────────────────────────────────────────
-ROOT  = Path(__file__).parent.parent.resolve()
+ROOT  = Path(__file__).parent.resolve()
 _venv = ROOT / ".venv" / "bin" / "python"
-# Compare resolved paths: a symlinked .venv (or parent dir) would otherwise
-# never match sys.prefix and re-exec forever.
-if _venv.exists() and Path(sys.prefix).resolve() != (ROOT / ".venv").resolve():
+if _venv.exists() and not sys.prefix.startswith(str(ROOT / ".venv")):
     os.execv(str(_venv), [str(_venv)] + sys.argv)
 
 try:
@@ -32,7 +30,7 @@ try:
     from rich.text    import Text
     from rich.rule    import Rule
 except ImportError:
-    sys.exit("rich not found — run: .venv/bin/pip install rich")
+    sys.exit("rich not found — run: .venv/bin/pip install -r api/requirements-dev.txt")
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 API_DIR  = ROOT / "api"
@@ -65,18 +63,12 @@ def _port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 def _kill_port(port: int) -> None:
-    """Free a port left bound by a previous run (fuser on Linux, lsof on macOS)."""
     if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{port}/tcp"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    elif shutil.which("lsof"):
-        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-                             capture_output=True, text=True).stdout
-        for pid in out.split():
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-            except (ProcessLookupError, ValueError, PermissionError):
-                pass
+        subprocess.run(
+            ["fuser", "-k", f"{port}/tcp"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 def _strip_ansi(s: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*[mGKHFJ]", "", s)
@@ -172,9 +164,7 @@ def _start(key: str) -> None:
         return
 
     cwd = str(API_DIR if key in ("api","worker") else DASH_DIR if key == "dashboard" else ROOT)
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "FORCE_COLOR": "0", "NO_COLOR": "1",
-           # venv bin first so the worker finds semgrep / pip-audit installed there
-           "PATH": f"{ROOT / '.venv' / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"}
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "FORCE_COLOR": "0", "NO_COLOR": "1"}
 
     try:
         proc = Popen(cmd, cwd=cwd, env=env,
@@ -261,8 +251,6 @@ def _handle_key(ch: str) -> None:
 
 def _shutdown() -> None:
     global _running
-    if not _running:
-        return  # already shutting down (sys.exit re-enters via finally)
     _running = False
     con.print("\n[dim]Shutting down…[/dim]")
     for key in SVCS:
@@ -276,13 +264,7 @@ def _shutdown() -> None:
 _old_term = None
 
 def main() -> None:
-    global _redis_ext, _old_term, _ngrok, _bind
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ngrok", action="store_true", help="start with the ngrok tunnel on")
-    ap.add_argument("--bind-all", action="store_true", help="bind API/dashboard to 0.0.0.0")
-    args = ap.parse_args()
-    _ngrok, _bind = args.ngrok, args.bind_all
+    global _redis_ext, _old_term
 
     LOG_DIR.mkdir(exist_ok=True)
     _print_banner()
@@ -302,7 +284,7 @@ def main() -> None:
     for key in SVCS:
         if key == "redis" and _redis_ext:
             continue
-        if key == "ngrok" and not _ngrok:
+        if key == "ngrok":
             continue
         _start(key)
 

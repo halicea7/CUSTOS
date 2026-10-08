@@ -1,38 +1,53 @@
-from worker.analysis.llm import _extract_json, _parse_llm_response
+import pytest
+
+from worker.analysis.llm import LlmError, _batch_files, _parse_llm_response
+
+FINDING = '{"title": "SQLi", "severity": "HIGH", "file_path": "app.py", "line_start": "12", "reasoning": "r"}'
 
 
-def test_bare_array():
-    out = _parse_llm_response('[{"title": "SQLi", "severity": "high", "line_start": "12"}]')
+def test_parses_wrapped_findings():
+    out = _parse_llm_response('{"findings": [' + FINDING + "]}")
     assert len(out) == 1
-    assert out[0].title == "SQLi"
-    assert out[0].severity == "high"
-    assert out[0].line_start == 12
-    assert out[0].source == "llm"
+    f = out[0]
+    assert (f.title, f.severity, f.line_start, f.llm_reasoning) == ("SQLi", "high", 12, "r")
+    assert f.source == "llm"
 
 
-def test_code_fences_and_think_blocks_are_stripped():
-    raw = '<think>hmm [not json]</think>\n```json\n[{"title": "x", "severity": "low"}]\n```'
-    assert [f.title for f in _parse_llm_response(raw)] == ["x"]
+def test_parses_bare_array_and_single_object():
+    assert len(_parse_llm_response("[" + FINDING + "]")) == 1
+    assert len(_parse_llm_response(FINDING)) == 1
 
 
-def test_wrapper_object():
-    raw = '{"findings": [{"title": "a", "severity": "medium"}]}'
-    assert [f.title for f in _parse_llm_response(raw)] == ["a"]
+def test_strips_think_blocks_and_fences():
+    content = "<think>hmm [x]</think>\n```json\n{\"findings\": [" + FINDING + "]}\n```"
+    assert len(_parse_llm_response(content)) == 1
 
 
-def test_single_object_becomes_one_finding():
-    assert len(_parse_llm_response('{"title": "a", "severity": "low"}')) == 1
+def test_empty_results():
+    assert _parse_llm_response('{"findings": []}') == []
+    assert _parse_llm_response("{}") == []
+    assert _parse_llm_response("[]") == []
 
 
-def test_invalid_severity_downgraded_to_info():
-    assert _parse_llm_response('[{"title": "a", "severity": "EXTREME"}]')[0].severity == "info"
+def test_invalid_json_raises():
+    with pytest.raises(LlmError):
+        _parse_llm_response("I could not find anything, sorry")
 
 
-def test_garbage_returns_empty():
-    assert _parse_llm_response("not json at all") == []
-    assert _parse_llm_response('{"unrelated": 1}') == []
+def test_unknown_object_raises():
+    with pytest.raises(LlmError):
+        _parse_llm_response('{"summary": "all good"}')
 
 
-def test_extract_json_ignores_brackets_inside_strings():
-    raw = 'Here you go:\n[{"title": "see [CWE-89]", "d": "a ] b"}] trailing'
-    assert _extract_json(raw) == '[{"title": "see [CWE-89]", "d": "a ] b"}]'
+def test_bad_severity_and_non_string_fields_are_coerced():
+    out = _parse_llm_response('[{"title": 5, "severity": null, "remediation": {"a": 1}}]')
+    assert out[0].severity == "info"
+    assert out[0].title == "5"
+    assert out[0].remediation == '{"a": 1}'
+
+
+def test_batch_files_packs_greedily():
+    files = [("a", "x" * 40), ("b", "x" * 40), ("c", "x" * 40)]
+    assert [[p for p, _ in b] for b in _batch_files(files, 100)] == [["a", "b"], ["c"]]
+    # An oversized file still gets its own batch rather than being dropped.
+    assert len(_batch_files([("big", "x" * 500)], 100)) == 1

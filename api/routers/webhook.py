@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from crypto import decrypt
 from database import get_db
+from enums import SubmissionStatus
 from github_client import post_github_check, verify_github_signature
 from models import Repo, Submission
 from schemas import WebhookResponse
@@ -30,7 +31,7 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     try:
         payload = json.loads(payload_bytes)
     except json.JSONDecodeError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON") from None
 
     repo_full_name: str = payload.get("repository", {}).get("full_name", "")
     if not repo_full_name:
@@ -39,14 +40,12 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     # Read-only DB lookup to get the per-repo webhook secret — occurs before any write/queue op.
     result = await db.execute(select(Repo).where(Repo.repo_full_name == repo_full_name))
     repo_rec = result.scalar_one_or_none()
-    if not repo_rec:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Repository not registered")
+    webhook_secret = decrypt(repo_rec.webhook_secret_enc) if repo_rec else ""
+    if not repo_rec or not verify_github_signature(payload_bytes, signature, webhook_secret):
+        # Same response for unknown repos and bad signatures: don't disclose registrations.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid signature")
     if not repo_rec.enabled:
         return WebhookResponse(status="ignored")
-
-    webhook_secret = decrypt(repo_rec.webhook_secret_enc)
-    if not verify_github_signature(payload_bytes, signature, webhook_secret):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid signature")
 
     if event_type not in _HANDLED_EVENTS:
         return WebhookResponse(status="ignored")
@@ -58,12 +57,10 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     repo_url: str = repo["clone_url"]
 
     if event_type == "push":
-        ref: str = payload.get("ref", "")
-        # Branch deletions carry an all-zero "after" SHA; tag pushes aren't code reviews.
-        if payload.get("deleted") or not ref.startswith("refs/heads/"):
+        if payload.get("deleted") or set(payload.get("after", "")) == {"0"}:
             return WebhookResponse(status="ignored")
         commit_sha: str = payload["after"]
-        branch: str = ref.removeprefix("refs/heads/")
+        branch: str = payload.get("ref", "").replace("refs/heads/", "")
         submitter: str | None = payload.get("pusher", {}).get("name")
         pr_number: int | None = None
     else:
@@ -81,36 +78,34 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         logger.info("Duplicate webhook for %s@%s — skipping", repo_full_name, commit_sha)
         return WebhookResponse(status="deduplicated")
 
-    submission = Submission(
-        repo_full_name=repo_full_name,
-        repo_url=repo_url,
-        commit_sha=commit_sha,
-        branch=branch,
-        submitter=submitter,
-        event_type=event_type,
-        pr_number=pr_number,
-        status="pending",
-    )
-    db.add(submission)
-
-    repo_rec.last_push_at = datetime.now(timezone.utc)
     try:
+        submission = Submission(
+            repo_full_name=repo_full_name,
+            repo_url=repo_url,
+            commit_sha=commit_sha,
+            branch=branch,
+            submitter=submitter,
+            event_type=event_type,
+            pr_number=pr_number,
+            status=SubmissionStatus.PENDING.value,
+        )
+        db.add(submission)
+        repo_rec.last_push_at = datetime.now(UTC)
         await db.commit()
+
+        github_token = decrypt(repo_rec.github_token_enc)
+        submission.check_run_id = await post_github_check(
+            repo=repo_full_name, sha=commit_sha, status="queued", token=github_token
+        )
+        await db.commit()
+
+        await request.app.state.arq_pool.enqueue_job("analyze_submission", str(submission.id))
     except Exception:
-        # Release the dedup key so GitHub's retry isn't dropped.
+        # Let GitHub's redelivery retry instead of being swallowed by the dedup key.
         await redis.delete(dedup_key)
         raise
-    await db.refresh(submission)
-
-    submission_id = str(submission.id)
-    github_token = decrypt(repo_rec.github_token_enc)
-
-    arq_pool = request.app.state.arq_pool
-    await arq_pool.enqueue_job("analyze_submission", submission_id)
-
-    await post_github_check(repo=repo_full_name, sha=commit_sha, status="in_progress", token=github_token)
 
     logger.info(
-        "Enqueued analysis for submission %s (%s@%s)", submission_id, repo_full_name, commit_sha
+        "Enqueued analysis for submission %s (%s@%s)", submission.id, repo_full_name, commit_sha
     )
-    return WebhookResponse(status="accepted", submission_id=submission_id)
+    return WebhookResponse(status="accepted", submission_id=str(submission.id))

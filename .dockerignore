@@ -1,13 +1,11 @@
-# Never bake secrets or local state into images.
-**/.env
-**/.env.*
-!**/.env.example
 .git
 .venv
 **/__pycache__
 **/*.pyc
-.dev-logs
-*.log
-Makeover
+**/.pytest_cache
+**/.env
+.env
 dashboard/node_modules
 dashboard/dist
+.dev-logs
+*.log

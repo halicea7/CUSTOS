@@ -6,6 +6,7 @@ import {
 import { useTheme, Icon } from "../App.jsx";
 import { Btn, Avatar } from "../components/atoms.jsx";
 import { PageHeader, PageWrap, SectionCard, TextInput } from "../components/ui.jsx";
+import { errorMessage } from "../api/errors.js";
 
 function GroupCard({ theme, group, preloadedMembers = [], onUpdated, onDeleted }) {
   const [expanded,   setExpanded]   = useState(false);
@@ -35,7 +36,7 @@ function GroupCard({ theme, group, preloadedMembers = [], onUpdated, onDeleted }
       setNewUser(""); await loadMembers();
       onUpdated({ ...group, member_count: group.member_count + 1 });
     } catch (e) {
-      setErr(e?.response?.data?.detail || "Failed to add member.");
+      setErr(errorMessage(e, "Failed to add member."));
     } finally { setAdding(false); }
   };
 
@@ -50,7 +51,7 @@ function GroupCard({ theme, group, preloadedMembers = [], onUpdated, onDeleted }
     try {
       const updated = await updateGroup(group.id, { name: editName.trim() });
       onUpdated(updated); setEditName(null);
-    } catch (e) { setErr(e?.response?.data?.detail || "Failed to rename."); }
+    } catch (e) { setErr(errorMessage(e, "Failed to rename.")); }
   };
 
   return (
@@ -196,7 +197,7 @@ export default function Groups() {
       setGroups(prev => [g, ...prev]);
       setName(""); setDesc("");
     } catch (e) {
-      setErr(e?.response?.data?.detail || "Failed to create group.");
+      setErr(errorMessage(e, "Failed to create group."));
     } finally { setCreating(false); }
   };
 

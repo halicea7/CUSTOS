@@ -1,83 +1,118 @@
-"""Test configuration.
+"""Shared fixtures. Requires a PostgreSQL database (TEST_DATABASE_URL).
 
-Unit tests need nothing external. Integration tests (API + authz) need a
-Postgres database and Redis; they use TEST_DATABASE_URL (default: a separate
-`custos_test` database) and Redis DB 15, and are skipped if unreachable.
-They never touch the dev database.
+    docker run -d -p 5432:5432 -e POSTGRES_USER=custos -e POSTGRES_PASSWORD=custos \
+        -e POSTGRES_DB=custos_test postgres:16-alpine
 """
+
 import os
+import sys
+from pathlib import Path
 
-# Must be set before any app module imports `config`.
-os.environ["SECRET_KEY"] = "test-secret-key-" + "x" * 32
-os.environ["ENCRYPTION_KEY"] = "test-encryption-key-" + "y" * 32
+# Settings are read at import time, so configure the environment first.
 os.environ["DATABASE_URL"] = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://Custos:Custos@localhost:5432/custos_test",
+    "TEST_DATABASE_URL", "postgresql+asyncpg://custos:custos@localhost:5432/custos_test"
 )
-os.environ["REDIS_URL"] = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
+os.environ["SECRET_KEY"] = "test-secret-key-" + "x" * 32
+os.environ["ENCRYPTION_KEY"] = "7cQJ3nL0y6bS6mYJ0t8m3q1gk9p0yR2cW5cQeK3qX3o="
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import fakeredis.aioredis  # noqa: E402
 import httpx  # noqa: E402
 import pytest  # noqa: E402
+from main import app  # noqa: E402
+
+from auth import create_access_token, hash_password  # noqa: E402
+from crypto import encrypt  # noqa: E402
+from database import Base, async_session_factory, engine  # noqa: E402
+from models import Finding, Repo, Submission, User  # noqa: E402
 
 
-class _FakeJob:
-    job_id = "test-job"
+class FakeJob:
+    def __init__(self, job_id: str):
+        self.job_id = job_id
 
 
 class FakeArqPool:
     def __init__(self):
-        self.enqueued: list[tuple] = []
+        self.jobs: list[tuple[str, tuple]] = []
 
-    async def enqueue_job(self, name, *args):
-        self.enqueued.append((name, *args))
-        return _FakeJob()
+    async def enqueue_job(self, name: str, *args):
+        self.jobs.append((name, args))
+        return FakeJob(f"job-{len(self.jobs)}")
 
 
-@pytest.fixture
-async def db_engine():
-    from database import Base, engine
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-            await conn.run_sync(Base.metadata.create_all)
-    except (OSError, ConnectionError) as exc:
-        pytest.skip(f"test database unavailable: {exc}")
-    except Exception as exc:  # e.g. database does not exist
-        if "does not exist" in str(exc):
-            pytest.skip(f"test database unavailable: {exc}")
-        raise
-    yield engine
+@pytest.fixture(scope="session", autouse=True)
+async def _schema():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield
     await engine.dispose()
 
 
-@pytest.fixture
-async def redis():
-    from redis.asyncio import Redis
-    from config import settings
-    r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    try:
-        await r.flushdb()
-    except Exception as exc:
-        pytest.skip(f"test redis unavailable: {exc}")
-    yield r
-    await r.flushdb()
-    await r.aclose()
+@pytest.fixture(autouse=True)
+async def _clean_tables(_schema):
+    yield
+    async with engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            await conn.execute(table.delete())
 
 
 @pytest.fixture
-async def client(db_engine, redis):
-    from main import app
-    app.state.redis = redis
+async def db():
+    async with async_session_factory() as session:
+        yield session
+
+
+@pytest.fixture
+async def client():
+    app.state.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     app.state.arq_pool = FakeArqPool()
-    # ASGITransport skips lifespan, so no real ARQ pool is created.
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as c:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
 
-@pytest.fixture
-async def db(db_engine):
-    from database import async_session_factory
-    async with async_session_factory() as session:
-        yield session
+# ── factories ────────────────────────────────────────────────────────────────
+
+_PW_HASH = hash_password("password123")
+
+
+async def make_user(db, username: str, role: str = "analyst") -> User:
+    user = User(username=username, hashed_password=_PW_HASH, role=role)
+    db.add(user)
+    await db.commit()
+    return user
+
+
+def auth_headers(username: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {create_access_token({'sub': username})}"}
+
+
+async def make_repo(db, name: str, owner: str, secret: str = "whsecret", token: str = "ghp_" + "a" * 36) -> Repo:
+    repo = Repo(
+        repo_full_name=name,
+        github_token_enc=encrypt(token),
+        webhook_secret_enc=encrypt(secret),
+        token_last4=token[-4:],
+        added_by=owner,
+    )
+    db.add(repo)
+    await db.commit()
+    return repo
+
+
+async def make_submission(db, repo_full_name: str, status: str = "needs_review", findings: list[dict] | None = None) -> Submission:
+    sub = Submission(
+        repo_full_name=repo_full_name,
+        repo_url=f"https://github.com/{repo_full_name}.git",
+        commit_sha="a" * 40,
+        status=status,
+    )
+    db.add(sub)
+    await db.flush()
+    for f in findings or []:
+        db.add(Finding(submission_id=sub.id, source="semgrep", title="t", **f))
+    await db.commit()
+    return sub

@@ -1,18 +1,30 @@
+"""Symmetric encryption for secrets stored in the database.
+
+Keys come from ENCRYPTION_KEY (comma-separated Fernet keys; the first encrypts,
+all decrypt). A key derived from SECRET_KEY is always appended as a decrypt-only
+fallback so rows written before ENCRYPTION_KEY existed stay readable. Run
+``python rotate_encryption.py`` to re-encrypt those rows under the new key.
+"""
+
 import base64
 import hashlib
+from functools import lru_cache
+
 from cryptography.fernet import Fernet, MultiFernet
 
 
-def _derive(key: str) -> Fernet:
-    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(key.encode()).digest()))
-
-
-def _fernet() -> MultiFernet:
-    """Current key encrypts; current + previous keys can decrypt."""
+def _legacy_key() -> Fernet:
     from config import settings
-    primary = settings.ENCRYPTION_KEY or settings.SECRET_KEY
-    previous = [k.strip() for k in settings.PREVIOUS_ENCRYPTION_KEYS.split(",") if k.strip()]
-    return MultiFernet([_derive(primary), *(_derive(k) for k in previous)])
+    key = hashlib.sha256(settings.SECRET_KEY.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+@lru_cache(maxsize=1)
+def _fernet() -> MultiFernet:
+    from config import settings
+    keys = [Fernet(k.strip().encode()) for k in settings.ENCRYPTION_KEY.split(",") if k.strip()]
+    keys.append(_legacy_key())
+    return MultiFernet(keys)
 
 
 def encrypt(plaintext: str) -> str:
@@ -24,5 +36,5 @@ def decrypt(ciphertext: str) -> str:
 
 
 def rotate(ciphertext: str) -> str:
-    """Re-encrypt *ciphertext* under the current primary key."""
+    """Re-encrypt *ciphertext* under the primary key."""
     return _fernet().rotate(ciphertext.encode()).decode()

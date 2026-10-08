@@ -4,6 +4,9 @@ import { getFinding, getFindingAudit, setDisposition } from "../api/findings.js"
 import { useTheme } from "../App.jsx";
 import { Severity, DispositionTag, Btn, Label, fmtDate } from "../components/atoms.jsx";
 import CodeViewer from "../components/CodeViewer.jsx";
+import { errorMessage } from "../api/errors.js";
+import { useQueryClient } from "@tanstack/react-query";
+import { keys } from "../api/queries.js";
 
 function fmtTs(ts) {
   if (!ts) return "—";
@@ -99,6 +102,7 @@ function DispositionPanel({ theme, finding, onUpdate }) {
   const [note,    setNote]    = useState("");
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+  const queryClient = useQueryClient();
   const t = theme;
 
   const handleSave = async () => {
@@ -106,9 +110,12 @@ function DispositionPanel({ theme, finding, onUpdate }) {
     setLoading(true); setError(null);
     try {
       const updated = await setDisposition(finding.id, current, note);
+      // The submission page and queue show triage state; make them refetch.
+      queryClient.invalidateQueries({ queryKey: keys.submission(finding.submission_id) });
+      queryClient.invalidateQueries({ queryKey: ["submissions"] });
       onUpdate?.(updated); setNote("");
     } catch (e) {
-      setError(e.response?.data?.detail || "Failed to update disposition");
+      setError(errorMessage(e, "Failed to update disposition"));
     } finally { setLoading(false); }
   };
 
@@ -202,7 +209,7 @@ export default function Finding() {
   useEffect(() => {
     getFinding(id)
       .then(setFinding)
-      .catch(e => setError(e.response?.data?.detail || "Failed to load"))
+      .catch(e => setError(errorMessage(e, "Failed to load")))
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -316,7 +323,7 @@ export default function Finding() {
             )}
 
             {/* Audit log */}
-            <AuditLog theme={t} findingId={finding.id} />
+            <AuditLog key={finding.disposed_at || "none"} theme={t} findingId={finding.id} />
           </div>
 
           {/* Disposition sidebar */}

@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import hljs from "highlight.js";
+import hljs from "highlight.js/lib/common";
 import { useTheme } from "../App.jsx";
 
 // Dark hljs theme
@@ -32,22 +32,18 @@ const HLJS_LIGHT = `
 .hljs-strong{font-weight:bold}
 `;
 
-// Code comes from untrusted submitted repos — anything rendered via
-// dangerouslySetInnerHTML must be escaped first.
-function escapeHtml(s) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+export function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
 }
 
-function highlightSafe(code, language) {
+export function highlightSafe(code, language) {
+  if (!code) return "";
   try {
     if (language) {
       const lang = hljs.getLanguage(language) ? language : "plaintext";
-      return hljs.highlight(code, { language: lang }).value;
+      return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
     }
     return hljs.highlightAuto(code).value;
   } catch {
@@ -58,11 +54,9 @@ function highlightSafe(code, language) {
 export default function CodeViewer({ code, language, lineStart, lineEnd, filePath }) {
   const { theme } = useTheme();
   const t = theme;
-  // Computed synchronously so the first render never sees raw, unescaped code.
-  const highlighted = useMemo(
-    () => (code ? highlightSafe(code, language) : ""),
-    [code, language]
-  );
+  // `code` comes from the scanned (untrusted) repository. It is only ever
+  // rendered as HTML after hljs has escaped it, or after escapeHtml() — never raw.
+  const highlighted = useMemo(() => highlightSafe(code, language), [code, language]);
 
   if (!code) return null;
 
@@ -112,6 +106,7 @@ export default function CodeViewer({ code, language, lineStart, lineEnd, filePat
                   </td>
                   <td style={{ padding: "0 20px 0 14px", whiteSpace: "pre",
                     color: isHighlighted ? t.c.text : undefined }}
+                    // eslint-disable-next-line react/no-danger -- `line` is hljs/escapeHtml output, never raw code
                     dangerouslySetInnerHTML={{ __html: line || "&nbsp;" }}
                   />
                 </tr>
