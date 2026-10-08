@@ -40,6 +40,9 @@ services:
       redis: { condition: service_healthy }
     tmpfs:
       - /tmp/Custos_clones:size=4g,mode=1777
+    volumes:
+      # SentinelOne CLI state: config (with its token) + scanner binaries.
+      - s1data:/var/lib/custos-s1
     restart: unless-stopped
 
   redis:
@@ -82,3 +85,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  s1data:

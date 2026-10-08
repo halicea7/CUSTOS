@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useAuth, useTheme, useUnsavedGuard } from "../App.jsx";
 import {
   getUsers, createUser, updateUserRole, deleteUser,
-  changePassword, getConfig, updateConfig, testOllama, testResponses,
+  changePassword, getConfig, updateConfig, testOllama, testResponses, testS1,
 } from "../api/settings.js";
 import { Btn, Avatar, RoleBadge } from "../components/atoms.jsx";
 import {
@@ -250,6 +250,12 @@ function urlOrigin(url) {
 const prettyOrigin = (o) => (o || "").replace(/^(https:\/\/.+):443$/, "$1").replace(/^(http:\/\/.+):80$/, "$1");
 
 const URL_RE = /^https?:\/\/\S+$/;
+const S1_CONSOLE_RE = /^https:\/\/[^\s/]+\/?$/;
+const S1_SCANNER_OPTIONS = [
+  { value: "secret", label: "Secrets" },
+  { value: "iac", label: "IaC misconfigurations" },
+  { value: "vuln", label: "Vulnerable dependencies" },
+];
 const intIn = (v, lo, hi) => { const n = Number(v); return Number.isInteger(n) && n >= lo && n <= hi; };
 
 function validate(d, cfg) {
@@ -266,6 +272,18 @@ function validate(d, cfg) {
       e.responses_api_key = `The saved key only works with ${prettyOrigin(bound)}. Enter the key again to use this host, or remove it.`;
     }
   }
+  if (d.s1_enabled) {
+    if (!S1_CONSOLE_RE.test(d.s1_console_url || "")) e.s1_console_url = "Enter the console's https:// address, e.g. https://<region>.sentinelone.net";
+    if (!/^\d{1,30}$/.test(d.s1_scope_id || "")) e.s1_scope_id = "The numeric account or site ID";
+    if (!d.s1_scanners?.length) e.s1_scanners = "Pick at least one scanner";
+    const bound = cfg?.s1_token_origin;
+    const sameConsole = bound && urlOrigin(d.s1_console_url) === bound;
+    if (!d.s1_api_token_input && (d.s1_api_token_clear || !sameConsole)) {
+      e.s1_api_token = bound && !d.s1_api_token_clear
+        ? `The saved token only works with ${prettyOrigin(bound)}. Enter the token for this console.`
+        : "Enter the service user API token";
+    }
+  }
   if (!intIn(d.max_file_size_kb, 1, 10240)) e.max_file_size_kb = "1 – 10,240 KB";
   if (!intIn(d.max_files_per_repo, 1, 10000)) e.max_files_per_repo = "1 – 10,000 files";
   if (!intIn(d.access_token_expire_minutes, 5, 10080)) e.access_token_expire_minutes = "5 – 10,080 minutes";
@@ -279,6 +297,7 @@ function fieldForServerError(msg) {
   if (/saved API key is bound|Re-enter the key/i.test(msg)) return "responses_api_key";
   if (/model for the Responses API/i.test(msg)) return "responses_model";
   if (/plain HTTP/i.test(msg)) return "responses_base_url";
+  if (/SentinelOne token is bound/i.test(msg)) return "s1_api_token";
   return null;
 }
 
@@ -310,6 +329,21 @@ function useProviderStatus(cfg) {
         .then((r) => done(check(r, cfg.ollama_model)))
         .catch(() => done({ tone: "error", text: "Check failed" }));
     }
+    return () => { live = false; };
+  }, [cfg]);
+  return status;
+}
+
+function useS1Status(cfg) {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    if (!cfg) return undefined;
+    if (!cfg.s1_enabled) { setStatus({ tone: "pending", text: "Off" }); return undefined; }
+    let live = true;
+    setStatus({ tone: "pending", text: "Checking…" });
+    testS1({ console_url: cfg.s1_console_url, scope_type: cfg.s1_scope_type, scope_id: cfg.s1_scope_id })
+      .then((r) => live && setStatus(r.ok ? { tone: "ok", text: "Connected" } : { tone: "error", text: r.error }))
+      .catch(() => live && setStatus({ tone: "error", text: "Check failed" }));
     return () => { live = false; };
   }, [cfg]);
   return status;
@@ -373,8 +407,10 @@ function AnalysisTab({ theme }) {
   const [serverErr, setServerErr] = useState({});    // { field: msg } from the last save
   const [ollamaTest, setOllamaTest] = useState(null);
   const [respTest, setRespTest] = useState(null);
+  const [s1Test, setS1Test] = useState(null);
   const { setDirty } = useUnsavedGuard();
   const status = useProviderStatus(cfg);
+  const s1Status = useS1Status(cfg);
   const t = theme;
 
   useEffect(() => {
@@ -416,8 +452,21 @@ function AnalysisTab({ theme }) {
     catch (e) { setRespTest({ ok: false, error: errorMessage(e, "Request failed"), models: [] }); }
   };
 
+  const handleTestS1 = async () => {
+    setS1Test("testing");
+    try {
+      const r = await testS1({ console_url: draft.s1_console_url, scope_type: draft.s1_scope_type,
+        scope_id: draft.s1_scope_id, api_token: draft.s1_api_token_input || null });
+      setS1Test(r.ok ? { ...r, note: r.cli_version ? `Latest CLI on this console: ${r.cli_version}` : null } : r);
+    } catch (e) { setS1Test({ ok: false, error: errorMessage(e, "Request failed") }); }
+  };
+
+  const toggleScanner = (v) => update({ s1_scanners: draft.s1_scanners.includes(v)
+    ? draft.s1_scanners.filter(x => x !== v)
+    : S1_SCANNER_OPTIONS.map(o => o.value).filter(x => x === v || draft.s1_scanners.includes(x)) });
+
   const handleDiscard = () => {
-    setDraft(cfg); setServerErr({}); setFb(null); setOllamaTest(null); setRespTest(null);
+    setDraft(cfg); setServerErr({}); setFb(null); setOllamaTest(null); setRespTest(null); setS1Test(null);
   };
 
   const handleSave = async () => {
@@ -425,12 +474,22 @@ function AnalysisTab({ theme }) {
     // The API key is write-only: send it only when typed, or "" to remove it.
     const keyUpdate = draft.responses_api_key_clear ? { responses_api_key: "" }
       : draft.responses_api_key_input ? { responses_api_key: draft.responses_api_key_input } : {};
+    const s1TokenUpdate = draft.s1_api_token_clear ? { s1_api_token: "" }
+      : draft.s1_api_token_input ? { s1_api_token: draft.s1_api_token_input } : {};
     try {
       const updated = await updateConfig({
         llm_provider: draft.llm_provider,
         responses_base_url: draft.responses_base_url,
         responses_model: draft.responses_model,
         ...keyUpdate,
+        ...s1TokenUpdate,
+        s1_enabled: draft.s1_enabled,
+        ...(draft.s1_console_url ? { s1_console_url: draft.s1_console_url } : {}),
+        s1_scope_type: draft.s1_scope_type,
+        ...(draft.s1_scope_id ? { s1_scope_id: draft.s1_scope_id } : {}),
+        ...(draft.s1_scanners?.length ? { s1_scanners: draft.s1_scanners } : {}),
+        s1_verify_secrets: draft.s1_verify_secrets,
+        s1_publish: draft.s1_publish,
         ollama_base_url: draft.ollama_base_url,
         ollama_model: draft.ollama_model,
         ollama_think: draft.ollama_think,
@@ -442,7 +501,7 @@ function AnalysisTab({ theme }) {
         worker_max_jobs: Number(draft.worker_max_jobs),
         worker_job_timeout: Number(draft.worker_job_timeout),
       });
-      setCfg(updated); setDraft(updated); setRespTest(null);
+      setCfg(updated); setDraft(updated); setRespTest(null); setS1Test(null);
       setFb({ msg: "Saved", type: "success" });
     } catch (e) {
       const msg = errorMessage(e, "Failed to save");
@@ -576,6 +635,112 @@ function AnalysisTab({ theme }) {
                 <div style={hint}>
                   {numCtx ? "Overrides the model's default for every request. Larger windows use more GPU memory."
                     : "Uses the window set in the model or its Modelfile."}
+                </div>
+              </Field>
+            </>
+          )}
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="SentinelOne CNS" subtitle="extra scanning layer"
+        right={<StatusPill theme={t} status={draft.s1_enabled !== cfg?.s1_enabled
+          ? { tone: "pending", text: "Save to check" } : s1Status} />}>
+        <div style={{ maxWidth: 600 }}>
+          <Field theme={t} label="Scan with SentinelOne" hint="runs s1-cns-cli on every submission">
+            <Toggle theme={t} value={!!draft.s1_enabled} onChange={v => update({ s1_enabled: v })}
+              label={draft.s1_enabled ? "Enabled" : "Disabled"} />
+          </Field>
+
+          {draft.s1_enabled && (
+            <>
+              <Field theme={t} label="Management console URL" error={errors.s1_console_url}>
+                <TextInput theme={t} value={draft.s1_console_url || ""} mono
+                  onChange={e => { set("s1_console_url")(e); setS1Test(null); }}
+                  placeholder="https://usea1-xxx.sentinelone.net" />
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 14 }}>
+                <Field theme={t} label="Scope type">
+                  <SelectInput theme={t} value={draft.s1_scope_type || "ACCOUNT"}
+                    onChange={e => { set("s1_scope_type")(e); setS1Test(null); }}
+                    options={[{ value: "ACCOUNT", label: "Account" }, { value: "SITE", label: "Site" }]} />
+                </Field>
+                <Field theme={t} label="Scope ID" hint="where the service user was created" error={errors.s1_scope_id}>
+                  <TextInput theme={t} value={draft.s1_scope_id || ""} mono
+                    onChange={e => { set("s1_scope_id")(e); setS1Test(null); }} placeholder="e.g. 123456789012345678" />
+                </Field>
+              </div>
+
+              <Field theme={t} label="Service user API token" hint="stored encrypted, never shown again"
+                error={errors.s1_api_token}>
+                <TextInput theme={t} type="password" autoComplete="off" mono
+                  value={draft.s1_api_token_input || ""}
+                  onChange={e => { update({ s1_api_token_input: e.target.value, s1_api_token_clear: false }); setS1Test(null); }}
+                  placeholder={cfg?.s1_token_origin && !draft.s1_api_token_clear
+                    ? `Saved token ••••${cfg.s1_token_last4 || ""} — leave blank to keep` : "Paste the token"} />
+                {cfg?.s1_token_origin && (
+                  <div style={{ ...hint, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    {draft.s1_api_token_clear ? (
+                      <>
+                        <span style={{ color: t.sev.medium.fg }}>The saved token will be removed when you save.</span>
+                        <Btn theme={t} size="sm" variant="quiet" onClick={() => update({ s1_api_token_clear: false })}>Undo</Btn>
+                      </>
+                    ) : (
+                      <>
+                        <span>Only ever sent to <code style={{ fontFamily: t.fontMono }}>{prettyOrigin(cfg.s1_token_origin)}</code>.</span>
+                        <Btn theme={t} size="sm" variant="danger"
+                          onClick={() => update({ s1_api_token_clear: true, s1_api_token_input: "" })}>Remove saved token</Btn>
+                      </>
+                    )}
+                  </div>
+                )}
+              </Field>
+
+              <div style={{ marginBottom: 16 }}>
+                <Btn theme={t}
+                  variant={s1Test && s1Test !== "testing" ? (s1Test.ok ? "success" : "danger") : "ghost"}
+                  onClick={handleTestS1}
+                  disabled={s1Test === "testing" || !!errors.s1_console_url || !!errors.s1_scope_id}>
+                  {s1Test === "testing" ? "Testing…" : "Test connection"}
+                </Btn>
+                <ConnectionResult theme={t} result={s1Test} />
+              </div>
+
+              <Field theme={t} label="Scanners" error={errors.s1_scanners}>
+                <div role="group" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {S1_SCANNER_OPTIONS.map(o => {
+                    const on = draft.s1_scanners?.includes(o.value);
+                    return (
+                      <label key={o.value} style={{ display: "inline-flex", alignItems: "center", gap: 7,
+                        padding: "6px 11px", borderRadius: 999, cursor: "pointer", fontSize: 12.5,
+                        border: `1px solid ${on ? t.c.accent : t.c.border}`,
+                        background: on ? t.c.accentBg : t.c.bg, color: on ? t.c.accent : t.c.text2 }}>
+                        <input type="checkbox" checked={!!on} onChange={() => toggleScanner(o.value)}
+                          style={{ accentColor: t.c.accent, margin: 0 }} />
+                        {o.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </Field>
+
+              {draft.s1_scanners?.includes("secret") && (
+                <Field theme={t} label="Verify detected secrets">
+                  <Toggle theme={t} value={!!draft.s1_verify_secrets}
+                    onChange={v => update({ s1_verify_secrets: v })}
+                    label={draft.s1_verify_secrets ? "On" : "Off"} />
+                  <div style={{ ...hint, color: draft.s1_verify_secrets ? t.sev.medium.fg : t.c.text3 }}>
+                    When on, the CLI logs in to the real service (AWS, GitHub, …) with each credential it finds
+                    to check whether it is live. Off by default: only enable it if your policy allows that.
+                  </div>
+                </Field>
+              )}
+
+              <Field theme={t} label="Publish results to SentinelOne">
+                <Toggle theme={t} value={!!draft.s1_publish} onChange={v => update({ s1_publish: v })}
+                  label={draft.s1_publish ? "On" : "Off"} />
+                <div style={hint}>
+                  Sends IaC and vulnerability findings to your SentinelOne console under the repository&rsquo;s GitHub name.
+                  Code is always scanned locally; without this, only scanner configuration is fetched from the console.
                 </div>
               </Field>
             </>

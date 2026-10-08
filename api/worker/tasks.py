@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select, update
 
-from app_config import load_app_config, load_responses_api_key
+from app_config import load_app_config, load_responses_api_key, load_s1_token
 from config import settings
 from crypto import decrypt
 from database import async_session_factory
@@ -25,6 +25,7 @@ from worker.analysis.clone import clone_repo, redact
 from worker.analysis.config_checks import run_config_checks
 from worker.analysis.llm import PROVIDER_OLLAMA, PROVIDER_RESPONSES, LlmError, LlmProvider, LlmResult, call_llm
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
+from worker.analysis.sentinelone import RepoMeta, S1Error, S1Settings, run_sentinelone
 from worker.analysis.synthesizer import dedup_raw_findings, synthesize
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,32 @@ def _check_summary(findings: list[dict], llm_error: str | None) -> str:
     return summary
 
 
+async def _run_s1(db, cfg: AppConfigResponse, repo_path: str, submission) -> tuple[list[RawFinding], str | None]:
+    """Optional SentinelOne CNS layer. Never fails the submission: returns
+    (findings, note) where *note* explains any problem for the analyst."""
+    if not cfg.s1_enabled:
+        return [], None
+    token = await load_s1_token(db, cfg.s1_console_url) if cfg.s1_console_url else ""
+    if not token or not cfg.s1_scope_id:
+        return [], "SentinelOne scan skipped: console URL, scope ID or token not configured."
+    s1 = S1Settings(
+        console_url=cfg.s1_console_url, scope_type=cfg.s1_scope_type, scope_id=cfg.s1_scope_id,
+        token=token, scanners=tuple(cfg.s1_scanners), verify_secrets=cfg.s1_verify_secrets,
+        publish=cfg.s1_publish,
+    )
+    try:
+        result = await run_sentinelone(
+            repo_path, s1, RepoMeta(full_name=submission.repo_full_name, branch=submission.branch)
+        )
+    except S1Error as exc:
+        logger.warning("SentinelOne layer failed: %s", exc)
+        return [], f"SentinelOne scan failed: {redact(str(exc), token)}"[:1000]
+    note = None
+    if result.errors:
+        note = f"SentinelOne: some scanners failed ({redact('; '.join(result.errors), token)})"[:1000]
+    return result.findings, note
+
+
 async def _repo_token(db, repo_full_name: str) -> str:
     repo_rec = (
         await db.execute(select(Repo).where(Repo.repo_full_name == repo_full_name))
@@ -184,6 +211,8 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                     github_token=github_token,
                 )
                 sast_findings = await _run_sast(repo_path)
+                s1_findings, s1_note = await _run_s1(db, cfg, repo_path, submission)
+                sast_findings += s1_findings
 
                 llm_findings: list[RawFinding] = []
                 llm_error: str | None = None
@@ -204,8 +233,12 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                     db.add(Finding(submission_id=submission.id, **f))
 
                 submission.status = SubmissionStatus.NEEDS_REVIEW.value
+                notes = []
                 if llm_error:
-                    submission.error_message = f"LLM review failed; showing static analysis only. {llm_error}"
+                    notes.append(f"LLM review failed; showing static analysis only. {llm_error}")
+                if s1_note:
+                    notes.append(s1_note)
+                submission.error_message = "\n".join(notes) or None
                 await db.commit()
 
                 blocking = any(f["severity"] in BLOCKING_SEVERITIES for f in all_findings)
@@ -324,8 +357,10 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                     duration = time.time() - start_time
                     llm_result.findings = new_llm
                     _finish_llm_run(llm_run, llm_result, duration)
-                    if sub.error_message and sub.error_message.startswith("LLM review failed"):
-                        sub.error_message = None
+                    if sub.error_message:
+                        # Drop only the LLM note; keep others (e.g. SentinelOne).
+                        kept = [ln for ln in sub.error_message.splitlines() if not ln.startswith("LLM review failed")]
+                        sub.error_message = "\n".join(kept) or None
                     await _record_llm_duration(db, duration)
                     await db.commit()
                     logger.info(

@@ -4,6 +4,7 @@ import { SEV_ORDER } from "../atoms.jsx";
 export const SOURCE_LABELS = {
   semgrep: "Semgrep (SAST)", gitleaks: "Gitleaks (Secrets)",
   pip_audit: "pip-audit (Deps)", npm_audit: "npm-audit (Deps)", llm: "LLM Analysis",
+  s1_secret: "SentinelOne (Secrets)", s1_iac: "SentinelOne (IaC)", s1_vuln: "SentinelOne (Vulns)",
 };
 
 export function fmtUtc(ts) {

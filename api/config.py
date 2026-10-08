@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     RESPONSES_MODEL: str = ""
     RESPONSES_API_KEY: str = ""
 
+    # SentinelOne CNS Shift Left CLI as an extra scanning layer. Usually set on
+    # the Settings page (the service-user token is then stored encrypted); the
+    # env values are fallbacks. S1_HOME holds the CLI's own config (which
+    # contains the token in plaintext) and its downloaded scanner binaries.
+    S1_ENABLED: bool = False
+    S1_CONSOLE_URL: str = ""
+    S1_SCOPE_TYPE: str = "ACCOUNT"
+    S1_SCOPE_ID: str = ""
+    S1_SERVICE_USER_API_TOKEN: str = ""
+    S1_CNS_CLI: str = "s1-cns-cli"
+    S1_HOME: str = ""
+
     # Comma-separated Semgrep rulesets (registry names like p/default, or local paths).
     SEMGREP_CONFIG: str = "p/default"
 

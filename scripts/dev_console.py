@@ -174,7 +174,8 @@ def _start(key: str) -> None:
     cwd = str(API_DIR if key in ("api","worker") else DASH_DIR if key == "dashboard" else ROOT)
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "FORCE_COLOR": "0", "NO_COLOR": "1",
            # venv bin first so the worker finds semgrep / pip-audit installed there
-           "PATH": f"{ROOT / '.venv' / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"}
+           "PATH": os.pathsep.join([str(ROOT / ".venv" / "bin"), str(ROOT / ".venv-s1cns" / "bin"),
+                                    os.environ.get("PATH", "")])}
 
     try:
         proc = Popen(cmd, cwd=cwd, env=env,

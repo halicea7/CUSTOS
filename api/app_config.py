@@ -20,9 +20,15 @@ RESPONSES_API_KEY = "responses_api_key"
 # The scheme://host:port the key was saved for. The key is only ever sent
 # there, so changing the base URL can't redirect it to another server.
 RESPONSES_API_KEY_ORIGIN = "responses_api_key_origin"
+# Same treatment for the SentinelOne service-user token, bound to the console.
+S1_TOKEN = "s1_api_token"
+S1_TOKEN_ORIGIN = "s1_api_token_origin"
+S1_SCANNERS = ("secret", "iac", "vuln")
 
 CONFIG_KEYS = {
     "llm_provider", "responses_base_url", "responses_model", RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN,
+    "s1_enabled", "s1_console_url", "s1_scope_type", "s1_scope_id", "s1_scanners",
+    "s1_verify_secrets", "s1_publish", S1_TOKEN, S1_TOKEN_ORIGIN,
     "ollama_base_url", "ollama_model", "ollama_think", "ollama_num_ctx",
     "llm_max_content_chars",
     "max_file_size_kb", "max_files_per_repo",
@@ -39,7 +45,20 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
     ov = {row.key: row.value for row in result.scalars()}
     responses_base_url = ov.get("responses_base_url", settings.RESPONSES_BASE_URL).rstrip("/")
     api_key = _key_for_url(ov, responses_base_url)
+    s1_console_url = ov.get("s1_console_url", settings.S1_CONSOLE_URL).rstrip("/")
+    s1_token = _s1_token_for_url(ov, s1_console_url) if s1_console_url else ""
+    s1_scanners = [s for s in ov.get("s1_scanners", ",".join(S1_SCANNERS)).split(",") if s in S1_SCANNERS]
     return AppConfigResponse(
+        s1_enabled=_bool(ov.get("s1_enabled"), settings.S1_ENABLED),
+        s1_console_url=s1_console_url,
+        s1_scope_type=ov.get("s1_scope_type", settings.S1_SCOPE_TYPE),
+        s1_scope_id=ov.get("s1_scope_id", settings.S1_SCOPE_ID),
+        s1_scanners=s1_scanners,
+        s1_verify_secrets=_bool(ov.get("s1_verify_secrets"), False),
+        s1_publish=_bool(ov.get("s1_publish"), False),
+        s1_token_set=bool(s1_token),
+        s1_token_last4=s1_token[-4:] if len(s1_token) >= 8 else None,
+        s1_token_origin=ov.get(S1_TOKEN_ORIGIN),
         llm_provider=ov.get("llm_provider", settings.LLM_PROVIDER),
         responses_base_url=responses_base_url,
         responses_api_key_origin=ov.get(RESPONSES_API_KEY_ORIGIN),
@@ -61,8 +80,11 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
     )
 
 
-def _stored_api_key(ov: dict[str, str]) -> str:
-    enc = ov.get(RESPONSES_API_KEY)
+def _bool(value: str | None, default: bool) -> bool:
+    return default if value is None else value.lower() == "true"
+
+
+def _decrypt_or_empty(enc: str | None, what: str) -> str:
     if not enc:
         return ""
     try:
@@ -70,8 +92,12 @@ def _stored_api_key(ov: dict[str, str]) -> str:
     except InvalidToken:
         # ENCRYPTION_KEY changed without `manage.py rotate-keys`: treat as unset
         # rather than breaking the Settings page and every job.
-        logger.warning("Stored Responses API key cannot be decrypted; re-enter it in Settings")
+        logger.warning("Stored %s cannot be decrypted; re-enter it in Settings", what)
         return ""
+
+
+def _stored_api_key(ov: dict[str, str]) -> str:
+    return _decrypt_or_empty(ov.get(RESPONSES_API_KEY), "Responses API key")
 
 
 def url_origin(url: str) -> str:
@@ -94,6 +120,22 @@ def _key_for_url(ov: dict[str, str], base_url: str) -> str:
     if settings.RESPONSES_API_KEY and url_origin(settings.RESPONSES_BASE_URL) == target:
         return settings.RESPONSES_API_KEY
     return ""
+
+
+def _s1_token_for_url(ov: dict[str, str], console_url: str) -> str:
+    """The S1 token that may be sent to *console_url*, or "" (see _key_for_url)."""
+    target = url_origin(console_url)
+    if ov.get(S1_TOKEN) and ov.get(S1_TOKEN_ORIGIN) == target:
+        return _decrypt_or_empty(ov.get(S1_TOKEN), "SentinelOne token")
+    if settings.S1_SERVICE_USER_API_TOKEN and settings.S1_CONSOLE_URL \
+            and url_origin(settings.S1_CONSOLE_URL) == target:
+        return settings.S1_SERVICE_USER_API_TOKEN
+    return ""
+
+
+async def load_s1_token(db: AsyncSession, console_url: str) -> str:
+    rows = await db.execute(select(AppConfig).where(AppConfig.key.in_((S1_TOKEN, S1_TOKEN_ORIGIN))))
+    return _s1_token_for_url({r.key: r.value for r in rows.scalars()}, console_url)
 
 
 async def load_responses_api_key(db: AsyncSession, base_url: str) -> str:

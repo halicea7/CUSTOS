@@ -10,9 +10,12 @@ from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
     CONFIG_KEYS,
     RESPONSES_API_KEY,
     RESPONSES_API_KEY_ORIGIN,
+    S1_TOKEN,
+    S1_TOKEN_ORIGIN,
     is_local_url,
     load_app_config,
     load_responses_api_key,
+    load_s1_token,
     url_origin,
 )
 from auth import get_current_user, hash_password, require_admin, verify_password
@@ -25,6 +28,7 @@ from schemas import (
     ChangePasswordRequest,
     CreateUserRequest,
     TestResponsesRequest,
+    TestS1Request,
     UpdateUserRoleRequest,
     UserListResponse,
 )
@@ -132,6 +136,20 @@ async def test_ollama(
     return {"ok": True, "models": models}
 
 
+async def _store_bound_secret(db, key: str, origin_key: str, secret: str, url: str, username: str) -> None:
+    """Save an encrypted write-only secret bound to *url*'s origin; "" removes it."""
+    values = {key: encrypt(secret), origin_key: url_origin(url)} if secret else {key: None, origin_key: None}
+    for k, value in values.items():
+        row = await db.get(AppConfig, k)
+        if value is None:
+            if row:
+                await db.delete(row)
+        elif row:
+            row.value, row.updated_by = value, username
+        else:
+            db.add(AppConfig(key=k, value=value, updated_by=username))
+
+
 def _check_responses_target(base_url: str, has_key: bool) -> None:
     if has_key and base_url.lower().startswith("http://") and not is_local_url(base_url):
         raise HTTPException(
@@ -188,6 +206,56 @@ async def test_responses(
     return {"ok": True, "models": models[:300]}
 
 
+S1_LATEST_VERSION_API = "/web/api/v2.1/cnapp/cli/latest-version"
+
+
+@router.post("/config/test-s1")
+async def test_s1(
+    body: TestS1Request,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Validate a SentinelOne service-user token and scope.
+
+    Calls the same lightweight endpoint the CLI checks on every run. Uses the
+    token from the request if given; otherwise the saved one, and only if
+    *console_url* is the console it was saved for.
+    """
+    console = body.console_url.rstrip("/")
+    token = (body.api_token or "").strip() or await load_s1_token(db, console)
+    if not token:
+        saved = (await load_app_config(db)).s1_token_origin
+        error = (f"The saved token is only sent to {saved} — enter the token to test this console"
+                 if saved else "Enter the service user API token")
+        return {"ok": False, "needs_key": True, "error": error}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                console + S1_LATEST_VERSION_API,
+                params={"scopeType": body.scope_type, "scopeIds": body.scope_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.ConnectError:
+        return {"ok": False, "error": "Connection failed — check the console URL"}
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Request timed out after 10s"}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__}
+    if resp.status_code == 401:
+        return {"ok": False, "error": "Token rejected (expired or invalid)"}
+    if resp.status_code == 403:
+        return {"ok": False, "error": "Token has no access to this scope — check scope type and ID"}
+    if resp.status_code == 404:
+        return {"ok": False, "error": "Console URL or scope not found"}
+    if resp.status_code >= 400:
+        return {"ok": False, "error": f"HTTP {resp.status_code}"}
+    try:
+        version = (resp.json().get("data") or {}).get("version")
+    except (ValueError, AttributeError):
+        version = None
+    return {"ok": True, "cli_version": version}
+
+
 @router.get("/config", response_model=AppConfigResponse)
 async def get_config(
     db: AsyncSession = Depends(get_db),
@@ -225,17 +293,41 @@ async def update_config(
     if provider == "responses" and not updates.get("responses_model", current.responses_model):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Set a model for the Responses API provider")
 
+    # ── SentinelOne ──
+    s1_token = updates.pop("s1_api_token", None)
+    if s1_token is not None:
+        s1_token = s1_token.strip()
+    if "s1_console_url" in updates:
+        updates["s1_console_url"] = updates["s1_console_url"].rstrip("/")
+    s1_console = updates.get("s1_console_url", current.s1_console_url)
+    s1_origin = current.s1_token_origin
+    if s1_token is None and s1_origin and s1_console and url_origin(s1_console) != s1_origin:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"The saved SentinelOne token is bound to {s1_origin}. Re-enter the token (or remove it) "
+            "to use a different console.",
+        )
+    if updates.get("s1_enabled", current.s1_enabled):
+        missing = [label for label, ok in (
+            ("management console URL", s1_console),
+            ("scope ID", updates.get("s1_scope_id", current.s1_scope_id)),
+            ("service user API token", s1_token if s1_token is not None
+                else (s1_console and await load_s1_token(db, s1_console))),
+        ) if not ok]
+        if missing:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "To enable SentinelOne, set the " + ", ".join(missing),
+            )
+    if "s1_scanners" in updates:
+        updates["s1_scanners"] = ",".join(dict.fromkeys(updates["s1_scanners"]))
+
     if api_key is not None:
-        stored = {RESPONSES_API_KEY: encrypt(api_key), RESPONSES_API_KEY_ORIGIN: url_origin(base_url)}
-        for key, value in stored.items():
-            row = await db.get(AppConfig, key)
-            if not api_key:
-                if row:
-                    await db.delete(row)
-            elif row:
-                row.value, row.updated_by = value, current_user.username
-            else:
-                db.add(AppConfig(key=key, value=value, updated_by=current_user.username))
+        await _store_bound_secret(db, RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN, api_key,
+                                  base_url, current_user.username)
+    if s1_token is not None:
+        await _store_bound_secret(db, S1_TOKEN, S1_TOKEN_ORIGIN, s1_token,
+                                  s1_console, current_user.username)
 
     for key, value in updates.items():
         existing = await db.get(AppConfig, key)

@@ -150,6 +150,17 @@ class UpdateUserRoleRequest(BaseModel):
 
 
 class AppConfigResponse(BaseModel):
+    # SentinelOne CNS layer. The token itself is write-only.
+    s1_enabled: bool = False
+    s1_console_url: str = ""
+    s1_scope_type: str = "ACCOUNT"
+    s1_scope_id: str = ""
+    s1_scanners: list[str] = []
+    s1_verify_secrets: bool = False
+    s1_publish: bool = False
+    s1_token_set: bool = False
+    s1_token_last4: str | None = None
+    s1_token_origin: str | None = None
     # Provider: "ollama" (local) or "responses" (OpenAI Responses API format)
     llm_provider: str
     responses_base_url: str
@@ -178,6 +189,15 @@ class AppConfigResponse(BaseModel):
 
 
 class AppConfigUpdateRequest(BaseModel):
+    s1_enabled: bool | None = None
+    s1_console_url: str | None = Field(None, pattern=r"^https://[^\s/]+/?$", max_length=300)
+    s1_scope_type: Literal["ACCOUNT", "SITE"] | None = None
+    s1_scope_id: str | None = Field(None, pattern=r"^\d{1,30}$")
+    s1_scanners: list[Literal["secret", "iac", "vuln"]] | None = Field(None, min_length=1)
+    s1_verify_secrets: bool | None = None
+    s1_publish: bool | None = None
+    # Write-only. An empty string removes the stored token.
+    s1_api_token: str | None = Field(None, max_length=4000)
     llm_provider: Literal["ollama", "responses"] | None = None
     responses_base_url: str | None = Field(None, pattern=r"^https?://[^\s]+$", max_length=500)
     responses_model: str | None = Field(None, max_length=200)
@@ -193,6 +213,13 @@ class AppConfigUpdateRequest(BaseModel):
     access_token_expire_minutes: int | None = Field(None, ge=5, le=10_080)
     worker_max_jobs: int | None = Field(None, ge=1, le=64)
     worker_job_timeout: int | None = Field(None, ge=60, le=86_400)
+
+
+class TestS1Request(BaseModel):
+    console_url: str = Field(..., pattern=r"^https://[^\s/]+/?$", max_length=300)
+    scope_type: Literal["ACCOUNT", "SITE"]
+    scope_id: str = Field(..., pattern=r"^\d{1,30}$")
+    api_token: str | None = Field(None, max_length=4000)
 
 
 class TestResponsesRequest(BaseModel):

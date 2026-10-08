@@ -36,6 +36,9 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-head
 # ── worker: git + Semgrep + Gitleaks + pip-audit + npm ───────────────────────
 FROM base AS worker
 ARG GITLEAKS_VERSION=8.21.2
+# SentinelOne CNS Shift Left CLI (optional layer, enabled in Settings). Own
+# venv: its dependencies pin many libraries that could clash with ours.
+ARG S1_CLI_VERSION=1.0.4
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates curl nodejs npm \
@@ -44,6 +47,14 @@ RUN apt-get update \
  && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${ARCH}.tar.gz" \
     | tar -xz -C /usr/local/bin gitleaks \
  && pip install semgrep pip-audit \
- && mkdir -p /tmp/Custos_clones && chown appuser /tmp/Custos_clones
+ && python -m venv /opt/s1cns \
+ && /opt/s1cns/bin/pip install "s1-shift-left-cli==${S1_CLI_VERSION}" \
+ && ln -s /opt/s1cns/bin/s1-cns-cli /usr/local/bin/s1-cns-cli \
+ && mkdir -p /tmp/Custos_clones /var/lib/custos-s1 \
+ && chown appuser /tmp/Custos_clones /var/lib/custos-s1 \
+ && chmod 700 /var/lib/custos-s1
+# The S1 CLI keeps its config (incl. the token, in plaintext) and downloaded
+# scanner binaries here; a volume keeps them across restarts.
+ENV S1_HOME=/var/lib/custos-s1
 USER appuser
 CMD ["python", "-m", "arq", "worker.queue.WorkerSettings"]

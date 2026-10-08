@@ -107,7 +107,8 @@ jobs:
         run: |
           docker compose exec -T worker sh -c '
             git --version && gitleaks version && semgrep --version &&
-            npm --version && python -m pip_audit --version'
+            npm --version && python -m pip_audit --version &&
+            test -x "$(command -v s1-cns-cli)" && test "$S1_HOME" = /var/lib/custos-s1'
           if docker compose exec -T api sh -c 'command -v git'; then
             echo "::error::git should not be in the api image"; exit 1
           fi

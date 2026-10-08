@@ -19,12 +19,13 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 4. [Configuration reference](#configuration-reference)
 5. [Ollama setup](#ollama-setup)
 6. [Responses API provider](#responses-api-provider)
-7. [SAST tools](#sast-tools)
-8. [Connecting repositories](#connecting-repositories)
-9. [Users and access](#users-and-access)
-10. [Security model](#security-model)
-11. [Testing and CI](#testing-and-ci)
-12. [Useful commands](#useful-commands)
+7. [SentinelOne CNS layer](#sentinelone-cns-layer)
+8. [SAST tools](#sast-tools)
+9. [Connecting repositories](#connecting-repositories)
+10. [Users and access](#users-and-access)
+11. [Security model](#security-model)
+12. [Testing and CI](#testing-and-ci)
+13. [Useful commands](#useful-commands)
 
 ---
 
@@ -177,6 +178,34 @@ How requests are made:
 - `store: false` asks the provider not to retain the request. Its own retention and training policies still apply, so check them before sending university code.
 - A key is never sent over plain `http://` to a non-local host. HTTP is allowed only for localhost, private IPs and internal hostnames.
 - LLM runs are recorded as `<model> (Responses API)`. An invalid key, rate limit, refusal or truncated response fails the run with a clear message, and SAST findings are still kept.
+
+---
+
+## SentinelOne CNS layer
+
+Optionally, every submission can also be scanned with SentinelOne's CNS Shift Left CLI (`s1-shift-left-cli`, pinned to 1.0.4), adding SentinelOne's secret, IaC and vulnerability detection on top of the built-in tools. Its findings appear alongside the others with the sources `s1_secret`, `s1_iac` and `s1_vuln`, and are fed to the LLM as context.
+
+**Setup:** in SentinelOne, create a service user with access to the account or site. On the dashboard, open **Settings → Analysis → SentinelOne CNS**, turn it on, and enter:
+
+- the management console URL, for example `https://<region>.sentinelone.net`;
+- the scope type (Account or Site) and scope ID;
+- the service user API token.
+
+**Test** checks the token and scope against the console. Then choose which scanners to run. The CLI ships in the worker image; for local development run `./custos setup --with-s1`.
+
+**What Custos does differently from SentinelOne's sample GitHub workflow:**
+
+- **Telemetry:** Custos passes `--disable-sentry` on every call, so the CLI doesn't send telemetry or crash reports to Sentry.
+- **Error detection:** the CLI exits 0 on errors by default (`--on-crash-exit-code 0`), so a bad token looks like a clean scan. Custos configures a distinct exit code and reports failures as a note on the submission. Its other findings are kept.
+- **Secret verification is off by default.** With it on, the CLI logs in to the real third-party services using any credentials it finds. Turn it on only if your policy allows that.
+- **Raw secrets:** secret findings are scanned with `--mask-secret`, and Custos never stores the secret value either way.
+- **External Terraform modules are not downloaded** (`--skip-external-modules`), because the repositories under review are untrusted.
+- **Publishing results to the SentinelOne console** is off by default. When it's on, IaC and vulnerability findings are published under the repository's GitHub name. Secret publishing only works with the CLI's pull-request mode, which doesn't fit Custos' per-commit review.
+- **`--tag` is not used.** 1.0.4's `config` command has no `--tag` flag, so a config step that passes one fails with "unrecognized arguments".
+
+**What leaves your infrastructure:** the CLI fetches its scanner configuration and binaries from your SentinelOne console, using the token. Code is scanned locally. Findings are sent to SentinelOne only when publishing is on.
+
+**Storage:** the token is stored encrypted and is only ever sent to the console host it was saved for. The CLI itself also keeps a copy in plaintext in its own state directory (`S1_HOME`; the `s1data` volume in Docker), which only the worker can read.
 
 ---
 

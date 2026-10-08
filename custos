@@ -8,6 +8,8 @@
                              Local development: sets everything up on first
                              run, then starts the live dev console.
   ./custos setup             Local setup only (venv, deps, DB, keys, admin).
+                             Add --with-s1 (to setup or dev) to install the
+                             SentinelOne CNS CLI for the optional S1 layer.
   ./custos stop | logs       Stop / follow logs of the Docker deployment.
   ./custos user add NAME [--role admin|analyst]
   ./custos user reset NAME   Manage logins (Docker or local, auto-detected).
@@ -38,6 +40,10 @@ ROOT = Path(__file__).resolve().parent
 API = ROOT / "api"
 DASH = ROOT / "dashboard"
 VENV = ROOT / ".venv"
+# SentinelOne CNS CLI lives in its own venv (its pinned deps clash with ours);
+# keep the version in step with the Dockerfile's S1_CLI_VERSION.
+S1_VENV = ROOT / ".venv-s1cns"
+S1_CLI_VERSION = "1.0.4"
 VPY = VENV / "bin" / "python"
 LOCAL_ENV = API / ".env"      # read by the API/worker when run on the host
 DOCKER_ENV = ROOT / ".env"    # read by docker compose
@@ -418,6 +424,18 @@ def cmd_setup(args) -> None:
         warn("gitleaks not found — secret scanning will be skipped. "
              "Install: https://github.com/gitleaks/gitleaks#installing")
 
+    if getattr(args, "with_s1", False):
+        s1_cli = S1_VENV / "bin" / "s1-cns-cli"
+        stamp = S1_VENV / ".custos-version"
+        if not s1_cli.exists() or not stamp.exists() or stamp.read_text() != S1_CLI_VERSION:
+            info(f"Installing SentinelOne CNS CLI {S1_CLI_VERSION} into .venv-s1cns…")
+            if not S1_VENV.exists():
+                run([py, "-m", "venv", S1_VENV])
+            run([S1_VENV / "bin" / "python", "-m", "pip", "install", "-q",
+                 f"s1-shift-left-cli=={S1_CLI_VERSION}"], capture=True)
+            stamp.write_text(S1_CLI_VERSION)
+        ok(f"s1-cns-cli {S1_CLI_VERSION} (enable it under Settings → Analysis)")
+
     step("Dashboard dependencies")
     lock = DASH / "package-lock.json"
     stamp = DASH / "node_modules" / ".custos-lock"
@@ -552,8 +570,11 @@ def main() -> None:
     p = sub.add_parser("dev", help="set up and run locally with live reload")
     p.add_argument("--ngrok", action="store_true", help="open an ngrok tunnel for webhooks")
     p.add_argument("--bind-all", action="store_true", help="listen on 0.0.0.0 (e.g. Tailscale)")
+    p.add_argument("--with-s1", action="store_true", help="also install the SentinelOne CNS CLI")
     p.set_defaults(fn=cmd_dev)
-    sub.add_parser("setup", help="local setup only").set_defaults(fn=cmd_setup)
+    p = sub.add_parser("setup", help="local setup only")
+    p.add_argument("--with-s1", action="store_true", help="also install the SentinelOne CNS CLI")
+    p.set_defaults(fn=cmd_setup)
     sub.add_parser("stop", help="stop the Docker deployment").set_defaults(fn=cmd_stop)
     sub.add_parser("logs", help="follow Docker deployment logs").set_defaults(fn=cmd_logs)
     p = sub.add_parser("user", help="add a user or reset a password")
