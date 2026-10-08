@@ -40,9 +40,12 @@ ARG GITLEAKS_VERSION=8.21.2
 # venv: its dependencies pin many libraries that could clash with ours.
 ARG S1_CLI_VERSION=1.0.4
 ARG TARGETARCH
+# gcc/libc6-dev/libffi-dev: s1-shift-left-cli pins a `regex` release with no
+# Python 3.12 wheel, so pip compiles it (SentinelOne's own image does the
+# same). The compiler is removed again below; the worker doesn't need one.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates curl nodejs npm \
- && rm -rf /var/lib/apt/lists/* \
+    gcc libc6-dev libffi-dev \
  && ARCH="$( [ "${TARGETARCH:-amd64}" = "arm64" ] && echo arm64 || echo x64 )" \
  && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${ARCH}.tar.gz" \
     | tar -xz -C /usr/local/bin gitleaks \
@@ -50,6 +53,8 @@ RUN apt-get update \
  && python -m venv /opt/s1cns \
  && /opt/s1cns/bin/pip install "s1-shift-left-cli==${S1_CLI_VERSION}" \
  && ln -s /opt/s1cns/bin/s1-cns-cli /usr/local/bin/s1-cns-cli \
+ && apt-get purge -y --auto-remove gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /tmp/Custos_clones /var/lib/custos-s1 \
  && chown appuser /tmp/Custos_clones /var/lib/custos-s1 \
  && chmod 700 /var/lib/custos-s1
