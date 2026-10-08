@@ -346,4 +346,35 @@ def test_disabled_scanner_is_explained():
 
     out = "WARNING\tThreshold is set to LOW by default.\nERROR\tvuln scan is disabled\n"
     msg = _scan_error("vuln", out)
-    assert "not enabled for this account/scope" in msg and "Settings" in msg
+    assert "policy ID" in msg and "Settings" in msg
+
+
+async def test_policy_id_is_configured_and_changes_reconfigure(fake_cli, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def config_calls():
+        return [c["args"] for c in fake_cli() if "config" in c["args"]]
+
+    await run_sentinelone(str(repo), _cfg())
+    assert "--policy-id" not in config_calls()[-1]  # unset: CLI default (secret only)
+
+    await run_sentinelone(str(repo), _cfg(policy_id="pol-1"))
+    args = config_calls()[-1]
+    assert len(config_calls()) == 2 and args[args.index("--policy-id") + 1] == "pol-1"
+
+    await run_sentinelone(str(repo), _cfg(policy_id="pol-1"))
+    assert len(config_calls()) == 2  # unchanged settings: no reconfigure
+
+
+async def test_policy_id_setting_round_trip(client, db):
+    from tests.conftest import auth_headers, make_user
+
+    await make_user(db, "root", role="admin")
+    h = auth_headers("root")
+    bad = await client.patch("/settings/config", json={"s1_policy_id": "x; rm -rf /"}, headers=h)
+    assert bad.status_code == 422
+    ok = await client.patch("/settings/config", json={"s1_policy_id": "pol-1"}, headers=h)
+    assert ok.status_code == 200 and ok.json()["s1_policy_id"] == "pol-1"
+    cleared = await client.patch("/settings/config", json={"s1_policy_id": ""}, headers=h)
+    assert cleared.json()["s1_policy_id"] == ""

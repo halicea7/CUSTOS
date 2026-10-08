@@ -34,7 +34,7 @@ RESPONSES_HTTP_ALLOWED_ORIGIN = "responses_http_allowed_origin"
 
 CONFIG_KEYS = {
     "llm_provider", "responses_base_url", "responses_model", RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN,
-    "s1_enabled", "s1_console_url", "s1_scope_type", "s1_scope_id", "s1_scanners",
+    "s1_enabled", "s1_console_url", "s1_scope_type", "s1_scope_id", "s1_policy_id", "s1_scanners",
     "s1_verify_secrets", "s1_publish", S1_TOKEN, S1_TOKEN_ORIGIN,
     SELF_UPDATE_REPO, RESPONSES_HTTP_ALLOWED_ORIGIN,
     "responses_reasoning_effort", "responses_max_output_tokens",
@@ -67,6 +67,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
         s1_console_url=s1_console_url,
         s1_scope_type=ov.get("s1_scope_type", settings.S1_SCOPE_TYPE),
         s1_scope_id=ov.get("s1_scope_id", settings.S1_SCOPE_ID),
+        s1_policy_id=ov.get("s1_policy_id", ""),
         s1_scanners=s1_scanners,
         s1_verify_secrets=_bool(ov.get("s1_verify_secrets"), False),
         s1_publish=_bool(ov.get("s1_publish"), False),

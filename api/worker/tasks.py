@@ -147,7 +147,7 @@ async def _run_s1(
         return [], "SentinelOne scan skipped: console URL, scope ID or token not configured."
     s1 = S1Settings(
         console_url=cfg.s1_console_url, scope_type=cfg.s1_scope_type, scope_id=cfg.s1_scope_id,
-        token=token, scanners=tuple(cfg.s1_scanners), verify_secrets=cfg.s1_verify_secrets,
+        policy_id=cfg.s1_policy_id, token=token, scanners=tuple(cfg.s1_scanners), verify_secrets=cfg.s1_verify_secrets,
         publish=cfg.s1_publish,
     )
     try:

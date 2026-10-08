@@ -164,6 +164,8 @@ class AppConfigResponse(BaseModel):
     s1_console_url: str = ""
     s1_scope_type: str = "ACCOUNT"
     s1_scope_id: str = ""
+    # Scanner policy: without one the CLI enables secret scanning only.
+    s1_policy_id: str = ""
     s1_scanners: list[str] = []
     s1_verify_secrets: bool = False
     s1_publish: bool = False
@@ -211,6 +213,8 @@ class AppConfigUpdateRequest(BaseModel):
     s1_console_url: str | None = Field(None, pattern=r"^https://[^\s/]+/?$", max_length=300)
     s1_scope_type: Literal["ACCOUNT", "SITE"] | None = None
     s1_scope_id: str | None = Field(None, pattern=r"^\d{1,30}$")
+    # "" clears it.
+    s1_policy_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{0,100}$")
     s1_scanners: list[Literal["secret", "iac", "vuln"]] | None = Field(None, min_length=1)
     s1_verify_secrets: bool | None = None
     s1_publish: bool | None = None

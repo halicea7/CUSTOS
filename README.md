@@ -190,7 +190,10 @@ Optionally, every submission can also be scanned with SentinelOne's CNS Shift Le
 
 - the management console URL, for example `https://<region>.sentinelone.net`;
 - the scope type (Account or Site) and scope ID;
-- the service user API token.
+- the service user API token;
+- the scanner policy ID, for IaC and vulnerability scans. Without one, the CLI uses SentinelOne's default policy, which enables secret scanning only, and reports the others as "scan is disabled". The scanners a policy enables are set in that policy in the console.
+
+Scanning needs the service user to view CI/CD in that scope; if IaC scans fail with a permission error, also grant it **Get CNS CLI Scan Rules**. Publishing results to the console needs **Publish CNS CLI Findings**.
 
 **Test** checks the token and scope against the console. Then choose which scanners to run. The CLI ships in the worker image; for local development run `./custos setup --with-s1`.
 

@@ -306,6 +306,7 @@ function validate(d, cfg) {
     if (!S1_CONSOLE_RE.test(d.s1_console_url || "")) e.s1_console_url = "Enter the console's https:// address, e.g. https://<region>.sentinelone.net";
     if (!/^\d{1,30}$/.test(d.s1_scope_id || "")) e.s1_scope_id = "The numeric account or site ID";
     if (!d.s1_scanners?.length) e.s1_scanners = "Pick at least one scanner";
+    if (!/^[A-Za-z0-9_-]{0,100}$/.test(d.s1_policy_id || "")) e.s1_policy_id = "Letters, digits, - and _ only";
     const bound = cfg?.s1_token_origin;
     const sameConsole = bound && urlOrigin(d.s1_console_url) === bound;
     if (!d.s1_api_token_input && (d.s1_api_token_clear || !sameConsole)) {
@@ -543,6 +544,7 @@ function AnalysisTab({ theme }) {
         ...(draft.s1_console_url ? { s1_console_url: draft.s1_console_url } : {}),
         s1_scope_type: draft.s1_scope_type,
         ...(draft.s1_scope_id ? { s1_scope_id: draft.s1_scope_id } : {}),
+        s1_policy_id: (draft.s1_policy_id || "").trim(),
         ...(draft.s1_scanners?.length ? { s1_scanners: draft.s1_scanners } : {}),
         s1_verify_secrets: draft.s1_verify_secrets,
         s1_publish: draft.s1_publish,
@@ -858,6 +860,18 @@ function AnalysisTab({ theme }) {
                   })}
                 </div>
               </Field>
+
+              <Field theme={t} label="Scanner policy ID"
+                hint="from the console's CNS scanner policies; without it the CLI runs secret scanning only"
+                error={errors.s1_policy_id}>
+                <TextInput theme={t} value={draft.s1_policy_id || ""} mono
+                  onChange={set("s1_policy_id")} placeholder="optional" />
+              </Field>
+              {!draft.s1_policy_id && draft.s1_scanners?.some(v => v !== "secret") && (
+                <div role="note" style={{ marginTop: -6, marginBottom: 14, fontSize: 12, color: "var(--yellow)" }}>
+                  IaC and vulnerability scans need a scanner policy ID; without one SentinelOne reports them as disabled.
+                </div>
+              )}
 
               {draft.s1_scanners?.includes("secret") && (
                 <Field theme={t} label="Verify detected secrets">

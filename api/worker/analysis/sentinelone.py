@@ -52,6 +52,9 @@ class S1Settings:
     scope_type: str
     scope_id: str
     token: str = field(repr=False)
+    # The console scanner policy. Without it, s1-shift-left-cli falls back to a
+    # default policy that enables secret scanning only ("iac scan is disabled").
+    policy_id: str = ""
     scanners: tuple[str, ...] = SCANNERS
     verify_secrets: bool = False
     publish: bool = False
@@ -113,8 +116,9 @@ def _last_lines(text: str, n: int = 3) -> str:
 
 def _scan_error(scanner: str, out: str, context: str = "") -> str:
     if f"{scanner} scan is disabled" in out:
-        return (f"{scanner}: not enabled for this account/scope in the SentinelOne console "
-                f"(enable it there, or untick it in Settings → SentinelOne)")
+        return (f"{scanner}: not enabled by the SentinelOne scanner policy. Without a policy ID "
+                f"only secret scanning runs: set one in Settings → SentinelOne (and enable "
+                f"{scanner} in that policy), or untick {scanner} there")
     return f"{scanner}: {context}{_last_lines(out) or 'no output'}"
 
 
@@ -122,7 +126,7 @@ async def _ensure_configured(cli: str, cfg: S1Settings, env: dict) -> None:
     home = Path(env["HOME"])
     cache_dir = home / "cache"
     fingerprint = hashlib.sha256(
-        json.dumps([cfg.token, cfg.console_url, cfg.scope_type, cfg.scope_id, _CRASH_EXIT_CODE]).encode()
+        json.dumps([cfg.token, cfg.console_url, cfg.scope_type, cfg.scope_id, cfg.policy_id, _CRASH_EXIT_CODE]).encode()
     ).hexdigest()
     marker = home / ".custos-config"
     if marker.exists() and marker.read_text() == fingerprint and (cache_dir / "config.json").exists():
@@ -136,7 +140,8 @@ async def _ensure_configured(cli: str, cfg: S1Settings, env: dict) -> None:
          "--scope-type", cfg.scope_type,
          "--scope-id", cfg.scope_id,
          "--cache-directory", str(cache_dir),
-         "--on-crash-exit-code", str(_CRASH_EXIT_CODE)],
+         "--on-crash-exit-code", str(_CRASH_EXIT_CODE),
+         *(["--policy-id", cfg.policy_id] if cfg.policy_id else [])],
         env, _CONFIG_TIMEOUT, cfg.token,
     )
     if rc != 0 or not (cache_dir / "config.json").exists():
