@@ -172,6 +172,9 @@ async def test_responses(
         return {"ok": False, "error": type(exc).__name__, "models": []}
 
     if resp.status_code in (401, 403):
+        if not api_key:
+            return {"ok": False, "needs_key": True, "models": [],
+                    "error": "This server needs an API key — enter one above"}
         return {"ok": False, "error": "API key rejected", "models": []}
     if resp.status_code == 404:
         return {"ok": True, "models": [], "note": "Server has no /models endpoint — enter the model name manually"}

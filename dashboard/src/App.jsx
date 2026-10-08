@@ -1,4 +1,4 @@
-import React, { createContext, lazy, Suspense, useContext, useState, useEffect, useMemo } from "react";
+import React, { createContext, lazy, Suspense, useCallback, useContext, useState, useEffect, useMemo } from "react";
 import {
   BrowserRouter, Routes, Route, Navigate,
   useNavigate, useLocation,
@@ -8,6 +8,8 @@ import { getMe } from "./api/client.js";
 import { makeTheme, applyCssVars } from "./theme.js";
 import Login from "./pages/Login.jsx";
 import Queue from "./pages/Queue.jsx";
+import { Modal } from "./components/ui.jsx";
+import { Btn } from "./components/atoms.jsx";
 
 // Less-visited pages load on demand to keep the initial bundle small.
 const Submission = lazy(() => import("./pages/Submission.jsx"));
@@ -48,6 +50,51 @@ function AuthProvider({ children }) {
     <AuthCtx.Provider value={{ user, login, logout }}>
       {children}
     </AuthCtx.Provider>
+  );
+}
+
+// ── Unsaved-changes guard ─────────────────────────────────────────────────────
+// Pages with a form call setDirty(); in-app navigation goes through guard(),
+// which asks before discarding edits. Closing/reloading the tab gets the
+// browser's own prompt. (BrowserRouter has no useBlocker, hence this.)
+
+const UnsavedCtx = createContext({ setDirty: () => {}, guard: (fn) => fn() });
+export const useUnsavedGuard = () => useContext(UnsavedCtx);
+
+function UnsavedChangesProvider({ theme, children }) {
+  const [dirty, setDirty] = useState(false);
+  const [pending, setPending] = useState(null);
+
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const warn = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const guard = useCallback((fn) => (dirty ? setPending(() => fn) : fn()), [dirty]);
+  const value = useMemo(() => ({ setDirty, guard }), [guard]);
+
+  const discard = () => {
+    const next = pending;
+    setPending(null);
+    setDirty(false);
+    next();
+  };
+
+  return (
+    <UnsavedCtx.Provider value={value}>
+      {children}
+      {pending && (
+        <Modal theme={theme} title="Discard unsaved changes?"
+          subtitle="You have changes on this page that haven't been saved." onClose={() => setPending(null)}>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Btn theme={theme} onClick={() => setPending(null)}>Keep editing</Btn>
+            <Btn theme={theme} variant="danger" onClick={discard}>Discard changes</Btn>
+          </div>
+        </Modal>
+      )}
+    </UnsavedCtx.Provider>
   );
 }
 
@@ -175,7 +222,8 @@ function SideRail({ theme, mode, setMode }) {
   const location = useLocation();
   const section = activeSection(location.pathname);
 
-  const handleLogout = () => { logout(); navigate("/login"); };
+  const { guard } = useUnsavedGuard();
+  const handleLogout = () => guard(() => { logout(); navigate("/login"); });
 
   return (
     <aside style={{
@@ -201,7 +249,7 @@ function SideRail({ theme, mode, setMode }) {
         {NAV.filter((n) => !n.admin || user?.role === "admin").map((n) => {
           const on = section === n.id;
           return (
-            <button key={n.id} onClick={() => navigate(n.path)} style={{
+            <button key={n.id} onClick={() => guard(() => navigate(n.path))} style={{
               display: "flex", alignItems: "center", gap: 11, padding: "9px 11px",
               borderRadius: theme.radius, cursor: "pointer", border: "none", textAlign: "left",
               background: on ? theme.c.accentBg : "transparent",
@@ -264,6 +312,7 @@ function AppShell() {
           <Route path="/login" element={<Login />} />
           <Route path="/*" element={
             <RequireAuth>
+              <UnsavedChangesProvider theme={theme}>
               <div style={{ display: "flex", minHeight: "100vh", background: theme.c.bg }}>
                 <SideRail theme={theme} mode={mode} setMode={setMode} />
                 <main style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
@@ -280,6 +329,7 @@ function AppShell() {
                   </Suspense>
                 </main>
               </div>
+              </UnsavedChangesProvider>
             </RequireAuth>
           } />
         </Routes>

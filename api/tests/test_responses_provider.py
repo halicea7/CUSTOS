@@ -296,3 +296,15 @@ async def test_worker_only_gets_the_key_for_its_origin(db, client, monkeypatch):
     monkeypatch.setattr(settings, "RESPONSES_BASE_URL", "https://env-llm.example/v1")
     assert await load_responses_api_key(db, "https://env-llm.example/v1") == "sk-env"
     assert await load_responses_api_key(db, "https://attacker.example/v1") == ""
+
+
+async def test_connection_test_without_key_says_a_key_is_needed(client, db, monkeypatch):
+    from routers import settings as settings_router
+
+    await make_user(db, "root", role="admin")
+    monkeypatch.setattr(settings_router.httpx, "AsyncClient", functools.partial(
+        httpx.AsyncClient, transport=httpx.MockTransport(lambda r: httpx.Response(401, json={}))))
+    resp = await client.post("/settings/config/test-responses", headers=auth_headers("root"),
+                             json={"base_url": "https://llm.example/v1"})
+    body = resp.json()
+    assert body["ok"] is False and body["needs_key"] is True and "needs an API key" in body["error"]

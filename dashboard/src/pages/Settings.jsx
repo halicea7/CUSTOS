@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { useAuth } from "../App.jsx";
-import { useTheme } from "../App.jsx";
+import { useAuth, useTheme, useUnsavedGuard } from "../App.jsx";
 import {
   getUsers, createUser, updateUserRole, deleteUser,
   changePassword, getConfig, updateConfig, testOllama, testResponses,
 } from "../api/settings.js";
 import { Btn, Avatar, RoleBadge } from "../components/atoms.jsx";
-import { PageHeader, PageWrap, SectionCard, Field, TextInput, SelectInput, Toggle, Tabs, Feedback } from "../components/ui.jsx";
+import {
+  ChoiceCards, Feedback, Field, PageHeader, PageWrap, SectionCard, SelectInput, Slider, Tabs, TextInput, Toggle,
+} from "../components/ui.jsx";
 import { errorMessage } from "../api/errors.js";
 
 // ── Account ───────────────────────────────────────────────────────────────────
@@ -225,26 +226,183 @@ function UsersTab({ theme, currentUser }) {
 
 // ── Analysis config ───────────────────────────────────────────────────────────
 
+const NUM_CTX_STEPS = [0, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
+const CONTENT_CHAR_STEPS = [16000, 32000, 48000, 64000, 96000, 128000, 192000, 256000, 384000, 512000, 768000, 1000000];
+// System prompt, instructions and SAST context sent alongside the code (approx.).
+const PROMPT_OVERHEAD_TOKENS = 2500;
+
+const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n));
+const fmtNumCtx = (v) => (v ? `${fmtK(v)} tokens` : "Model default");
+const fmtChars = (v) => `${Math.round(v / 1000)}K chars`;
+
+// Same format as the API's url_origin(): scheme://host:port, default port explicit.
+function urlOrigin(url) {
+  try {
+    const u = new URL(url);
+    const scheme = u.protocol.replace(":", "");
+    return `${scheme}://${u.hostname}:${u.port || { https: "443", http: "80" }[scheme] || ""}`;
+  } catch {
+    return null;
+  }
+}
+
+// https://api.openai.com:443 → https://api.openai.com
+const prettyOrigin = (o) => (o || "").replace(/^(https:\/\/.+):443$/, "$1").replace(/^(http:\/\/.+):80$/, "$1");
+
+const URL_RE = /^https?:\/\/\S+$/;
+const intIn = (v, lo, hi) => { const n = Number(v); return Number.isInteger(n) && n >= lo && n <= hi; };
+
+function validate(d, cfg) {
+  if (!d) return {};
+  const e = {};
+  if (!URL_RE.test(d.ollama_base_url || "")) e.ollama_base_url = "Enter an http:// or https:// URL";
+  if (!URL_RE.test(d.responses_base_url || "")) e.responses_base_url = "Enter an http:// or https:// URL";
+  if (d.llm_provider === "ollama" && !d.ollama_model?.trim()) e.ollama_model = "Enter a model name";
+  if (d.llm_provider === "responses") {
+    if (!d.responses_model?.trim()) e.responses_model = "Pick a model from the connection test, or type its name";
+    const bound = cfg?.responses_api_key_origin;
+    if (bound && !d.responses_api_key_input && !d.responses_api_key_clear
+        && urlOrigin(d.responses_base_url) !== bound) {
+      e.responses_api_key = `The saved key only works with ${prettyOrigin(bound)}. Enter the key again to use this host, or remove it.`;
+    }
+  }
+  if (!intIn(d.max_file_size_kb, 1, 10240)) e.max_file_size_kb = "1 – 10,240 KB";
+  if (!intIn(d.max_files_per_repo, 1, 10000)) e.max_files_per_repo = "1 – 10,000 files";
+  if (!intIn(d.access_token_expire_minutes, 5, 10080)) e.access_token_expire_minutes = "5 – 10,080 minutes";
+  if (!intIn(d.worker_max_jobs, 1, 64)) e.worker_max_jobs = "1 – 64 jobs";
+  if (!intIn(d.worker_job_timeout, 60, 86400)) e.worker_job_timeout = "60 – 86,400 seconds";
+  return e;
+}
+
+// Put a server-side validation message next to the field it is about.
+function fieldForServerError(msg) {
+  if (/saved API key is bound|Re-enter the key/i.test(msg)) return "responses_api_key";
+  if (/model for the Responses API/i.test(msg)) return "responses_model";
+  if (/plain HTTP/i.test(msg)) return "responses_base_url";
+  return null;
+}
+
+// Live health of the *saved* provider config, shown in the card header.
+function useProviderStatus(cfg) {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    if (!cfg) return undefined;
+    let live = true;
+    const done = (s) => live && setStatus(s);
+    setStatus({ tone: "pending", text: "Checking…" });
+    const check = (res, model) => {
+      if (!res.ok) return { tone: "error", text: res.error || "Unreachable" };
+      if (res.models?.length && model && !res.models.includes(model)) {
+        return { tone: "warn", text: `Connected · model “${model}” not found` };
+      }
+      return { tone: "ok", text: res.models?.length ? `Connected · ${res.models.length} models` : "Connected" };
+    };
+    if (cfg.llm_provider === "responses") {
+      if (!cfg.responses_api_key_set) {
+        done({ tone: "warn", text: "No API key saved" });
+      } else {
+        testResponses(cfg.responses_base_url)
+          .then((r) => done(check(r, cfg.responses_model)))
+          .catch(() => done({ tone: "error", text: "Check failed" }));
+      }
+    } else {
+      testOllama(cfg.ollama_base_url)
+        .then((r) => done(check(r, cfg.ollama_model)))
+        .catch(() => done({ tone: "error", text: "Check failed" }));
+    }
+    return () => { live = false; };
+  }, [cfg]);
+  return status;
+}
+
+function StatusPill({ theme, status }) {
+  if (!status) return null;
+  const t = theme;
+  const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
+  const color = { ok: green, warn: t.sev.medium.fg, error: t.sev.critical.fg, pending: t.c.text3 }[status.tone];
+  return (
+    <span role="status" style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12,
+      color, maxWidth: 360, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <span aria-hidden style={{ width: 7, height: 7, borderRadius: 999, background: color, flexShrink: 0 }} />
+      {status.text}
+    </span>
+  );
+}
+
+function ConnectionResult({ theme, result, selected, onPick }) {
+  if (!result || result === "testing") return null;
+  const t = theme;
+  const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
+  const color = result.ok ? green : result.needs_key ? t.sev.medium.fg : t.sev.critical.fg;
+  return (
+    <div role="status" style={{ marginTop: 9, padding: "10px 12px", borderRadius: t.radius, fontSize: 12,
+      background: `${color}14`, border: `1px solid ${color}33` }}>
+      {result.ok ? (
+        <>
+          <span style={{ color: green, fontWeight: 600 }}>✓ Connected</span>
+          {result.note && <span style={{ marginLeft: 8, color: t.c.text3 }}>{result.note}</span>}
+          {result.models?.length > 0 && (
+            <>
+              <div style={{ marginTop: 6, color: t.c.text3 }}>Click a model to use it:</div>
+              <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 132, overflowY: "auto" }}>
+                {result.models.map((m) => (
+                  <button type="button" key={m} onClick={() => onPick(m)} aria-pressed={selected === m}
+                    style={{ cursor: "pointer", padding: "2px 9px", borderRadius: 999,
+                      fontFamily: t.fontMono, fontSize: 11.5, transition: "all 0.12s",
+                      background: selected === m ? t.c.accentBg : t.c.raised2,
+                      border: `1px solid ${selected === m ? t.c.accent : t.c.border}`,
+                      color: selected === m ? t.c.accent : t.c.text2 }}>{m}</button>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <span style={{ color }}>{result.needs_key ? "🔑" : "✗"} {result.error}</span>
+      )}
+    </div>
+  );
+}
+
 function AnalysisTab({ theme }) {
   const [cfg,     setCfg]     = useState(null);
   const [draft,   setDraft]   = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
-  const [fb,      setFb]      = useState(null);
+  const [fb,      setFb]      = useState(null);       // { msg, type } for the save bar
+  const [serverErr, setServerErr] = useState({});    // { field: msg } from the last save
   const [ollamaTest, setOllamaTest] = useState(null);
   const [respTest, setRespTest] = useState(null);
+  const { setDirty } = useUnsavedGuard();
+  const status = useProviderStatus(cfg);
   const t = theme;
 
   useEffect(() => {
     getConfig().then(c => { setCfg(c); setDraft(c); })
-      .catch(() => setFb({ msg: "Failed to load config", type: "error" }))
+      .catch(() => setFb({ msg: "Failed to load configuration", type: "error" }))
       .finally(() => setLoading(false));
   }, []);
 
-  const set = (key) => (e) => {
-    const val = e && e.target ? e.target.value : e;
-    setDraft(d => ({ ...d, [key]: val }));
+  const dirty = !!(draft && cfg && JSON.stringify(draft) !== JSON.stringify(cfg));
+  useEffect(() => { setDirty(dirty); }, [dirty, setDirty]);
+  useEffect(() => () => setDirty(false), [setDirty]);
+
+  // A transient "Saved" message clears itself.
+  useEffect(() => {
+    if (fb?.type !== "success") return undefined;
+    const id = setTimeout(() => setFb(null), 3000);
+    return () => clearTimeout(id);
+  }, [fb]);
+
+  const errors = { ...validate(draft, cfg), ...serverErr };
+  const errorCount = Object.keys(validate(draft, cfg)).length;
+
+  const update = (patch) => {
+    setDraft(d => ({ ...d, ...patch }));
+    setServerErr(e => { const next = { ...e }; Object.keys(patch).forEach(k => delete next[k]); return next; });
+    if (fb?.type === "error") setFb(null);
   };
+  const set = (key) => (e) => update({ [key]: e && e.target ? e.target.value : e });
 
   const handleTestOllama = async () => {
     setOllamaTest("testing");
@@ -258,8 +416,12 @@ function AnalysisTab({ theme }) {
     catch (e) { setRespTest({ ok: false, error: errorMessage(e, "Request failed"), models: [] }); }
   };
 
+  const handleDiscard = () => {
+    setDraft(cfg); setServerErr({}); setFb(null); setOllamaTest(null); setRespTest(null);
+  };
+
   const handleSave = async () => {
-    setSaving(true); setFb(null);
+    setSaving(true); setFb(null); setServerErr({});
     // The API key is write-only: send it only when typed, or "" to remove it.
     const keyUpdate = draft.responses_api_key_clear ? { responses_api_key: "" }
       : draft.responses_api_key_input ? { responses_api_key: draft.responses_api_key_input } : {};
@@ -272,227 +434,229 @@ function AnalysisTab({ theme }) {
         ollama_base_url: draft.ollama_base_url,
         ollama_model: draft.ollama_model,
         ollama_think: draft.ollama_think,
-        ollama_num_ctx: parseInt(draft.ollama_num_ctx) || 0,
-        llm_max_content_chars: parseInt(draft.llm_max_content_chars),
-        max_file_size_kb: parseInt(draft.max_file_size_kb),
-        max_files_per_repo: parseInt(draft.max_files_per_repo),
-        access_token_expire_minutes: parseInt(draft.access_token_expire_minutes),
-        worker_max_jobs: parseInt(draft.worker_max_jobs),
-        worker_job_timeout: parseInt(draft.worker_job_timeout),
+        ollama_num_ctx: Number(draft.ollama_num_ctx) || 0,
+        llm_max_content_chars: Number(draft.llm_max_content_chars),
+        max_file_size_kb: Number(draft.max_file_size_kb),
+        max_files_per_repo: Number(draft.max_files_per_repo),
+        access_token_expire_minutes: Number(draft.access_token_expire_minutes),
+        worker_max_jobs: Number(draft.worker_max_jobs),
+        worker_job_timeout: Number(draft.worker_job_timeout),
       });
-      setCfg(updated); setDraft(updated);
-      setFb({ msg: "Configuration saved", type: "success" });
+      setCfg(updated); setDraft(updated); setRespTest(null);
+      setFb({ msg: "Saved", type: "success" });
     } catch (e) {
-      setFb({ msg: errorMessage(e, "Failed to save"), type: "error" });
+      const msg = errorMessage(e, "Failed to save");
+      const field = fieldForServerError(msg);
+      if (field) setServerErr({ [field]: msg });
+      else setFb({ msg, type: "error" });
     } finally { setSaving(false); }
   };
 
-  const dirty = draft && cfg && JSON.stringify(draft) !== JSON.stringify(cfg);
-  const green  = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
-
   if (loading) return <SectionCard theme={t} title="Analysis configuration"><div style={{ color: t.c.text3 }}>Loading…</div></SectionCard>;
+  if (!draft) return <Feedback theme={t} {...(fb || {})} />;
+
+  const isResponses = draft.llm_provider === "responses";
+  const boundOrigin = cfg?.responses_api_key_origin;
+  const promptTokens = Math.round((Number(draft.llm_max_content_chars) || 0) / 4) + PROMPT_OVERHEAD_TOKENS;
+  const numCtx = Number(draft.ollama_num_ctx) || 0;
+  const overflowsCtx = !isResponses && numCtx > 0 && promptTokens > numCtx;
+  const hint = { fontSize: 11.5, color: t.c.text3, marginTop: 6, lineHeight: 1.5 };
 
   return (
     <>
-      <SectionCard theme={t} title="LLM provider" subtitle="takes effect on next job">
-        <div style={{ maxWidth: 540 }}>
-          <Field theme={t} label="Provider">
-            <SelectInput theme={t} value={draft?.llm_provider || "ollama"} onChange={set("llm_provider")}
-              options={[
-                { value: "ollama", label: "Ollama (local — code stays on your infrastructure)" },
-                { value: "responses", label: "Responses API (/v1/responses, API key)" },
-              ]} />
-          </Field>
-          {draft?.llm_provider === "responses" && (
-            <div style={{ padding: "10px 12px", borderRadius: t.radius, fontSize: 12, lineHeight: 1.5,
-              background: `${t.sev.medium.fg}14`, border: `1px solid ${t.sev.medium.fg}33`, color: t.c.text2 }}>
+      <p style={{ fontSize: 12.5, color: t.c.text3, margin: "-8px 0 16px" }}>
+        Changes apply to the next analysis job. Worker settings apply after the worker restarts.
+      </p>
+
+      <SectionCard theme={t} title="AI review" right={<StatusPill theme={t}
+        status={draft.llm_provider !== cfg?.llm_provider
+          ? { tone: "pending", text: "Save to check this provider" } : status} />}>
+        <div style={{ maxWidth: 600 }}>
+          <ChoiceCards theme={t} name="llm_provider" value={draft.llm_provider}
+            onChange={(v) => update({ llm_provider: v })}
+            options={[
+              { value: "ollama", label: "Ollama",
+                description: "Local model. Code never leaves your infrastructure." },
+              { value: "responses", label: "Responses API",
+                description: "OpenAI or any /v1/responses-compatible server, with an API key." },
+            ]} />
+
+          {isResponses && (
+            <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: t.radius, fontSize: 12,
+              lineHeight: 1.5, background: `${t.sev.medium.fg}14`, border: `1px solid ${t.sev.medium.fg}33`,
+              color: t.c.text2 }}>
               Source code under review will be <b>sent to this provider</b>. Requests ask it not to
-              store them (<code>store: false</code>), but its own retention policy applies.
+              store them (<code style={{ fontFamily: t.fontMono }}>store: false</code>), but its own
+              retention policy applies.
             </div>
+          )}
+
+          <div style={{ borderTop: `1px solid ${t.c.border}`, margin: "18px 0" }} />
+
+          {isResponses ? (
+            <>
+              <Field theme={t} label="Base URL" hint="requests go to {base}/responses" error={errors.responses_base_url}>
+                <TextInput theme={t} value={draft.responses_base_url || ""} mono
+                  onChange={e => { set("responses_base_url")(e); setRespTest(null); }}
+                  placeholder="https://api.openai.com/v1" />
+              </Field>
+
+              <Field theme={t} label="API key" hint="stored encrypted, never shown again" error={errors.responses_api_key}>
+                <TextInput theme={t} type="password" autoComplete="off" mono
+                  value={draft.responses_api_key_input || ""}
+                  onChange={e => { update({ responses_api_key_input: e.target.value, responses_api_key_clear: false }); setRespTest(null); }}
+                  placeholder={boundOrigin && !draft.responses_api_key_clear
+                    ? `Saved key ••••${cfg.responses_api_key_last4 || ""} — leave blank to keep`
+                    : "sk-…"} />
+                {boundOrigin && (
+                  <div style={{ ...hint, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    {draft.responses_api_key_clear ? (
+                      <>
+                        <span style={{ color: t.sev.medium.fg }}>The saved key will be removed when you save.</span>
+                        <Btn theme={t} size="sm" variant="quiet"
+                          onClick={() => update({ responses_api_key_clear: false })}>Undo</Btn>
+                      </>
+                    ) : (
+                      <>
+                        <span>Only ever sent to <code style={{ fontFamily: t.fontMono }}>{prettyOrigin(boundOrigin)}</code>.</span>
+                        <Btn theme={t} size="sm" variant="danger"
+                          onClick={() => update({ responses_api_key_clear: true, responses_api_key_input: "" })}>
+                          Remove saved key
+                        </Btn>
+                      </>
+                    )}
+                  </div>
+                )}
+              </Field>
+
+              <div style={{ marginBottom: 16 }}>
+                <Btn theme={t}
+                  variant={respTest && respTest !== "testing" ? (respTest.ok ? "success" : "danger") : "ghost"}
+                  onClick={handleTestResponses}
+                  disabled={respTest === "testing" || !!errors.responses_base_url}>
+                  {respTest === "testing" ? "Testing…" : "Test connection"}
+                </Btn>
+                <ConnectionResult theme={t} result={respTest} selected={draft.responses_model}
+                  onPick={(m) => update({ responses_model: m })} />
+              </div>
+
+              <Field theme={t} label="Model" error={errors.responses_model}>
+                <TextInput theme={t} value={draft.responses_model || ""} onChange={set("responses_model")}
+                  mono placeholder="e.g. gpt-5.1-codex" />
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field theme={t} label="Base URL" error={errors.ollama_base_url}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <TextInput theme={t} value={draft.ollama_base_url || ""} mono
+                    onChange={e => { set("ollama_base_url")(e); setOllamaTest(null); }}
+                    placeholder="http://localhost:11434" />
+                  <Btn theme={t}
+                    variant={ollamaTest && ollamaTest !== "testing" ? (ollamaTest.ok ? "success" : "danger") : "ghost"}
+                    onClick={handleTestOllama} disabled={ollamaTest === "testing" || !!errors.ollama_base_url}>
+                    {ollamaTest === "testing" ? "Testing…" : "Test"}
+                  </Btn>
+                </div>
+                <ConnectionResult theme={t} result={ollamaTest} selected={draft.ollama_model}
+                  onPick={(m) => update({ ollama_model: m })} />
+              </Field>
+              <Field theme={t} label="Model" error={errors.ollama_model}>
+                <TextInput theme={t} value={draft.ollama_model || ""} onChange={set("ollama_model")}
+                  mono placeholder="e.g. qwen3:4b, llama3:8b" />
+              </Field>
+              <Field theme={t} label="Chain-of-thought" hint="for models that support <think> blocks">
+                <Toggle theme={t} value={!!draft.ollama_think}
+                  onChange={v => update({ ollama_think: v })}
+                  label={draft.ollama_think ? "Enabled" : "Disabled"} />
+              </Field>
+              <Field theme={t} label="Context window" hint="Ollama num_ctx">
+                <Slider theme={t} value={numCtx} steps={NUM_CTX_STEPS} format={fmtNumCtx}
+                  onChange={v => update({ ollama_num_ctx: v })} />
+                <div style={hint}>
+                  {numCtx ? "Overrides the model's default for every request. Larger windows use more GPU memory."
+                    : "Uses the window set in the model or its Modelfile."}
+                </div>
+              </Field>
+            </>
           )}
         </div>
       </SectionCard>
 
-      {draft?.llm_provider === "responses" && (
-        <SectionCard theme={t} title="Responses API" subtitle="OpenAI or any compatible server">
-          <div style={{ maxWidth: 540 }}>
-            <Field theme={t} label="Base URL" hint="requests go to {base}/responses">
-              <div style={{ display: "flex", gap: 8 }}>
-                <TextInput theme={t} value={draft?.responses_base_url || ""}
-                  onChange={e => { set("responses_base_url")(e); setRespTest(null); }}
-                  mono placeholder="https://api.openai.com/v1" />
-                <Btn theme={t} size="md"
-                  variant={respTest && respTest !== "testing" ? (respTest.ok ? "success" : "danger") : "ghost"}
-                  onClick={handleTestResponses} disabled={respTest === "testing" || !draft?.responses_base_url}>
-                  {respTest === "testing" ? "Testing…" : "Test"}
-                </Btn>
-              </div>
-              {respTest && respTest !== "testing" && (
-                <div style={{ marginTop: 9, padding: "10px 12px", borderRadius: t.radius,
-                  background: `${respTest.ok ? green : t.sev.critical.fg}14`,
-                  border: `1px solid ${respTest.ok ? green : t.sev.critical.fg}33`, fontSize: 12 }}>
-                  {respTest.ok ? (
-                    <>
-                      <span style={{ color: green, fontWeight: 600 }}>✓ Connected</span>
-                      {respTest.note && <span style={{ marginLeft: 8, color: t.c.text3 }}>{respTest.note}</span>}
-                      {respTest.models?.length > 0 && (
-                        <div style={{ marginTop: 7, display: "flex", gap: 6, flexWrap: "wrap",
-                          maxHeight: 132, overflowY: "auto" }}>
-                          {respTest.models.map(m => (
-                            <span key={m} onClick={() => setDraft(d => ({ ...d, responses_model: m }))}
-                              style={{ cursor: "pointer", padding: "2px 9px", borderRadius: 999,
-                                fontFamily: t.fontMono, fontSize: 11.5, transition: "all 0.12s",
-                                background: draft?.responses_model === m ? t.c.accentBg : t.c.raised2,
-                                border: `1px solid ${draft?.responses_model === m ? t.c.accent : t.c.border}`,
-                                color: draft?.responses_model === m ? t.c.accent : t.c.text2 }}>{m}</span>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <span style={{ color: t.sev.critical.fg }}>✗ {respTest.error}</span>
-                  )}
-                </div>
-              )}
-            </Field>
-            <Field theme={t} label="Model">
-              <TextInput theme={t} value={draft?.responses_model || ""} onChange={set("responses_model")}
-                mono placeholder="e.g. gpt-5.1-codex" />
-            </Field>
-            <Field theme={t} label="API key" hint="stored encrypted; only ever sent to the host it was saved for">
-              <TextInput theme={t} type="password" value={draft?.responses_api_key_input || ""}
-                onChange={e => { setDraft(d => ({ ...d, responses_api_key_input: e.target.value,
-                  responses_api_key_clear: false })); setRespTest(null); }}
-                mono placeholder={cfg?.responses_api_key_set && !draft?.responses_api_key_clear
-                  ? `Saved key ••••${cfg.responses_api_key_last4 || ""} — leave blank to keep`
-                  : "sk-…"} />
-              {cfg?.responses_api_key_origin && (
-                <div style={{ marginTop: 6, fontSize: 11.5, color: t.c.text3 }}>
-                  Saved key is bound to <code>{cfg.responses_api_key_origin}</code>. Changing to another
-                  host requires entering the key again.
-                </div>
-              )}
-              {cfg?.responses_api_key_origin && (
-                <div style={{ marginTop: 6, fontSize: 11.5, color: t.c.text3 }}>
-                  {draft?.responses_api_key_clear ? (
-                    <>Saved key will be removed on save. <a href="#" onClick={e => { e.preventDefault();
-                      setDraft(d => ({ ...d, responses_api_key_clear: false })); }}>Undo</a></>
-                  ) : (
-                    <a href="#" onClick={e => { e.preventDefault();
-                      setDraft(d => ({ ...d, responses_api_key_clear: true, responses_api_key_input: "" })); }}>
-                      Remove saved key</a>
-                  )}
-                </div>
-              )}
-            </Field>
-          </div>
-        </SectionCard>
-      )}
-
-      {draft?.llm_provider !== "responses" && (
-      <SectionCard theme={t} title="Ollama" subtitle="takes effect on next job">
-        <div style={{ maxWidth: 540 }}>
-          <Field theme={t} label="Base URL">
-            <div style={{ display: "flex", gap: 8 }}>
-              <TextInput theme={t} value={draft?.ollama_base_url || ""}
-                onChange={e => { set("ollama_base_url")(e); setOllamaTest(null); }}
-                mono placeholder="http://localhost:11434" />
-              <Btn theme={t} size="md"
-                variant={ollamaTest && ollamaTest !== "testing" ? (ollamaTest.ok ? "success" : "danger") : "ghost"}
-                onClick={handleTestOllama} disabled={ollamaTest === "testing" || !draft?.ollama_base_url}>
-                {ollamaTest === "testing" ? "Testing…" : "Test"}
-              </Btn>
+      <SectionCard theme={t} title="Prompt size">
+        <div style={{ maxWidth: 600 }}>
+          <Field theme={t} label="Source code per request">
+            <Slider theme={t} value={Number(draft.llm_max_content_chars)} steps={CONTENT_CHAR_STEPS}
+              format={fmtChars} onChange={v => update({ llm_max_content_chars: v })} />
+            <div style={hint}>
+              ≈ {fmtK(promptTokens)} tokens per request including instructions. Larger repos are split
+              across several requests.
             </div>
-            {ollamaTest && ollamaTest !== "testing" && (
-              <div style={{ marginTop: 9, padding: "10px 12px", borderRadius: t.radius,
-                background: `${ollamaTest.ok ? green : t.sev.critical.fg}14`,
-                border: `1px solid ${ollamaTest.ok ? green : t.sev.critical.fg}33`, fontSize: 12 }}>
-                {ollamaTest.ok ? (
-                  <>
-                    <span style={{ color: green, fontWeight: 600 }}>✓ Connected</span>
-                    {ollamaTest.models?.length > 0 && (
-                      <div style={{ marginTop: 7, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {ollamaTest.models.map(m => (
-                          <span key={m} onClick={() => setDraft(d => ({ ...d, ollama_model: m }))}
-                            style={{ cursor: "pointer", padding: "2px 9px", borderRadius: 999,
-                              fontFamily: t.fontMono, fontSize: 11.5, transition: "all 0.12s",
-                              background: draft?.ollama_model === m ? t.c.accentBg : t.c.raised2,
-                              border: `1px solid ${draft?.ollama_model === m ? t.c.accent : t.c.border}`,
-                              color: draft?.ollama_model === m ? t.c.accent : t.c.text2 }}>{m}</span>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <span style={{ color: t.sev.critical.fg }}>✗ {ollamaTest.error}</span>
-                )}
+            {overflowsCtx && (
+              <div role="alert" style={{ ...hint, color: t.sev.medium.fg }}>
+                ⚠ This is larger than the {fmtK(numCtx)}-token context window above, so Ollama will
+                cut prompts short. Raise the window or lower this.
               </div>
             )}
           </Field>
-          <Field theme={t} label="Model">
-            <TextInput theme={t} value={draft?.ollama_model || ""} onChange={set("ollama_model")}
-              mono placeholder="e.g. qwen3:4b, llama3:8b" />
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="Scanning">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 600 }}>
+          <Field theme={t} label="Max file size (KB)" hint="larger files skipped" error={errors.max_file_size_kb}>
+            <TextInput theme={t} type="number" value={draft.max_file_size_kb ?? ""} onChange={set("max_file_size_kb")} mono />
           </Field>
-          <Field theme={t} label="Chain-of-thought" hint="enable for models that support <think> blocks">
-            <Toggle theme={t} value={!!draft?.ollama_think}
-              onChange={v => setDraft(d => ({ ...d, ollama_think: v }))}
-              label={draft?.ollama_think ? "Enabled" : "Disabled"} />
-          </Field>
-          <Field theme={t} label="Context window (num_ctx)" hint="0 = use model default">
-            <TextInput theme={t} type="number" value={draft?.ollama_num_ctx ?? 0}
-              onChange={set("ollama_num_ctx")} mono min="0" step="1024" />
-            <div style={{ fontSize: 11.5, color: t.c.text3, marginTop: 5 }}>
-              {draft?.ollama_num_ctx > 0
-                ? `${Number(draft.ollama_num_ctx).toLocaleString()} tokens — override active`
-                : "Using model default"}
-            </div>
+          <Field theme={t} label="Max files sent to LLM" hint="most relevant first" error={errors.max_files_per_repo}>
+            <TextInput theme={t} type="number" value={draft.max_files_per_repo ?? ""} onChange={set("max_files_per_repo")} mono />
           </Field>
         </div>
       </SectionCard>
+
+      <SectionCard theme={t} title="Session & worker" subtitle="worker settings need a worker restart">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+          <Field theme={t} label="Login expiry (min)" error={errors.access_token_expire_minutes}>
+            <TextInput theme={t} type="number" value={draft.access_token_expire_minutes ?? ""} onChange={set("access_token_expire_minutes")} mono />
+          </Field>
+          <Field theme={t} label="Concurrent jobs" error={errors.worker_max_jobs}>
+            <TextInput theme={t} type="number" value={draft.worker_max_jobs ?? ""} onChange={set("worker_max_jobs")} mono />
+          </Field>
+          <Field theme={t} label="Job timeout (sec)" error={errors.worker_job_timeout}>
+            <TextInput theme={t} type="number" value={draft.worker_job_timeout ?? ""} onChange={set("worker_job_timeout")} mono />
+          </Field>
+        </div>
+      </SectionCard>
+
+      {(dirty || fb) && <div style={{ height: 72 }} /> /* room so the bar never covers the last field */}
+      {(dirty || fb) && (
+        // Fixed, not sticky: <main> is an overflow container but the window is
+        // what scrolls, so sticky never engages. Offset by the 220px side rail
+        // and centred on the 840px page column.
+        <div style={{ position: "fixed", left: 220, right: 0, bottom: 16, zIndex: 50,
+          display: "flex", justifyContent: "center", padding: "0 34px", pointerEvents: "none" }}>
+        <div style={{ width: "100%", maxWidth: 772, pointerEvents: "auto", display: "flex", alignItems: "center",
+          gap: 12, padding: "11px 14px 11px 18px", background: t.c.surface,
+          border: `1px solid ${t.c.border2}`, borderRadius: t.radiusLg, boxShadow: t.c.shadowHi }}>
+          <span role="status" style={{ fontSize: 12.5,
+            color: fb?.type === "error" || errorCount ? t.sev.critical.fg
+              : fb?.type === "success" ? t.status.signed_off[t.mode === "light" ? "light" : "dark"]
+              : t.c.text2 }}>
+            {fb?.type === "error" ? fb.msg
+              : errorCount ? `Fix ${errorCount} field${errorCount > 1 ? "s" : ""} before saving`
+              : fb?.type === "success" && !dirty ? "✓ Saved"
+              : "You have unsaved changes"}
+          </span>
+          {dirty && (
+            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              <Btn theme={t} variant="quiet" onClick={handleDiscard} disabled={saving}>Discard</Btn>
+              <Btn theme={t} variant="primary" onClick={handleSave} disabled={saving || errorCount > 0}>
+                {saving ? "Saving…" : "Save changes"}
+              </Btn>
+            </div>
+          )}
+        </div>
+        </div>
       )}
-
-      <SectionCard theme={t} title="LLM context" subtitle="takes effect on next job">
-        <div style={{ maxWidth: 540 }}>
-          <Field theme={t} label="Max content chars" hint="1 token ≈ 4 chars">
-            <TextInput theme={t} type="number" value={draft?.llm_max_content_chars || ""}
-              onChange={set("llm_max_content_chars")} mono />
-            <div style={{ fontSize: 11.5, color: t.c.text3, marginTop: 5 }}>
-              ~{Math.round((draft?.llm_max_content_chars || 0) / 4).toLocaleString()} tokens per call
-            </div>
-          </Field>
-        </div>
-      </SectionCard>
-
-      <SectionCard theme={t} title="Scanning" subtitle="takes effect on next job">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 540 }}>
-          <Field theme={t} label="Max file size (KB)">
-            <TextInput theme={t} type="number" value={draft?.max_file_size_kb || ""} onChange={set("max_file_size_kb")} mono />
-          </Field>
-          <Field theme={t} label="Max files per repo">
-            <TextInput theme={t} type="number" value={draft?.max_files_per_repo || ""} onChange={set("max_files_per_repo")} mono />
-          </Field>
-        </div>
-      </SectionCard>
-
-      <SectionCard theme={t} title="Session & worker" subtitle="worker fields require restart">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 540 }}>
-          <Field theme={t} label="Token expiry (min)">
-            <TextInput theme={t} type="number" value={draft?.access_token_expire_minutes || ""} onChange={set("access_token_expire_minutes")} mono />
-          </Field>
-          <Field theme={t} label="Max concurrent jobs">
-            <TextInput theme={t} type="number" value={draft?.worker_max_jobs || ""} onChange={set("worker_max_jobs")} mono />
-          </Field>
-        </div>
-      </SectionCard>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <Btn theme={t} variant={dirty ? "primary" : "ghost"} onClick={() => dirty && handleSave()}
-          disabled={saving || !dirty}>
-          {saving ? "Saving…" : dirty ? "Save all changes" : "No changes"}
-        </Btn>
-        {dirty && <span style={{ fontSize: 12, color: t.c.accent }}>Unsaved changes</span>}
-      </div>
-      <Feedback theme={t} {...(fb || {})} />
     </>
   );
 }
@@ -511,12 +675,13 @@ export default function Settings() {
     ] : []),
   ];
   const [tab, setTab] = useState("account");
+  const { guard } = useUnsavedGuard();
 
   return (
     <PageWrap theme={t} max={840}>
       <PageHeader theme={t} title="Settings"
         subtitle={isAdmin ? "Account, users, and analysis engine" : "Manage your account"} />
-      <Tabs theme={t} tabs={tabs} active={tab} onChange={setTab} />
+      <Tabs theme={t} tabs={tabs} active={tab} onChange={(k) => k !== tab && guard(() => setTab(k))} />
       {tab === "account" && <AccountTab  theme={t} username={user?.username} />}
       {tab === "users"   && isAdmin && <UsersTab    theme={t} currentUser={user?.username} />}
       {tab === "config"  && isAdmin && <AnalysisTab theme={t} />}

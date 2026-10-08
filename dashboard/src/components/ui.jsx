@@ -1,4 +1,17 @@
-import React, { useState } from "react";
+import React, { createContext, useContext, useId, useState } from "react";
+
+// Field gives its control an id and label/error wiring through context, so
+// every input inside a Field is labelled for screen readers automatically.
+const FieldCtx = createContext(null);
+const useFieldProps = () => {
+  const f = useContext(FieldCtx);
+  if (!f) return {};
+  return {
+    id: f.id,
+    "aria-invalid": f.error ? true : undefined,
+    "aria-describedby": [f.hintId, f.error && f.errorId].filter(Boolean).join(" ") || undefined,
+  };
+};
 
 export function PageHeader({ theme, title, subtitle, right }) {
   return (
@@ -19,16 +32,18 @@ export function PageWrap({ max = 1080, children }) {
 }
 
 export function TextInput({ theme, value, onChange, type = "text", placeholder, mono,
-  autoFocus, onKeyDown, style, min, step }) {
+  autoFocus, onKeyDown, style, min, step, autoComplete }) {
   const [focus, setFocus] = useState(false);
+  const field = useFieldProps();
+  const invalid = !!field["aria-invalid"];
   return (
     <input type={type} value={value} placeholder={placeholder} autoFocus={autoFocus}
-      onKeyDown={onKeyDown} onChange={onChange} min={min} step={step}
-      onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+      onKeyDown={onKeyDown} onChange={onChange} min={min} step={step} autoComplete={autoComplete}
+      onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} {...field}
       style={{
         width: "100%", padding: "9px 12px", fontSize: 13, color: theme.c.text,
         fontFamily: mono ? theme.fontMono : theme.fontUi, background: theme.c.bg,
-        border: `1px solid ${focus ? theme.c.accent : theme.c.border}`,
+        border: `1px solid ${invalid ? theme.sev.critical.fg : focus ? theme.c.accent : theme.c.border}`,
         borderRadius: theme.radius, outline: "none", transition: "border-color 0.14s",
         boxShadow: focus ? `0 0 0 3px ${theme.c.accentBg}` : "none", ...style,
       }} />
@@ -36,8 +51,9 @@ export function TextInput({ theme, value, onChange, type = "text", placeholder, 
 }
 
 export function SelectInput({ theme, value, onChange, options }) {
+  const field = useFieldProps();
   return (
-    <select value={value} onChange={onChange} style={{
+    <select value={value} onChange={onChange} {...field} style={{
       width: "100%", padding: "9px 12px", fontSize: 13,
       color: theme.c.text, fontFamily: theme.fontUi, background: theme.c.bg,
       border: `1px solid ${theme.c.border}`, borderRadius: theme.radius,
@@ -49,8 +65,10 @@ export function SelectInput({ theme, value, onChange, options }) {
 }
 
 export function Toggle({ theme, value, onChange, label }) {
+  const field = useFieldProps();
   return (
-    <button onClick={() => onChange(!value)} style={{ display: "flex", alignItems: "center",
+    <button type="button" role="switch" aria-checked={!!value} {...field}
+      onClick={() => onChange(!value)} style={{ display: "flex", alignItems: "center",
       gap: 10, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
       <span style={{ width: 38, height: 22, borderRadius: 999,
         background: value ? theme.c.accent : theme.c.border2,
@@ -106,15 +124,80 @@ export function SectionCard({ theme, title, subtitle, right, children, pad = tru
   );
 }
 
-export function Field({ theme, label, hint, children }) {
+export function Field({ theme, label, hint, error, children }) {
+  const id = useId();
+  const ctx = { id, hintId: hint ? `${id}-hint` : null, errorId: `${id}-error`, error };
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ marginBottom: 6, lineHeight: 1.4 }}>
-        <label style={{ fontSize: 11, fontWeight: 600, color: theme.c.text2,
-          letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{label}</label>
-        {hint && <span style={{ marginLeft: 9, fontSize: 11.5, color: theme.c.text3 }}>{hint}</span>}
+    <FieldCtx.Provider value={ctx}>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 6, lineHeight: 1.4 }}>
+          <label htmlFor={id} style={{ fontSize: 11, fontWeight: 600, color: theme.c.text2,
+            letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{label}</label>
+          {hint && <span id={ctx.hintId} style={{ marginLeft: 9, fontSize: 11.5, color: theme.c.text3 }}>{hint}</span>}
+        </div>
+        {children}
+        {error && (
+          <div id={ctx.errorId} role="alert" style={{ marginTop: 6, fontSize: 12, color: theme.sev.critical.fg }}>
+            {error}
+          </div>
+        )}
       </div>
-      {children}
+    </FieldCtx.Provider>
+  );
+}
+
+// A native range input (keyboard + screen reader support for free) that moves
+// between a fixed list of *steps*; *format* turns a step value into its label.
+export function Slider({ theme, value, steps, onChange, format }) {
+  const field = useFieldProps();
+  const list = steps.includes(value) ? steps : [...steps, value].sort((a, b) => a - b);
+  const index = list.indexOf(value);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+      <input type="range" min={0} max={list.length - 1} step={1} value={index}
+        onChange={(e) => onChange(list[Number(e.target.value)])}
+        aria-valuetext={format(value)} {...field}
+        style={{ flex: 1, accentColor: theme.c.accent, cursor: "pointer" }} />
+      <span style={{ minWidth: 112, textAlign: "right", fontFamily: theme.fontMono, fontSize: 12.5,
+        color: theme.c.text }}>{format(value)}</span>
+    </div>
+  );
+}
+
+// Mutually exclusive options shown as cards; real radio inputs underneath.
+export function ChoiceCards({ theme, name, value, onChange, options }) {
+  const [focused, setFocused] = useState(null);
+  return (
+    <div role="radiogroup" style={{ display: "grid", gap: 10,
+      gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+      {options.map((o) => {
+        const on = o.value === value;
+        return (
+          <label key={o.value} style={{
+            display: "block", padding: "12px 14px", borderRadius: theme.radius, cursor: "pointer",
+            border: `1px solid ${on ? theme.c.accent : theme.c.border}`,
+            background: on ? theme.c.accentBg : theme.c.bg, transition: "all 0.14s",
+            boxShadow: focused === o.value ? `0 0 0 3px ${theme.c.accentBg}` : "none",
+            outline: focused === o.value ? `1px solid ${theme.c.accent}` : "none",
+          }}>
+            <input type="radio" name={name} value={o.value} checked={on}
+              onChange={() => onChange(o.value)}
+              onFocus={() => setFocused(o.value)} onBlur={() => setFocused(null)}
+              style={{ position: "absolute", opacity: 0, width: 1, height: 1 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span aria-hidden style={{ width: 14, height: 14, borderRadius: 999, flexShrink: 0,
+                border: `2px solid ${on ? theme.c.accent : theme.c.border2}`,
+                background: on ? `radial-gradient(${theme.c.accent} 45%, transparent 50%)` : "transparent" }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: theme.c.text }}>{o.label}</span>
+            </div>
+            {o.description && (
+              <div style={{ marginTop: 5, marginLeft: 22, fontSize: 12, color: theme.c.text3, lineHeight: 1.45 }}>
+                {o.description}
+              </div>
+            )}
+          </label>
+        );
+      })}
     </div>
   );
 }
