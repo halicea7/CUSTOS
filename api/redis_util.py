@@ -3,6 +3,9 @@ from arq.connections import RedisSettings
 from config import settings
 
 # Redis keys shared by the API and the worker.
+# Custos's own ARQ queue: ARQ's default ("arq:queue") is shared by every ARQ
+# app on the same Redis, so another project's worker would take our jobs.
+ARQ_QUEUE = "custos:queue"
 LLM_ACTIVE_SET = "custos:llm_active"
 
 

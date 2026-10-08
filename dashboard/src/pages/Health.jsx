@@ -157,6 +157,12 @@ function ScanStagesPanel({ elapsed, stages }) {
         {!stages && (
           <div style={{ padding: "8px 0", color: "var(--text-3)", fontSize: "12px" }}>
             Waiting for the worker to start the scan…
+            {elapsed >= 30 && (
+              <div style={{ marginTop: "6px", color: "var(--yellow)" }}>
+                No worker has picked this scan up yet. Check that the Custos worker is
+                running and up to date; scans no worker runs are marked failed after an hour.
+              </div>
+            )}
           </div>
         )}
         {(stages || []).map((stage, i) => {

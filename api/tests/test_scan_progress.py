@@ -120,3 +120,12 @@ async def test_health_status_serves_running_stages(client, db):
 
     body = (await client.get("/health/status", headers=auth_headers("root"))).json()
     assert body["running"] is True and body["running_stages"] == stages
+
+
+def test_worker_and_api_use_custos_queue():
+    """ARQ's default queue is shared by every ARQ app on the Redis: use our own."""
+    from redis_util import ARQ_QUEUE
+    from worker.queue import WorkerSettings
+
+    assert WorkerSettings.queue_name == ARQ_QUEUE != "arq:queue"
+    assert "default_queue_name=ARQ_QUEUE" in open("main.py").read()

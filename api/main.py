@@ -7,7 +7,7 @@ from redis.asyncio import Redis
 
 from config import assert_secure_settings, settings
 from database import engine
-from redis_util import arq_redis_settings
+from redis_util import ARQ_QUEUE, arq_redis_settings
 from routers import auth as auth_router
 from routers import findings as findings_router
 from routers import groups as groups_router
@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 async def lifespan(app: FastAPI):
     assert_secure_settings()
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    app.state.arq_pool = await create_pool(arq_redis_settings())
+    app.state.arq_pool = await create_pool(arq_redis_settings(), default_queue_name=ARQ_QUEUE)
     yield
     await app.state.redis.aclose()
     await app.state.arq_pool.aclose()

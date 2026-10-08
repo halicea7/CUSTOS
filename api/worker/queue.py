@@ -8,7 +8,7 @@ from sqlalchemy.pool import NullPool
 from app_config import DEFAULT_WORKER_JOB_TIMEOUT, DEFAULT_WORKER_MAX_JOBS, load_app_config
 from config import assert_secure_settings, settings
 from database import engine
-from redis_util import arq_redis_settings
+from redis_util import ARQ_QUEUE, arq_redis_settings
 from worker.tasks import analyze_submission, reap_stale_jobs, rerun_llm, scan_self
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ class WorkerSettings:
         arq_cron(reap_stale_jobs, minute=set(range(0, 60, 10)), run_at_startup=True),
     ]
     redis_settings = arq_redis_settings()
+    queue_name = ARQ_QUEUE
     on_startup = startup
     on_shutdown = shutdown
     max_jobs = _max_jobs

@@ -12,7 +12,7 @@ from auth import get_current_user
 from database import get_db
 from enums import BLOCKING_SEVERITIES, SEVERITY_ORDER
 from models import AppConfig, Finding, LlmRun, Repo, RepoGroup, Submission, User
-from redis_util import LLM_ACTIVE_SET, llm_job_key, llm_lock_key, llm_start_key
+from redis_util import ARQ_QUEUE, LLM_ACTIVE_SET, llm_job_key, llm_lock_key, llm_start_key
 from schemas import FindingResponse, LlmRunResponse, SubmissionListResponse, SubmissionResponse
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -170,7 +170,7 @@ async def llm_status(
     if not job_id:
         return {"status": "idle", "elapsed": 0, "estimated": estimated, "progress": 0}
 
-    job = Job(job_id=job_id, redis=request.app.state.arq_pool)
+    job = Job(job_id=job_id, redis=request.app.state.arq_pool, _queue_name=ARQ_QUEUE)
     status_str = (await job.status()).value  # queued | deferred | in_progress | complete | not_found
 
     elapsed = (time.time() - float(start_ts)) if start_ts else 0

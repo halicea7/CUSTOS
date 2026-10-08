@@ -120,7 +120,8 @@ def _cmd(key: str) -> list[str] | None:
 
     if key == "redis":     return ["redis-server", "--loglevel", "warning"]
     if key == "api":       return [uvi, "main:app", "--reload", "--host", host, "--port", "8000"]
-    if key == "worker":    return [py, "-m", "arq", "worker.queue.WorkerSettings"]
+    # --watch: restart on code changes, like the API's --reload (needs watchfiles).
+    if key == "worker":    return [py, "-m", "arq", "worker.queue.WorkerSettings", "--watch", "."]
     if key == "dashboard":
         cmd = ["npm", "run", "dev"]
         if _bind: cmd += ["--", "--host", "0.0.0.0"]
