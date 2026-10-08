@@ -1,0 +1,579 @@
+#!/usr/bin/env python3
+"""Custos launcher — one command for deploying, developing and administering.
+
+  ./custos deploy            Production via Docker: generates keys and DB
+                             password, builds, migrates, creates the admin.
+                             Re-run any time to upgrade.
+  ./custos dev [--ngrok] [--bind-all]
+                             Local development: sets everything up on first
+                             run, then starts the live dev console.
+  ./custos setup             Local setup only (venv, deps, DB, keys, admin).
+  ./custos stop | logs       Stop / follow logs of the Docker deployment.
+  ./custos user add NAME [--role admin|analyst]
+  ./custos user reset NAME   Manage logins (Docker or local, auto-detected).
+  ./custos test | lint       Run the test suite / ruff + eslint.
+
+Add --yes to accept defaults without prompting (generated passwords are
+printed once). Needs only python3 to run; everything else it checks for.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import getpass
+import hashlib
+import os
+import platform
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+API = ROOT / "api"
+DASH = ROOT / "dashboard"
+VENV = ROOT / ".venv"
+VPY = VENV / "bin" / "python"
+LOCAL_ENV = API / ".env"      # read by the API/worker when run on the host
+DOCKER_ENV = ROOT / ".env"    # read by docker compose
+
+# Must match api/config.py — values the app refuses to start with.
+_WEAK_SECRETS = {"", "changeme", "secret", "change-me"}
+# SECRET_KEY's built-in default; installs that never set one encrypted repo
+# secrets with a key derived from it.
+_LEGACY_DEFAULT_KEY = "changeme"
+
+YES = False
+
+# ── output ────────────────────────────────────────────────────────────────────
+
+_TTY = sys.stdout.isatty()
+
+
+def _c(code: str, s: str) -> str:
+    return f"\033[{code}m{s}\033[0m" if _TTY else s
+
+
+def step(msg: str) -> None:
+    print("\n" + _c("1;36", "▸ " + msg))
+
+
+def ok(msg: str) -> None:
+    print("  " + _c("32", "✓") + " " + msg)
+
+
+def info(msg: str) -> None:
+    print("  " + _c("36", "→") + " " + msg)
+
+
+def warn(msg: str) -> None:
+    print("  " + _c("33", "!") + " " + msg)
+
+
+def die(msg: str) -> None:
+    print("  " + _c("31", "✗") + " " + msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def run(cmd: list, *, cwd: Path | None = None, env: dict | None = None,
+        check: bool = True, capture: bool = False, input: str | None = None):
+    result = subprocess.run(
+        [str(c) for c in cmd], cwd=cwd, env={**os.environ, **(env or {})},
+        text=True, input=input,
+        capture_output=capture,
+    )
+    if check and result.returncode != 0:
+        if capture:
+            sys.stderr.write(result.stdout + result.stderr)
+        die(f"Command failed: {' '.join(str(c) for c in cmd)}")
+    return result
+
+
+def ask(label: str, default: str) -> str:
+    if YES or not sys.stdin.isatty():
+        return default
+    reply = input(f"    {label} [{default}]: ").strip()
+    return reply or default
+
+
+def gen_secret() -> str:
+    return secrets.token_hex(32)
+
+
+def gen_fernet_key() -> str:
+    """Same format as cryptography's Fernet.generate_key(), without the import."""
+    return base64.urlsafe_b64encode(os.urandom(32)).decode()
+
+
+def _is_weak(secret: str) -> bool:
+    return secret.strip().lower() in _WEAK_SECRETS or len(secret) < 32
+
+
+# ── .env files ────────────────────────────────────────────────────────────────
+
+def read_env(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", line)
+            if m and not line.lstrip().startswith("#"):
+                env[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    return env
+
+
+def write_env(path: Path, updates: dict[str, str]) -> None:
+    """Set keys in an env file, updating lines in place and keeping the rest."""
+    lines = path.read_text().splitlines() if path.exists() else []
+    remaining = dict(updates)
+    for i, line in enumerate(lines):
+        m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if m and not line.lstrip().startswith("#") and m.group(1) in remaining:
+            lines[i] = f"{m.group(1)}={remaining.pop(m.group(1))}"
+    lines += [f"{k}={v}" for k, v in remaining.items()]
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o600)
+
+
+def ensure_env(path: Path, defaults: dict[str, str]) -> str | None:
+    """Make sure *path* has strong keys plus *defaults* for anything missing.
+
+    Returns the SECRET_KEY that stored credentials were encrypted with if they
+    need migrating to a newly generated ENCRYPTION_KEY, else None. (Before
+    ENCRYPTION_KEY existed, secrets were encrypted with a key derived from
+    SECRET_KEY; crypto.py still accepts that key for decryption.)
+    """
+    env = read_env(path)
+    updates = {k: v for k, v in defaults.items() if not env.get(k)}
+    old_secret = None
+
+    if _is_weak(env.get("SECRET_KEY", "")):
+        updates["SECRET_KEY"] = gen_secret()
+        ok("Generated SECRET_KEY")
+    if not env.get("ENCRYPTION_KEY"):
+        updates["ENCRYPTION_KEY"] = gen_fernet_key()
+        old_secret = env.get("SECRET_KEY") or _LEGACY_DEFAULT_KEY
+        ok("Generated ENCRYPTION_KEY")
+
+    if updates:
+        if path.exists():
+            backup = path.with_name(path.name + ".bak")
+            shutil.copy2(path, backup)
+            backup.chmod(0o600)
+            info(f"Backed up previous {path.relative_to(ROOT)} to {backup.relative_to(ROOT)}")
+        write_env(path, updates)
+        ok(f"Wrote {path.relative_to(ROOT)} (permissions 600)")
+    else:
+        ok(f"{path.relative_to(ROOT)} already configured")
+    return old_secret
+
+
+# ── admin bootstrap (shared by Docker and local) ──────────────────────────────
+
+def bootstrap_admin(manage: list) -> None:
+    """Create the first admin if there are no users. *manage* runs api/manage.py."""
+    count = run(manage + ["count-users"], capture=True).stdout.strip().splitlines()[-1]
+    if count != "0":
+        ok(f"{count} user(s) already exist")
+        return
+
+    username = ask("Admin username", "admin")
+    if YES or not sys.stdin.isatty():
+        password, generated = secrets.token_urlsafe(12), True
+    else:
+        while True:
+            password = getpass.getpass("    Admin password (min 8 chars, blank = generate): ")
+            if not password:
+                password, generated = secrets.token_urlsafe(12), True
+                break
+            if len(password) < 8:
+                warn("Too short.")
+                continue
+            if getpass.getpass("    Confirm password: ") != password:
+                warn("Passwords do not match.")
+                continue
+            generated = False
+            break
+
+    run(manage + ["create-user", username, "--role", "admin"], input=password + "\n", capture=True)
+    ok(f"Created admin user '{username}'")
+    if generated:
+        print("\n    " + _c("1;33", f"Admin password: {password}"))
+        print("    " + _c("2", "Shown once — store it now. Change it under Settings → Account."))
+
+
+def report(res: subprocess.CompletedProcess) -> None:
+    for line in res.stdout.strip().splitlines():
+        info(line)
+
+
+# ── Docker deployment ─────────────────────────────────────────────────────────
+
+def compose_cmd() -> list[str]:
+    if shutil.which("docker"):
+        if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode == 0:
+            return ["docker", "compose"]
+    if shutil.which("docker-compose"):
+        return ["docker-compose"]
+    die("Docker with Compose is required: https://docs.docker.com/engine/install/")
+
+
+def _compose_project() -> str:
+    name = os.environ.get("COMPOSE_PROJECT_NAME") or ROOT.name
+    return re.sub(r"[^a-z0-9_-]", "", name.lower())
+
+
+def _host_address() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 80))  # no packets sent; picks the outbound interface
+            return s.getsockname()[0]
+    except OSError:
+        return "localhost"
+
+
+def _wait_http(url: str, timeout: int) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+
+def cmd_deploy(args) -> None:
+    compose = compose_cmd()
+    step("Checking Docker")
+    if run(["docker", "info"], capture=True, check=False).returncode != 0:
+        die("Docker daemon is not running (or this user can't access it).")
+    ok("Docker is running")
+
+    step("Configuration")
+    defaults: dict[str, str] = {}
+    if not DOCKER_ENV.exists():
+        info("First deployment — a few questions (Enter accepts the default):")
+        ollama_url = ask("Ollama URL", "http://host.docker.internal:11434")
+        ollama_model = ask("Ollama model", "qwen2.5-coder:32b")
+        defaults = {
+            "POSTGRES_PASSWORD": secrets.token_hex(16),
+            "REDIS_PASSWORD": secrets.token_hex(16),
+            "OLLAMA_BASE_URL": ollama_url,
+            "OLLAMA_MODEL": ollama_model,
+        }
+        volume = f"{_compose_project()}_pgdata"
+        if run(["docker", "volume", "inspect", volume], capture=True, check=False).returncode == 0:
+            # A database from the original compose file: keep its fixed credentials.
+            defaults.update(POSTGRES_USER="Custos", POSTGRES_DB="Custos", POSTGRES_PASSWORD="Custos")
+            warn(f"Existing database volume '{volume}' found — keeping its credentials")
+    old_secret = ensure_env(DOCKER_ENV, defaults)
+
+    step("Building and starting containers (first build takes a few minutes)")
+    run(compose + ["up", "-d", "--build", "--remove-orphans"], cwd=ROOT)
+    info("Waiting for the API…")
+    if not _wait_http("http://localhost:8000/healthz", 180):
+        run(compose + ["logs", "--tail", "40", "migrate", "api"], cwd=ROOT, check=False)
+        die("API did not become healthy — see logs above.")
+    ok("All services up")
+
+    if old_secret:
+        step("Moving stored credentials to the new ENCRYPTION_KEY")
+        report(run(compose + ["exec", "-T", "-e", f"SECRET_KEY={old_secret}",
+                              "api", "python", "manage.py", "rotate-keys"], capture=True))
+
+    step("Admin account")
+    bootstrap_admin(_docker_manage())
+
+    host = _host_address()
+    print("\n" + _c("1;32", "Custos is running"))
+    print(f"  Dashboard     http://{host}:3000")
+    print(f"  Webhook URL   http://{host}:3000/api/webhook/github")
+    print("  " + _c("2", "Put a TLS reverse proxy in front before exposing this to the internet."))
+    print("  " + _c("2", "Secrets live in .env (mode 600) — back it up; losing ENCRYPTION_KEY "
+                         "means re-entering repo tokens."))
+    print("  " + _c("2", "./custos logs · ./custos stop · ./custos deploy (upgrade)"))
+
+
+def cmd_stop(args) -> None:
+    run(compose_cmd() + ["down"], cwd=ROOT)
+
+
+def cmd_logs(args) -> None:
+    try:
+        subprocess.run(compose_cmd() + ["logs", "-f", "--tail", "100"], cwd=ROOT)
+    except KeyboardInterrupt:
+        pass
+
+
+def _docker_manage() -> list:
+    return compose_cmd() + ["exec", "-T", "api", "python", "manage.py"]
+
+
+def _docker_running() -> bool:
+    if not DOCKER_ENV.exists() or not shutil.which("docker"):
+        return False
+    res = subprocess.run(compose_cmd() + ["ps", "-q", "api"], cwd=ROOT,
+                         capture_output=True, text=True)
+    return bool(res.stdout.strip())
+
+
+# ── local development ─────────────────────────────────────────────────────────
+
+_INSTALL_HINTS = {
+    "node": ("brew install node", "https://nodejs.org (v20+)"),
+    "npm": ("brew install node", "https://nodejs.org (v20+)"),
+    "psql": ("brew install postgresql@16", "sudo apt install postgresql"),
+    "redis-server": ("brew install redis", "sudo apt install redis-server"),
+    "git": ("xcode-select --install", "sudo apt install git"),
+}
+IS_MAC = platform.system() == "Darwin"
+
+
+def _find_python() -> str:
+    for cand in (sys.executable, "python3.14", "python3.13", "python3.12", "python3.11", "python3"):
+        path = shutil.which(cand) or (cand if os.path.isabs(cand) else None)
+        if not path:
+            continue
+        ver = subprocess.run([path, "-c", "import sys;print(sys.version_info[:2]>=(3,11))"],
+                             capture_output=True, text=True).stdout.strip()
+        if ver == "True":
+            return path
+    die("Python 3.11+ is required (brew install python / sudo apt install python3).")
+
+
+def _psql() -> str | None:
+    for cand in ("psql", "/opt/homebrew/opt/postgresql@16/bin/psql",
+                 "/usr/local/opt/postgresql@16/bin/psql"):
+        if shutil.which(cand):
+            return shutil.which(cand)
+    return None
+
+
+def _sql(psql: str, query: str) -> subprocess.CompletedProcess:
+    """Run SQL as a Postgres superuser: the current user, or postgres via sudo."""
+    res = subprocess.run([psql, "-d", "postgres", "-tAc", query], capture_output=True, text=True)
+    if res.returncode != 0 and not IS_MAC:
+        res = subprocess.run(["sudo", "-u", "postgres", psql, "-d", "postgres", "-tAc", query],
+                             capture_output=True, text=True)
+    return res
+
+
+def _file_hash(*paths: Path) -> str:
+    h = hashlib.sha256()
+    for p in paths:
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def cmd_setup(args) -> None:
+    step("Checking prerequisites")
+    py = _find_python()
+    ok(f"Python ({py})")
+    missing = [t for t in ("git", "node", "npm", "redis-server") if not shutil.which(t)]
+    psql = _psql()
+    if not psql:
+        missing.append("psql")
+    if missing:
+        for t in missing:
+            mac, linux = _INSTALL_HINTS[t]
+            warn(f"{t} not found — install: {mac if IS_MAC else linux}")
+        die("Install the missing tools and re-run.")
+    ok("git, node, npm, psql, redis")
+
+    step("Python environment")
+    if not VPY.exists():
+        run([py, "-m", "venv", VENV])
+        ok("Created .venv")
+    reqs = [API / "requirements.txt", API / "requirements-dev.txt"]
+    stamp = VENV / ".custos-requirements"
+    digest = _file_hash(*reqs)
+    if not stamp.exists() or stamp.read_text() != digest:
+        info("Installing Python dependencies…")
+        run([VPY, "-m", "pip", "install", "-q", "--upgrade", "pip"], capture=True)
+        run([VPY, "-m", "pip", "install", "-q", "-r", API / "requirements-dev.txt"], capture=True)
+        stamp.write_text(digest)
+    ok("Python dependencies installed")
+
+    step("Analysis tools")
+    if shutil.which("semgrep") or (VENV / "bin" / "semgrep").exists():
+        ok("semgrep")
+    else:
+        info("Installing semgrep into .venv…")
+        run([VPY, "-m", "pip", "install", "-q", "semgrep"], capture=True)
+        ok("semgrep")
+    if shutil.which("gitleaks"):
+        ok("gitleaks")
+    elif IS_MAC and shutil.which("brew"):
+        info("Installing gitleaks via Homebrew…")
+        run(["brew", "install", "-q", "gitleaks"], capture=True, check=False)
+        (ok if shutil.which("gitleaks") else warn)("gitleaks")
+    else:
+        warn("gitleaks not found — secret scanning will be skipped. "
+             "Install: https://github.com/gitleaks/gitleaks#installing")
+
+    step("Dashboard dependencies")
+    lock = DASH / "package-lock.json"
+    stamp = DASH / "node_modules" / ".custos-lock"
+    if not stamp.exists() or stamp.read_text() != _file_hash(lock):
+        info("Running npm ci…")
+        run(["npm", "ci", "--no-audit", "--no-fund", "--loglevel=error"], cwd=DASH, capture=True)
+        stamp.write_text(_file_hash(lock))
+    ok("node_modules up to date")
+
+    step("PostgreSQL")
+    pg_ready = shutil.which("pg_isready") or str(Path(psql).with_name("pg_isready"))
+    if subprocess.run([pg_ready, "-q"]).returncode != 0:
+        info("Starting PostgreSQL…")
+        if IS_MAC and shutil.which("brew"):
+            run(["brew", "services", "start", "postgresql@16"], capture=True, check=False)
+        else:
+            run(["sudo", "systemctl", "start", "postgresql"], check=False)
+        for _ in range(15):
+            if subprocess.run([pg_ready, "-q"]).returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            die("PostgreSQL is not running and could not be started.")
+    ok("PostgreSQL is running")
+    if _sql(psql, "SELECT 1 FROM pg_roles WHERE rolname='Custos'").stdout.strip() != "1":
+        _sql(psql, "CREATE ROLE \"Custos\" LOGIN PASSWORD 'Custos'")
+        ok("Created role Custos")
+    if _sql(psql, "SELECT 1 FROM pg_database WHERE datname='Custos'").stdout.strip() != "1":
+        res = _sql(psql, 'CREATE DATABASE "Custos" OWNER "Custos"')
+        if res.returncode != 0:
+            die("Could not create database: " + res.stderr.strip())
+        ok("Created database Custos")
+    ok("Database Custos ready")
+
+    step("Configuration")
+    old_secret = ensure_env(LOCAL_ENV, {
+        "DATABASE_URL": "postgresql+asyncpg://Custos:Custos@localhost:5432/Custos",
+        "REDIS_URL": "redis://localhost:6379",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "OLLAMA_MODEL": "qwen2.5-coder:32b",
+    })
+
+    step("Database migrations")
+    run([VENV / "bin" / "alembic", "upgrade", "head"], cwd=ROOT, capture=True)
+    ok("Schema up to date")
+
+    if old_secret:
+        step("Moving stored credentials to the new ENCRYPTION_KEY")
+        report(run(_local_manage() + ["rotate-keys"],
+                   env={"SECRET_KEY": old_secret}, capture=True))
+
+    step("Admin account")
+    bootstrap_admin(_local_manage())
+
+
+def _local_manage() -> list:
+    # manage.py resolves imports and api/.env relative to itself, so cwd doesn't matter.
+    return [VPY, API / "manage.py"]
+
+
+def cmd_dev(args) -> None:
+    cmd_setup(args)
+    step("Starting dev console")
+    console = [str(VPY), str(ROOT / "scripts" / "dev_console.py")]
+    if args.ngrok:
+        console.append("--ngrok")
+    if args.bind_all:
+        console.append("--bind-all")
+    os.execv(console[0], console)
+
+
+# ── users / tests ─────────────────────────────────────────────────────────────
+
+def cmd_user(args) -> None:
+    if _docker_running():
+        manage = _docker_manage()
+        info("Using the Docker deployment")
+    else:
+        if not VPY.exists():
+            die("No Docker deployment running and no local setup found. "
+                "Run ./custos deploy or ./custos setup first.")
+        manage = _local_manage()
+    show_password = False
+    if not sys.stdin.isatty():          # piped: echo "pw" | ./custos user add bob
+        password = sys.stdin.readline().rstrip("\n")
+    elif YES:                           # --yes: generate one and show it
+        password, show_password = secrets.token_urlsafe(12), True
+    else:
+        password = getpass.getpass("Password: ")
+        if getpass.getpass("Confirm password: ") != password:
+            die("Passwords do not match.")
+    sub = ["create-user", args.name, "--role", args.role] if args.action == "add" else ["reset-password", args.name]
+    res = run(manage + sub, input=password + "\n", capture=True, check=False)
+    print(res.stdout.strip() or res.stderr.strip())
+    if res.returncode == 0 and show_password:
+        print(_c("1;33", f"Password: {password}"))
+    sys.exit(res.returncode)
+
+
+_TEST_DB_URL = "postgresql+asyncpg://Custos:Custos@localhost:5432/custos_test"
+
+
+def cmd_test(args) -> None:
+    if not VPY.exists():
+        die("Run ./custos setup first.")
+    env = dict(os.environ)
+    if "TEST_DATABASE_URL" not in env:
+        psql = _psql()
+        if psql and _sql(psql, "SELECT 1 FROM pg_database WHERE datname='custos_test'").stdout.strip() != "1":
+            _sql(psql, 'CREATE DATABASE custos_test OWNER "Custos"')
+            info("Created test database custos_test")
+        env["TEST_DATABASE_URL"] = _TEST_DB_URL
+    sys.exit(subprocess.run([VPY, "-m", "pytest", *args.pytest_args], cwd=API, env=env).returncode)
+
+
+def cmd_lint(args) -> None:
+    if not VPY.exists():
+        die("Run ./custos setup first.")
+    py = subprocess.run([VENV / "bin" / "ruff", "check", "."], cwd=ROOT).returncode
+    js = subprocess.run(["npm", "run", "--silent", "lint"], cwd=DASH).returncode
+    sys.exit(py or js)
+
+
+def main() -> None:
+    global YES
+    parser = argparse.ArgumentParser(
+        prog="custos", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("-y", "--yes", action="store_true", help="accept defaults, no prompts")
+    sub = parser.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+
+    sub.add_parser("deploy", help="deploy or upgrade with Docker").set_defaults(fn=cmd_deploy)
+    p = sub.add_parser("dev", help="set up and run locally with live reload")
+    p.add_argument("--ngrok", action="store_true", help="open an ngrok tunnel for webhooks")
+    p.add_argument("--bind-all", action="store_true", help="listen on 0.0.0.0 (e.g. Tailscale)")
+    p.set_defaults(fn=cmd_dev)
+    sub.add_parser("setup", help="local setup only").set_defaults(fn=cmd_setup)
+    sub.add_parser("stop", help="stop the Docker deployment").set_defaults(fn=cmd_stop)
+    sub.add_parser("logs", help="follow Docker deployment logs").set_defaults(fn=cmd_logs)
+    p = sub.add_parser("user", help="add a user or reset a password")
+    p.add_argument("action", choices=("add", "reset"))
+    p.add_argument("name")
+    p.add_argument("--role", choices=("admin", "analyst"), default="analyst")
+    p.set_defaults(fn=cmd_user)
+    p = sub.add_parser("test", help="run the test suite (extra args go to pytest)")
+    p.add_argument("pytest_args", nargs=argparse.REMAINDER)
+    p.set_defaults(fn=cmd_test)
+    sub.add_parser("lint", help="ruff + eslint").set_defaults(fn=cmd_lint)
+
+    args = parser.parse_args()
+    YES = args.yes
+    try:
+        args.fn(args)
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

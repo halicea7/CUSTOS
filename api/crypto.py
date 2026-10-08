@@ -3,7 +3,7 @@
 Keys come from ENCRYPTION_KEY (comma-separated Fernet keys; the first encrypts,
 all decrypt). A key derived from SECRET_KEY is always appended as a decrypt-only
 fallback so rows written before ENCRYPTION_KEY existed stay readable. Run
-``python rotate_encryption.py`` to re-encrypt those rows under the new key.
+``python manage.py rotate-keys`` to re-encrypt those rows under the new key.
 """
 
 import base64

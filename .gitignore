@@ -13,7 +13,9 @@ pip-wheel-metadata/
 
 # Environment
 .env
+.env.bak
 api/.env
+api/.env.bak
 *.env.local
 
 # Alembic

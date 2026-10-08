@@ -1,6 +1,6 @@
 target-version = "py311"
 line-length = 120
-extend-exclude = ["dashboard", ".venv", "dev.py", "alembic/versions/000[1-5]_*.py"]
+extend-exclude = ["dashboard", ".venv", "scripts/dev_console.py", "alembic/versions/000[1-5]_*.py"]
 
 [lint]
 select = ["E", "F", "W", "B", "I", "UP"]

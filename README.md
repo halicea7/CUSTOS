@@ -37,7 +37,9 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 | PostgreSQL 16 | provided by compose | required |
 | Redis 7 | provided by compose | required |
 | Ollama | running separately | running separately |
-| git, Semgrep, Gitleaks, pip-audit | baked into the worker image | install on host (`make setup` offers to) |
+| git, Semgrep, Gitleaks, pip-audit | baked into the worker image | `./custos dev` installs Semgrep/pip-audit (and Gitleaks via Homebrew) |
+
+Everything goes through one launcher, **`./custos`** (`./custos --help`). It needs only `python3` to run and checks for everything else itself.
 
 > **Ollama note:** Custos deliberately keeps the LLM local — no code leaves your infrastructure. Ollama must be reachable from the worker. See [Ollama setup](#ollama-setup).
 
@@ -45,69 +47,46 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 
 ## Quick start — Docker
 
-### 1. Configure
-
 ```bash
 git clone https://github.com/halicea7/CUSTOS.git
 cd CUSTOS
-cp api/.env.example .env
+./custos deploy
 ```
 
-Fill in the secrets in `.env`:
+On first run this asks for your Ollama URL and model (Enter accepts the defaults), then:
 
-```bash
-SECRET_KEY=<python3 -c "import secrets; print(secrets.token_hex(32))">
-ENCRYPTION_KEY=<python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
-POSTGRES_PASSWORD=<any strong password>
-REDIS_PASSWORD=<any strong password>
-OLLAMA_BASE_URL=http://host.docker.internal:11434   # or your Ollama host
-OLLAMA_MODEL=qwen2.5-coder:32b
-```
+1. writes `.env` (mode 600) with a generated `SECRET_KEY`, `ENCRYPTION_KEY`, `POSTGRES_PASSWORD` and `REDIS_PASSWORD`. `DATABASE_URL`/`REDIS_URL` are assembled by compose;
+2. builds and starts PostgreSQL and Redis (password-protected, internal only), a one-shot `migrate` service, the API (bound to `127.0.0.1:8000`), the worker (git and all scanners installed) and the dashboard on port 3000;
+3. creates the first admin — choose a password, or leave it blank to have one generated.
 
-`DATABASE_URL` and `REDIS_URL` are assembled by compose from the passwords above; you don't set them for Docker.
+It prints the dashboard and webhook URLs when done. The dashboard's nginx proxies `/api/` to the API and is the only public entry point. Put TLS in front of it for anything beyond a laptop.
 
-### 2. Start
-
-```bash
-docker compose up --build -d      # or: make up
-```
-
-This starts PostgreSQL, Redis (password-protected, internal only), a one-shot `migrate` service that runs `alembic upgrade head`, the API (bound to `127.0.0.1:8000`), the worker (with git and all scanners installed), and the dashboard on port 3000. The API and worker wait for migrations to finish.
-
-### 3. Create the first admin user
-
-```bash
-docker compose exec api python create_user.py admin '<password>' admin
-```
-
-### 4. Open the dashboard
-
-`http://localhost:3000` — the dashboard's nginx proxies `/api/` to the API and is the only public entry point. Put TLS in front of it for anything beyond a laptop.
+- **Upgrade:** `git pull && ./custos deploy` (rebuilds, migrates, keeps `.env`).
+- **Back up `.env`:** losing `ENCRYPTION_KEY` means re-entering every repo token.
+- **Unattended:** `./custos --yes deploy` (a generated admin password is printed once).
+- `./custos logs`, `./custos stop`.
 
 ---
 
 ## Local development setup
 
-```bash
-git clone https://github.com/halicea7/CUSTOS.git
-cd CUSTOS
-make setup        # interactive wizard: venv, deps, database, api/.env, scanners, migrations
-make seed         # create an admin user
-make dev          # API + worker + Redis + Vite with a live log console
-```
-
-`make help` lists every target. Doing it by hand:
+Requires Python 3.11+, Node.js 20+, PostgreSQL 16, Redis and git (macOS: `brew install python node postgresql@16 redis`).
 
 ```bash
-make install                      # .venv + api/requirements-dev.txt + dashboard npm ci
-make db                           # create the local Postgres role/database
-make env                          # copy api/.env.example → api/.env, then fill in SECRET_KEY / ENCRYPTION_KEY
-make migrate                      # alembic upgrade head
-make api | make worker            # run pieces individually
-cd dashboard && npm run dev       # dashboard with HMR
+./custos dev                  # add --ngrok and/or --bind-all to start with those on
 ```
 
-The dev console (`./dev.py`) also toggles an ngrok tunnel (`n`) for receiving real webhooks and binding to `0.0.0.0` (`b`) for Tailscale access.
+The first run sets everything up, and later runs only redo what changed:
+
+- `.venv` and Python and dashboard dependencies;
+- Semgrep and pip-audit (plus Gitleaks via Homebrew);
+- starts PostgreSQL if needed and creates the `Custos` role and database;
+- `api/.env` with generated keys;
+- migrations and your first admin.
+
+Then it opens the live dev console, which runs Redis, the API, the worker and Vite. Console keys: `n` ngrok tunnel for real webhooks, `b` bind to `0.0.0.0` (e.g. Tailscale), `r` restart, `q` quit. Logs also go to `.dev-logs/`. `./custos setup` does the setup without starting the console.
+
+**Upgrading an older checkout** whose `api/.env` has no keys: just run `./custos dev`. It generates them and moves stored repo tokens (encrypted under the old default key) to the new `ENCRYPTION_KEY`. The previous file is kept as `api/.env.bak`.
 
 | Service | URL |
 |---|---|
@@ -124,7 +103,7 @@ Settings are read from environment variables (`api/.env` for local dev, `.env` a
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `SECRET_KEY` | yes | — | Signs login JWTs. The API and worker **refuse to start** if it is a known default or shorter than 32 characters. |
-| `ENCRYPTION_KEY` | yes | — | Fernet key encrypting stored GitHub tokens and webhook secrets. Comma-separate keys to rotate (first encrypts, all decrypt), then run `python api/rotate_encryption.py`. |
+| `ENCRYPTION_KEY` | yes | — | Fernet key encrypting stored GitHub tokens and webhook secrets. Generated by `./custos`. To rotate, prepend a new key (comma-separated; first encrypts, all decrypt), run `python manage.py rotate-keys` in `api/` (Docker: `docker compose exec api python manage.py rotate-keys`), then drop the old key. |
 | `ALLOW_INSECURE_DEFAULTS` | no | `false` | Local development only: start with a weak `SECRET_KEY` (logs a warning). |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no | `480` | Login session length |
 | `DATABASE_URL` | yes | local Postgres | Async PostgreSQL connection string |
@@ -177,7 +156,7 @@ If the LLM is unreachable or returns garbage, the run is recorded as **failed** 
 
 ## SAST tools
 
-The worker runs `semgrep`, `gitleaks`, `pip-audit` and `npm audit`, each with a timeout. A missing tool is logged and skipped. In Docker they are all installed in the `worker` image target; on a host, `make setup` offers to install them, or:
+The worker runs `semgrep`, `gitleaks`, `pip-audit` and `npm audit`, each with a timeout. A missing tool is logged and skipped. In Docker they are all installed in the `worker` image target; on a host, `./custos dev` installs them, or by hand:
 
 ```bash
 pip install semgrep pip-audit
@@ -211,11 +190,12 @@ Two roles: `analyst` and `admin`.
 - **Analysts** see only repositories they added or that belong to a group they are a member of. This applies to every endpoint — submissions, findings, audit logs, re-runs and sign-off. Anything outside that set returns 404.
 
 ```bash
-cd api && ../.venv/bin/python create_user.py <username> <password> [admin|analyst]
-cd api && ../.venv/bin/python reset_password.py <username> <new-password>
+./custos user add alice --role admin
+./custos user add bob                  # analyst
+./custos user reset alice
 ```
 
-There is no self-registration.
+This works against the Docker deployment or the local setup, whichever is running. Passwords are prompted for (or read from stdin when piped), never passed as arguments. There is no self-registration.
 
 ---
 
@@ -225,36 +205,34 @@ Custos analyses untrusted code, so the worker treats every repository as hostile
 
 - **Credentials never touch the checkout.** Commits are fetched with a depth-1 fetch of the exact SHA. The GitHub token is passed to git as an HTTP header via `GIT_CONFIG_*` environment variables, so it is not in the remote URL, `.git/config`, the process list or error messages. Stored errors are additionally scrubbed of anything credential-shaped.
 - **No repo-controlled execution.** Git hooks are disabled and the `file://` protocol is blocked; `pip-audit` runs with `--no-deps` (no package builds); `npm audit` is pinned to the public registry so a hostile `.npmrc` can't redirect it.
-- **No escaping the checkout.** Files sent to the LLM must be regular files inside the checkout; symlinks are never followed (so a repo can't exfiltrate e.g. `/app/.env` through the model).
+- **No escaping the checkout.** Files sent to the LLM must be regular files inside the checkout; symlinks are never followed (so a repo can't exfiltrate e.g. `/app/.env` through the model). Env files, private keys and credential stores are never sent to the model at all (Gitleaks still reports them). Only real 40-hex commit SHAs are ever passed to git.
+- **Jobs can't hang.** Each job enforces its own deadline just inside `worker_job_timeout`, so an overrun is recorded as failed immediately; a worker restart mid-job leaves the row for ARQ's retry to resume, and a reaper catches anything else.
 - **Prompt injection.** The system prompt is fixed in code and instructs the model to ignore instructions embedded in the source.
 - **Rendering.** Code snippets are always HTML-escaped (via highlight.js or an explicit escape) before display; nginx sends a strict Content-Security-Policy.
 - **Secrets at rest.** Repo tokens and webhook secrets are encrypted with `ENCRYPTION_KEY` (separate from the JWT key, rotatable).
-- **Webhooks.** HMAC-SHA256 verified per repo; unknown repos and bad signatures get an identical response; redeliveries are de-duplicated.
+- **Webhooks.** HMAC-SHA256 verified per repo; unknown repos and bad signatures get an identical response; redeliveries are de-duplicated; branch deletions and tag pushes are ignored.
+- **Logins.** Failed attempts are rate-limited per username + client IP. nginx overwrites `X-Forwarded-For` with the real peer address, so clients can't rotate fake IPs to dodge the limit.
 
 ---
 
 ## Testing and CI
 
 ```bash
-# Tests need a PostgreSQL database; for example:
-docker run -d -p 5432:5432 -e POSTGRES_USER=custos -e POSTGRES_PASSWORD=custos \
-  -e POSTGRES_DB=custos_test postgres:16-alpine
-
-make test               # pytest (API, access control, webhook, worker pipeline, parsers)
-make lint               # ruff + eslint
-make check-migrations   # fail if models and migrations have drifted
+./custos test           # pytest; creates a local custos_test database if needed (args pass through)
+./custos lint           # ruff + eslint
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs lint, the test suite against Postgres, a full migration up/down round-trip with `alembic check`, the dashboard lint + build, and builds all three Docker images.
+GitHub Actions (`.github/workflows/ci.yml`) runs lint, the test suite against Postgres, a full migration up/down round-trip with `alembic check`, the dashboard lint + build, builds all three Docker images, and finally runs **`./custos --yes deploy` end to end**. That last job checks the generated secrets, that the scanners exist only in the worker image, that nothing secret is baked into the images, login through the nginx proxy, that spoofed `X-Forwarded-For` can't dodge the rate limit, that only the dashboard port is exposed, and that re-deploying leaves `.env` untouched.
 
 ---
 
 ## Useful commands
 
 ```bash
-make dev                  # full local stack with live logs
-make migrate              # alembic upgrade head
-make health               # curl the API health endpoint
-make up | down | logs     # Docker stack
-docker compose down -v    # stop and delete the database volume
+./custos --help           # all launcher commands
+./custos dev              # full local stack with live logs
+./custos deploy           # Docker deploy / upgrade
+./custos logs | stop      # Docker stack
+./custos user add NAME    # create a login
+docker compose down -v    # stop and DELETE the database volume
 ```
