@@ -34,9 +34,9 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 | PostgreSQL 16 | provided by compose | required |
 | Redis 7 | provided by compose | required |
 | Ollama | running separately | running separately |
-| Semgrep | add to Dockerfile | install on host |
-| Gitleaks | add to Dockerfile | install on host |
-| pip-audit | add to Dockerfile | install on host |
+| Semgrep | included in image | install on host |
+| Gitleaks | included in image | install on host |
+| pip-audit | included in image | installed via requirements |
 
 > **Ollama note:** Custos deliberately keeps the LLM local — no code leaves your infrastructure. Ollama must be running and reachable on a host or VM accessible to the API/worker process. See [Ollama setup](#ollama-setup).
 
@@ -59,13 +59,14 @@ Edit `.env` and fill in the required values. For Docker, the service hostnames a
 ```bash
 # .env (project root, for Docker)
 SECRET_KEY=<run: python3 -c "import secrets; print(secrets.token_hex(32))">
+ENCRYPTION_KEY=<a second, different value generated the same way>
 DATABASE_URL=postgresql+asyncpg://Custos:Custos@postgres:5432/Custos
 REDIS_URL=redis://redis:6379
 OLLAMA_BASE_URL=http://host.docker.internal:11434   # or your Ollama host
 OLLAMA_MODEL=qwen2.5-coder:32b
-GITHUB_WEBHOOK_SECRET=<your-webhook-secret>
-GITHUB_TOKEN=<ghp_your_token>
 ```
+
+GitHub tokens and webhook secrets are configured per repository in the dashboard (Repos page), not in `.env`.
 
 ### 2. Start services
 
@@ -75,31 +76,14 @@ docker compose up --build -d
 
 This starts: PostgreSQL, Redis, API (port 8000), ARQ worker, and Dashboard (port 3000).
 
-### 3. Run database migrations
+### 3. Database migrations
 
-Migrations run from the project root using the Python venv (the alembic directory lives outside the Docker image). If you haven't set up the venv yet, do it once:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r api/requirements.txt
-```
-
-Then run migrations against the Docker Postgres (exposed on localhost:5432):
-
-```bash
-# Temporarily point at localhost for the migration run
-DATABASE_URL=postgresql+asyncpg://Custos:Custos@localhost:5432/Custos \
-  alembic upgrade head
-```
+The `migrate` service runs `alembic upgrade head` automatically before the API and worker start. Postgres and Redis are only reachable on the compose network (no host ports).
 
 ### 4. Create the first admin user
 
 ```bash
-source .venv/bin/activate
-cd api
-python create_user.py admin yourpassword admin
-cd ..
+docker compose exec api python create_user.py admin yourpassword admin
 ```
 
 ### 5. Open the dashboard
@@ -124,7 +108,7 @@ cd CUSTOS
 
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r api/requirements.txt
+pip install -r api/requirements-dev.txt
 ```
 
 ### 2. Start PostgreSQL and Redis
@@ -159,12 +143,11 @@ Edit `api/.env`. For local dev, leave `DATABASE_URL` and `REDIS_URL` pointing at
 ```bash
 # api/.env
 SECRET_KEY=<run: python3 -c "import secrets; print(secrets.token_hex(32))">
+ENCRYPTION_KEY=<a second, different value generated the same way>
 DATABASE_URL=postgresql+asyncpg://Custos:Custos@localhost:5432/Custos
 REDIS_URL=redis://localhost:6379
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen2.5-coder:32b
-GITHUB_WEBHOOK_SECRET=<your-webhook-secret>
-GITHUB_TOKEN=<ghp_your_token>
 ```
 
 ### 5. Run migrations
@@ -222,17 +205,28 @@ All settings are read from environment variables (or `api/.env` for local dev / 
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SECRET_KEY` | yes | `changeme` | JWT signing key — **must be changed in production** |
+| `SECRET_KEY` | yes | — | JWT signing key, at least 32 chars. The API and worker **refuse to start** if it is unset or a known default |
+| `ENCRYPTION_KEY` | recommended | `SECRET_KEY` | Encrypts stored GitHub tokens / webhook secrets. Keep it separate so `SECRET_KEY` can be rotated independently |
+| `PREVIOUS_ENCRYPTION_KEYS` | no | — | Comma-separated old encryption keys, accepted for decryption during a rotation (see below) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no | `480` | Login session length |
 | `DATABASE_URL` | yes | `postgresql+asyncpg://Custos:Custos@localhost:5432/Custos` | Async PostgreSQL connection string |
 | `REDIS_URL` | yes | `redis://localhost:6379` | Redis connection string |
 | `OLLAMA_BASE_URL` | yes | `http://localhost:11434` | Base URL for the Ollama API |
 | `OLLAMA_MODEL` | yes | `qwen2.5-coder:32b` | Model name as it appears in `ollama list` |
-| `GITHUB_WEBHOOK_SECRET` | yes | — | Shared secret for HMAC webhook validation |
-| `GITHUB_TOKEN` | yes | — | PAT with `Contents: Read` and `Checks: Write` scopes |
+| `SEMGREP_CONFIG` | no | `auto` | Semgrep ruleset. `auto` downloads rules from the Semgrep registry and requires sending usage metrics (never code); set a local rules path for fully offline scanning |
 | `CLONE_BASE_DIR` | no | `/tmp/Custos_clones` | Temp directory for repository clones |
 | `MAX_FILE_SIZE_KB` | no | `500` | Files larger than this are skipped by the LLM context builder |
 | `MAX_FILES_PER_REPO` | no | `200` | Maximum number of files fed to the LLM per scan |
+
+### Rotating the encryption key
+
+Repo credentials are encrypted at rest. To change `ENCRYPTION_KEY` (or `SECRET_KEY`, if `ENCRYPTION_KEY` is unset) without losing them:
+
+1. Set the new key, and put the old one in `PREVIOUS_ENCRYPTION_KEYS`.
+2. `cd api && python rotate_keys.py`
+3. Remove `PREVIOUS_ENCRYPTION_KEYS`.
+
+Installs that previously ran on the default `changeme` key should do this with `PREVIOUS_ENCRYPTION_KEYS=changeme`.
 
 Additional runtime settings (editable through the dashboard Settings page):
 
@@ -242,6 +236,8 @@ Additional runtime settings (editable through the dashboard Settings page):
 | `ollama_num_ctx` | Context window size in tokens (0 = use Modelfile default) |
 | `ollama_think` | Enable extended thinking for supported models |
 | `llm_max_content_chars` | Maximum characters of source code sent per LLM call |
+| `max_file_size_kb` / `max_files_per_repo` | Override the env limits above; take effect on the next job |
+| `worker_max_jobs` / `worker_job_timeout` | Worker concurrency and per-job timeout; take effect on worker restart |
 
 ---
 
@@ -315,13 +311,7 @@ pip install pip-audit
 
 ### Docker note
 
-The provided `api/Dockerfile` does not install SAST tools. To enable scanning inside Docker, add the following to `api/Dockerfile` before the `CMD` line:
-
-```dockerfile
-RUN pip install semgrep pip-audit && \
-    curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
-    | tar -xz -C /usr/local/bin gitleaks
-```
+The `api/Dockerfile` installs Semgrep, Gitleaks, pip-audit, git and npm, so scans work out of the box in Docker.
 
 ---
 

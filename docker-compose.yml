@@ -1,41 +1,56 @@
-version: "3.9"
-
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    env_file: .env
+    working_dir: /app
+    command: alembic upgrade head
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     ports:
       - "8000:8000"
     env_file: .env
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_started
     command: uvicorn main:app --host 0.0.0.0 --port 8000
 
   worker:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     env_file: .env
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_started
     command: python -m arq worker.queue.WorkerSettings
 
+  # Redis and Postgres are reachable only on the compose network — no host
+  # ports. Uncomment a "127.0.0.1:..." mapping if you need local access.
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # ports:
+    #   - "127.0.0.1:6379:6379"
 
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: Custos
-      POSTGRES_PASSWORD: Custos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Custos}
       POSTGRES_DB: Custos
-    ports:
-      - "5432:5432"
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
