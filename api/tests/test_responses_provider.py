@@ -209,7 +209,7 @@ async def test_connection_test_uses_stored_key_and_lists_models(client, db, monk
                         functools.partial(httpx.AsyncClient, transport=httpx.MockTransport(handler)))
     resp = await client.post("/settings/config/test-responses", headers=h,
                              json={"base_url": "https://llm.example/v1"})
-    assert resp.json() == {"ok": True, "models": ["gpt-a", "gpt-b"]}
+    assert resp.json()["ok"] is True and resp.json()["models"] == ["gpt-a", "gpt-b"]
     assert seen == {"url": "https://llm.example/v1/models", "auth": f"Bearer {KEY}"}
     assert KEY not in resp.text
 
@@ -308,3 +308,138 @@ async def test_connection_test_without_key_says_a_key_is_needed(client, db, monk
                              json={"base_url": "https://llm.example/v1"})
     body = resp.json()
     assert body["ok"] is False and body["needs_key"] is True and "needs an API key" in body["error"]
+
+
+# ── Explicit per-host exception for plain HTTP ────────────────────────────────
+
+HTTP_BASE = "http://mindrouter.example.edu/v1"
+HTTP_ORIGIN = "http://mindrouter.example.edu:80"
+
+
+async def test_plain_http_needs_an_explicit_per_host_exception(client, db):
+    await make_user(db, "root", role="admin")
+    h = auth_headers("root")
+    body = {"llm_provider": "responses", "responses_model": "m",
+            "responses_base_url": HTTP_BASE, "responses_api_key": KEY}
+
+    refused = await client.patch("/settings/config", headers=h, json=body)
+    assert refused.status_code == 422 and "explicitly allow plain HTTP" in refused.text
+
+    # The exception must name the base URL's own http:// host.
+    wrong = await client.patch("/settings/config", headers=h,
+                               json={**body, "responses_http_allowed_origin": "http://other.example.edu:80"})
+    assert wrong.status_code == 422
+
+    ok = await client.patch("/settings/config", headers=h,
+                            json={**body, "responses_http_allowed_origin": HTTP_ORIGIN})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["responses_http_allowed_origin"] == HTTP_ORIGIN
+
+    # It covers that host only: a different http:// host is still refused
+    # (even with a freshly entered key).
+    other = await client.patch("/settings/config", headers=h, json={
+        "responses_base_url": "http://elsewhere.example.edu/v1", "responses_api_key": KEY})
+    assert other.status_code == 422
+
+    # Revoking it makes the existing configuration fail validation again.
+    revoked = await client.patch("/settings/config", headers=h,
+                                 json={"responses_http_allowed_origin": ""})
+    assert revoked.status_code == 422
+
+
+async def test_connection_test_over_http_needs_confirmation(client, db, monkeypatch):
+    from routers import settings as settings_router
+
+    await make_user(db, "root", role="admin")
+    h = auth_headers("root")
+    monkeypatch.setattr(settings_router.httpx, "AsyncClient", functools.partial(
+        httpx.AsyncClient, transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"data": [{"id": "llama"}]}))))
+    body = {"base_url": HTTP_BASE, "api_key": KEY}
+    assert (await client.post("/settings/config/test-responses", headers=h, json=body)).status_code == 422
+    ok = await client.post("/settings/config/test-responses", headers=h, json={**body, "allow_http": True})
+    assert ok.json()["ok"] is True and ok.json()["models"] == ["llama"]
+
+
+# ── Model lists with "think" capability ───────────────────────────────────────
+
+async def test_ollama_model_list_reports_thinking(client, db, monkeypatch):
+    from routers import settings as settings_router
+
+    await make_user(db, "root", role="admin")
+    caps = {"qwen3:8b": ["completion", "tools", "thinking"], "llama3:8b": ["completion"]}
+
+    def handler(request):
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [
+                {"name": n, "details": {"parameter_size": "8B"}} for n in [*caps, "old:1b"]]})
+        name = json.loads(request.content)["model"]
+        if name == "old:1b":
+            return httpx.Response(200, json={"modelfile": "..."})  # older Ollama: no capabilities field
+        return httpx.Response(200, json={"capabilities": caps[name]})
+
+    monkeypatch.setattr(settings_router.httpx, "AsyncClient", functools.partial(
+        httpx.AsyncClient, transport=httpx.MockTransport(handler)))
+    resp = await client.get("/settings/config/test-ollama", headers=auth_headers("root"),
+                            params={"url": "http://ollama:11434"})
+    body = resp.json()
+    assert body["ok"] and body["models"] == ["qwen3:8b", "llama3:8b", "old:1b"]
+    assert {d["name"]: d["thinking"] for d in body["details"]} == \
+        {"qwen3:8b": True, "llama3:8b": False, "old:1b": None}
+    assert body["details"][0]["parameter_size"] == "8B"
+
+
+@pytest.mark.parametrize("model,expected", [
+    ({"id": "a", "supported_parameters": ["tools", "reasoning"]}, True),   # OpenRouter style
+    ({"id": "a", "supported_parameters": ["tools"]}, False),
+    ({"id": "a", "capabilities": ["chat", "thinking"]}, True),
+    ({"id": "a", "capabilities": {"reasoning": False}}, False),
+    ({"id": "o3-mini"}, None),  # plain OpenAI format: unknown, never guessed from the name
+])
+def test_reasoning_support_from_model_metadata(model, expected):
+    from routers.settings import model_reasoning_support
+    assert model_reasoning_support(model) is expected
+
+
+# ── Thinking / output cap / MindRouter metadata ───────────────────────────────
+
+@pytest.mark.parametrize("effort,max_out,expected_reasoning,expected_max", [
+    ("", 0, None, None),                       # model default: send nothing
+    ("none", 0, {"effort": "none"}, None),     # explicitly off
+    ("high", 8192, {"effort": "high"}, 8192),
+])
+async def test_reasoning_and_output_cap_in_request(effort, max_out, expected_reasoning, expected_max):
+    provider = LlmProvider(kind=PROVIDER_RESPONSES, base_url="https://llm.example/v1", model="m",
+                           api_key=KEY, reasoning_effort=effort, max_output_tokens=max_out)
+    _, [req] = await _run(lambda r, n: httpx.Response(200, json=_ok_body(json.dumps(FINDINGS))), provider)
+    body = json.loads(req.content)
+    assert body.get("reasoning") == expected_reasoning
+    assert body.get("max_output_tokens") == expected_max
+
+
+async def test_rejected_reasoning_gives_actionable_error():
+    provider = LlmProvider(kind=PROVIDER_RESPONSES, base_url="https://llm.example/v1", model="m",
+                           api_key=KEY, reasoning_effort="high")
+    with pytest.raises(LlmError, match="set Thinking to Model default"):
+        await _run(lambda r, n: httpx.Response(
+            400, json={"error": {"message": "Unsupported parameter: reasoning.effort"}}), provider)
+
+
+async def test_mindrouter_model_metadata(client, db, monkeypatch):
+    """Shape copied from a MindRouter /v1/models entry."""
+    from routers import settings as settings_router
+
+    await make_user(db, "root", role="admin")
+    entry = {"id": "example-31b", "object": "model", "owned_by": "mindrouter",
+             "capabilities": {"multimodal": True, "embeddings": False, "structured_output": True,
+                              "thinking": True, "tools": True},
+             "backends": ["ollama-node-1"], "context_length": 244000, "model_max_context": None}
+    plain = {"id": "embed-x", "capabilities": {"thinking": False}, "context_length": None}
+    monkeypatch.setattr(settings_router.httpx, "AsyncClient", functools.partial(
+        httpx.AsyncClient, transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"data": [entry, plain]}))))
+    resp = await client.post("/settings/config/test-responses", headers=auth_headers("root"),
+                             json={"base_url": "https://mindrouter.example.edu/v1"})
+    details = {d["name"]: d for d in resp.json()["details"]}
+    assert details["example-31b"] == {"name": "example-31b", "thinking": True, "context_length": 244000}
+    assert details["embed-x"] == {"name": "embed-x", "thinking": False, "context_length": None}

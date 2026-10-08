@@ -154,6 +154,11 @@ class UpdateUserRoleRequest(BaseModel):
 class AppConfigResponse(BaseModel):
     # Registered repo that is Custos's own source ("" = self-update off).
     self_update_repo: str = ""
+    # Responses API "thinking" (reasoning.effort; "" = off) and output cap (0 = server default).
+    responses_reasoning_effort: str = ""
+    responses_max_output_tokens: int = 0
+    # http:// origin an admin explicitly allowed for the Responses API key.
+    responses_http_allowed_origin: str | None = None
     # SentinelOne CNS layer. The token itself is write-only.
     s1_enabled: bool = False
     s1_console_url: str = ""
@@ -195,6 +200,12 @@ class AppConfigResponse(BaseModel):
 class AppConfigUpdateRequest(BaseModel):
     # "" turns self-update off.
     self_update_repo: str | None = Field(None, max_length=200)
+    # "" = model default (send nothing); "none" = explicitly off.
+    responses_reasoning_effort: Literal["", "none", "low", "medium", "high"] | None = None
+    responses_max_output_tokens: int | None = Field(None, ge=0, le=1_000_000)
+    # Allow plain HTTP for this exact http:// origin (must match the base
+    # URL's origin); "" revokes the exception.
+    responses_http_allowed_origin: str | None = Field(None, max_length=300)
     s1_enabled: bool | None = None
     s1_console_url: str | None = Field(None, pattern=r"^https://[^\s/]+/?$", max_length=300)
     s1_scope_type: Literal["ACCOUNT", "SITE"] | None = None
@@ -231,6 +242,8 @@ class TestS1Request(BaseModel):
 class TestResponsesRequest(BaseModel):
     base_url: str = Field(..., pattern=r"^https?://[^\s]+$", max_length=500)
     api_key: str | None = Field(None, max_length=1000)
+    # The admin confirmed plain HTTP for this host in the UI (not yet saved).
+    allow_http: bool = False
 
 
 # ── Repo schemas ───────────────────────────────────────────────────────────────

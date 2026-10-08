@@ -27,12 +27,17 @@ S1_SCANNERS = ("secret", "iac", "vuln")
 # The registered repo that is Custos's own source. Signing off its commits
 # approves them for `./custos update` to deploy.
 SELF_UPDATE_REPO = "self_update_repo"
+# An admin's explicit, per-host exception to the "no API key over plain HTTP
+# to non-local hosts" rule (e.g. a campus LLM gateway without TLS). Holds the
+# exact http:// origin it was granted for; any other host is still refused.
+RESPONSES_HTTP_ALLOWED_ORIGIN = "responses_http_allowed_origin"
 
 CONFIG_KEYS = {
     "llm_provider", "responses_base_url", "responses_model", RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN,
     "s1_enabled", "s1_console_url", "s1_scope_type", "s1_scope_id", "s1_scanners",
     "s1_verify_secrets", "s1_publish", S1_TOKEN, S1_TOKEN_ORIGIN,
-    SELF_UPDATE_REPO,
+    SELF_UPDATE_REPO, RESPONSES_HTTP_ALLOWED_ORIGIN,
+    "responses_reasoning_effort", "responses_max_output_tokens",
     "ollama_base_url", "ollama_model", "ollama_think", "ollama_num_ctx",
     "llm_max_content_chars",
     "max_file_size_kb", "max_files_per_repo",
@@ -54,6 +59,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
     s1_scanners = [s for s in ov.get("s1_scanners", ",".join(S1_SCANNERS)).split(",") if s in S1_SCANNERS]
     return AppConfigResponse(
         self_update_repo=ov.get(SELF_UPDATE_REPO, ""),
+        responses_http_allowed_origin=ov.get(RESPONSES_HTTP_ALLOWED_ORIGIN) or None,
         s1_enabled=_bool(ov.get("s1_enabled"), settings.S1_ENABLED),
         s1_console_url=s1_console_url,
         s1_scope_type=ov.get("s1_scope_type", settings.S1_SCOPE_TYPE),
@@ -68,6 +74,8 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
         responses_base_url=responses_base_url,
         responses_api_key_origin=ov.get(RESPONSES_API_KEY_ORIGIN),
         responses_model=ov.get("responses_model", settings.RESPONSES_MODEL),
+        responses_reasoning_effort=ov.get("responses_reasoning_effort", ""),
+        responses_max_output_tokens=int(ov.get("responses_max_output_tokens", 0)),
         responses_api_key_set=bool(api_key),
         responses_api_key_last4=api_key[-4:] if len(api_key) >= 8 else None,
         ollama_base_url=ov.get("ollama_base_url", settings.OLLAMA_BASE_URL).rstrip("/"),

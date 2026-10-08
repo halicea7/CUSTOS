@@ -10,6 +10,7 @@ from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
     CONFIG_KEYS,
     RESPONSES_API_KEY,
     RESPONSES_API_KEY_ORIGIN,
+    RESPONSES_HTTP_ALLOWED_ORIGIN,
     S1_TOKEN,
     S1_TOKEN_ORIGIN,
     is_local_url,
@@ -121,19 +122,42 @@ async def test_ollama(
     url: str = Query(..., description="Ollama base URL to test", pattern=r"^https?://[^\s]+$"),
     _: User = Depends(require_admin),
 ):
+    base = url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(f"{url.rstrip('/')}/api/tags")
+            resp = await client.get(f"{base}/api/tags")
             resp.raise_for_status()
-            data = resp.json()
-            models = [m["name"] for m in data.get("models", [])]
+            tags = resp.json().get("models", [])
+            names = [m["name"] for m in tags]
+            # /api/show reports each model's capabilities (incl. "thinking").
+            sem = asyncio.Semaphore(4)
+
+            async def show(name: str) -> list[str] | None:
+                async with sem:
+                    try:
+                        r = await client.post(f"{base}/api/show", json={"model": name})
+                        caps = r.json().get("capabilities") if r.status_code == 200 else None
+                    except (httpx.HTTPError, ValueError):
+                        return None
+                return [str(c) for c in caps] if isinstance(caps, list) else None
+
+            caps = await asyncio.gather(*(show(n) for n in names[:_MAX_MODEL_DETAILS]))
     except httpx.ConnectError:
         return {"ok": False, "error": "Connection refused — is Ollama running?", "models": []}
     except httpx.TimeoutException:
         return {"ok": False, "error": "Request timed out after 8s", "models": []}
     except Exception as exc:
         return {"ok": False, "error": type(exc).__name__, "models": []}
-    return {"ok": True, "models": models}
+    details = []
+    for i, m in enumerate(tags):
+        c = caps[i] if i < len(caps) else None
+        details.append({
+            "name": m["name"],
+            "parameter_size": (m.get("details") or {}).get("parameter_size"),
+            # True/False when Ollama reports capabilities; None when it doesn't (older Ollama).
+            "thinking": None if c is None else "thinking" in c,
+        })
+    return {"ok": True, "models": names, "details": details}
 
 
 async def _store_bound_secret(db, key: str, origin_key: str, secret: str, url: str, username: str) -> None:
@@ -150,12 +174,16 @@ async def _store_bound_secret(db, key: str, origin_key: str, secret: str, url: s
             db.add(AppConfig(key=k, value=value, updated_by=username))
 
 
-def _check_responses_target(base_url: str, has_key: bool) -> None:
-    if has_key and base_url.lower().startswith("http://") and not is_local_url(base_url):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "Refusing to send an API key over plain HTTP to a non-local host — use https://",
-        )
+def _check_responses_target(base_url: str, has_key: bool, allowed_http_origin: str | None = None) -> None:
+    if not (has_key and base_url.lower().startswith("http://") and not is_local_url(base_url)):
+        return
+    if allowed_http_origin and url_origin(base_url) == allowed_http_origin:
+        return  # an admin explicitly accepted plain HTTP for exactly this host
+    raise HTTPException(
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "Refusing to send an API key over plain HTTP to a non-local host — use https://, "
+        "or explicitly allow plain HTTP for this host",
+    )
 
 
 @router.post("/config/test-responses")
@@ -176,7 +204,9 @@ async def test_responses(
         if saved_origin and saved_origin != url_origin(body.base_url):
             return {"ok": False, "models": [],
                     "error": f"The saved key is only sent to {saved_origin} — enter the key to test this host"}
-    _check_responses_target(body.base_url, bool(api_key))
+    allowed = url_origin(body.base_url) if body.allow_http else \
+        (await load_app_config(db)).responses_http_allowed_origin
+    _check_responses_target(body.base_url, bool(api_key), allowed)
     models_url = responses_endpoint(body.base_url).removesuffix("/responses") + "/models"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
@@ -199,11 +229,40 @@ async def test_responses(
     if resp.status_code >= 400:
         return {"ok": False, "error": f"HTTP {resp.status_code}", "models": []}
     try:
-        data = resp.json().get("data", [])
-        models = sorted({m["id"] for m in data if isinstance(m, dict) and m.get("id")})
+        data = [m for m in resp.json().get("data", []) if isinstance(m, dict) and m.get("id")]
     except (ValueError, AttributeError):
-        models = []
-    return {"ok": True, "models": models[:300]}
+        data = []
+    by_id = {m["id"]: m for m in data}
+    models = sorted(by_id)[:300]
+    return {"ok": True, "models": models,
+            "details": [{"name": i, "thinking": model_reasoning_support(by_id[i]),
+                         "context_length": _int_or_none(by_id[i].get("context_length"))} for i in models]}
+
+
+_MAX_MODEL_DETAILS = 60
+
+
+def _int_or_none(v) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
+def model_reasoning_support(model: dict) -> bool | None:
+    """Whether a /v1/models entry says the model reasons ("thinks").
+
+    The OpenAI format has no capability field; some gateways add one. Only
+    explicit metadata counts — None means unknown, never a guess from the name.
+    """
+    params = model.get("supported_parameters")
+    if isinstance(params, list):
+        return any(p in ("reasoning", "include_reasoning", "reasoning_effort") for p in params)
+    caps = model.get("capabilities")
+    if isinstance(caps, list):
+        return any(str(c).lower() in ("thinking", "reasoning") for c in caps)
+    if isinstance(caps, dict):
+        for key in ("thinking", "reasoning"):
+            if key in caps:
+                return bool(caps[key])
+    return None
 
 
 S1_LATEST_VERSION_API = "/web/api/v2.1/cnapp/cli/latest-version"
@@ -289,7 +348,17 @@ async def update_config(
     key_set = bool(api_key) if api_key is not None else bool(
         await load_responses_api_key(db, base_url)
     )
-    _check_responses_target(base_url, key_set)
+    http_origin = updates.pop("responses_http_allowed_origin", None)
+    if http_origin:
+        if not base_url.lower().startswith("http://") or url_origin(base_url) != http_origin:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "The plain-HTTP exception must be for the base URL's own http:// host")
+    if http_origin is not None:
+        updates[RESPONSES_HTTP_ALLOWED_ORIGIN] = http_origin  # "" revokes
+    _check_responses_target(
+        base_url, key_set,
+        http_origin if http_origin is not None else current.responses_http_allowed_origin,
+    )
     if provider == "responses" and not updates.get("responses_model", current.responses_model):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Set a model for the Responses API provider")
 

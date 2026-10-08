@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useId, useState } from "react";
+import React, { createContext, useContext, useId, useRef, useState } from "react";
 
 // Field gives its control an id and label/error wiring through context, so
 // every input inside a Field is labelled for screen readers automatically.
@@ -180,7 +180,7 @@ export function ChoiceCards({ theme, name, value, onChange, options }) {
             boxShadow: focused === o.value ? `0 0 0 3px ${theme.c.accentBg}` : "none",
             outline: focused === o.value ? `1px solid ${theme.c.accent}` : "none",
           }}>
-            <input type="radio" name={name} value={o.value} checked={on}
+            <input type="radio" name={name} value={o.value} checked={on} aria-label={o.label}
               onChange={() => onChange(o.value)}
               onFocus={() => setFocused(o.value)} onBlur={() => setFocused(null)}
               style={{ position: "absolute", opacity: 0, width: 1, height: 1 }} />
@@ -236,6 +236,104 @@ export function Modal({ theme, title, subtitle, onClose, children, width = 480 }
         </div>
         <div style={{ padding: 20 }}>{children}</div>
       </div>
+    </div>
+  );
+}
+
+// Whether a model supports thinking/reasoning: true, false, or null (unknown).
+export function ThinkBadge({ theme, value }) {
+  const t = theme;
+  const [text, color, title] = value === true
+    ? ["think", t.c.accent, "Supports thinking / reasoning"]
+    : value === false
+      ? ["no think", t.c.text3, "Does not support thinking"]
+      : ["?", t.c.text3, "The server doesn't report whether this model can think"];
+  return (
+    <span title={title} style={{ flexShrink: 0, padding: "1px 7px", borderRadius: 999, fontSize: 10.5,
+      fontWeight: 600, letterSpacing: "0.02em", color, border: `1px solid ${color}55`,
+      background: value === true ? t.c.accentBg : "transparent" }}>{text}</span>
+  );
+}
+
+// Free-text model field with a dropdown of the server's models (ARIA combobox).
+// *models*: [{ name, thinking: true|false|null, parameter_size? }] or null.
+export function ModelPicker({ theme, value, onChange, models, placeholder }) {
+  const t = theme;
+  const field = useFieldProps();
+  const listId = `${field.id || "model"}-listbox`;
+  const wrap = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(-1);
+  const [focus, setFocus] = useState(false);
+  const all = models || [];
+  const options = query ? all.filter((m) => m.name.toLowerCase().includes(query.toLowerCase())) : all;
+  const invalid = !!field["aria-invalid"];
+
+  const pick = (name) => { onChange(name); setOpen(false); setQuery(""); setActive(-1); };
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) { setOpen(true); setActive(0); return; }
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      setActive((a) => (options.length ? (a + step + options.length) % options.length : -1));
+    } else if (e.key === "Enter" && open && active >= 0 && options[active]) {
+      e.preventDefault();
+      pick(options[active].name);
+    } else if (e.key === "Escape" && open) {
+      e.preventDefault();
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div ref={wrap} style={{ position: "relative" }}
+      onBlur={(e) => { if (!wrap.current?.contains(e.relatedTarget)) setOpen(false); }}>
+      <div style={{ display: "flex", alignItems: "stretch", borderRadius: theme.radius,
+        border: `1px solid ${invalid ? t.sev.critical.fg : focus ? t.c.accent : t.c.border}`,
+        boxShadow: focus ? `0 0 0 3px ${t.c.accentBg}` : "none", background: t.c.bg }}>
+        <input {...field} role="combobox" aria-expanded={open} aria-controls={listId}
+          aria-autocomplete="list" autoComplete="off"
+          aria-activedescendant={open && active >= 0 ? `${listId}-${active}` : undefined}
+          value={value || ""} placeholder={placeholder}
+          onChange={(e) => { onChange(e.target.value); setQuery(e.target.value); setOpen(true); setActive(-1); }}
+          onKeyDown={onKeyDown}
+          onFocus={() => setFocus(true)} onBlurCapture={() => setFocus(false)}
+          style={{ flex: 1, minWidth: 0, padding: "9px 12px", fontSize: 13, color: t.c.text,
+            fontFamily: t.fontMono, background: "transparent", border: "none", outline: "none" }} />
+        <button type="button" tabIndex={-1} aria-label="Show available models"
+          onClick={() => { setOpen((o) => !o); setQuery(""); setActive(-1); }}
+          style={{ padding: "0 12px", background: "none", border: "none",
+            borderLeft: `1px solid ${t.c.border}`, color: t.c.text2, cursor: "pointer", fontSize: 12 }}>
+          {all.length ? `${all.length} ▾` : "▾"}
+        </button>
+      </div>
+      {open && (
+        <ul role="listbox" id={listId} style={{ position: "absolute", zIndex: 30, left: 0, right: 0,
+          top: "calc(100% + 4px)", margin: 0, padding: 4, listStyle: "none", maxHeight: 280, overflowY: "auto",
+          background: t.c.surface, border: `1px solid ${t.c.border2}`, borderRadius: theme.radius,
+          boxShadow: t.c.shadowHi }}>
+          {options.length === 0 && (
+            <li style={{ padding: "8px 10px", fontSize: 12, color: t.c.text3 }}>
+              {all.length ? "No matching models — the typed name will be used as-is"
+                : "No model list yet — run the connection test, or type the name"}
+            </li>
+          )}
+          {options.map((m, i) => (
+            <li key={m.name} id={`${listId}-${i}`} role="option" aria-selected={m.name === value}
+              onMouseDown={(e) => { e.preventDefault(); pick(m.name); }}
+              onMouseEnter={() => setActive(i)}
+              style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer",
+                borderRadius: theme.radius - 3,
+                background: i === active ? t.c.raised2 : m.name === value ? t.c.accentBg : "transparent" }}>
+              <span style={{ flex: 1, minWidth: 0, fontFamily: t.fontMono, fontSize: 12.5, color: t.c.text,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</span>
+              {m.parameter_size && <span style={{ fontSize: 11, color: t.c.text3 }}>{m.parameter_size}</span>}
+              <ThinkBadge theme={t} value={m.thinking} />
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -155,6 +155,11 @@ class LlmProvider:
     api_key: str = field(default="", repr=False)
     ollama_think: bool = False
     ollama_num_ctx: int = 0
+    # Responses API reasoning.effort: "" = don't send (model default),
+    # "none" = explicitly off, or "low"/"medium"/"high".
+    reasoning_effort: str = ""
+    # Responses API: cap on generated tokens; 0 = the server's default.
+    max_output_tokens: int = 0
 
     @property
     def label(self) -> str:
@@ -318,6 +323,10 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
         # Don't let the provider retain the code under review.
         "store": False,
     }
+    if provider.reasoning_effort:
+        payload["reasoning"] = {"effort": provider.reasoning_effort}
+    if provider.max_output_tokens > 0:
+        payload["max_output_tokens"] = provider.max_output_tokens
 
     resp = None
     for fmt in _RESPONSES_FORMATS:
@@ -336,6 +345,9 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
 
     if resp.status_code in (401, 403):
         raise LlmError(f"Responses API rejected the API key (HTTP {resp.status_code})")
+    if resp.status_code == 400 and provider.reasoning_effort and "reasoning" in resp.text.lower():
+        raise LlmError("This model or server doesn't accept reasoning settings — set Thinking to Model default "
+                       f"({_api_error_message(resp)})")
     if resp.status_code >= 400:
         raise LlmError(f"Responses API returned HTTP {resp.status_code}: {_api_error_message(resp)}")
     try:
@@ -347,7 +359,8 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
         raise LlmError(f"Responses API error: {_api_error_message(resp)}")
     if body.get("status") == "incomplete":
         reason = (body.get("incomplete_details") or {}).get("reason", "unknown")
-        raise LlmError(f"Responses API returned an incomplete response ({reason})")
+        hint = " — raise Max output tokens, or lower Thinking" if reason == "max_output_tokens" else ""
+        raise LlmError(f"Responses API returned an incomplete response ({reason}){hint}")
 
     text, refusal = _responses_output_text(body)
     if refusal and not text:

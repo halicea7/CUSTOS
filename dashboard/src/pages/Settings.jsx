@@ -7,7 +7,7 @@ import {
 import { listRepos } from "../api/repos.js";
 import { Btn, Avatar, RoleBadge } from "../components/atoms.jsx";
 import {
-  ChoiceCards, Feedback, Field, PageHeader, PageWrap, SectionCard, SelectInput, Slider, Tabs, TextInput, Toggle,
+  ChoiceCards, Feedback, Field, Modal, ModelPicker, PageHeader, ThinkBadge, PageWrap, SectionCard, SelectInput, Slider, Tabs, TextInput, Toggle,
 } from "../components/ui.jsx";
 import { errorMessage } from "../api/errors.js";
 
@@ -228,6 +228,8 @@ function UsersTab({ theme, currentUser }) {
 // ── Analysis config ───────────────────────────────────────────────────────────
 
 const NUM_CTX_STEPS = [0, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
+const MAX_OUTPUT_STEPS = [0, 1024, 2048, 4096, 8192, 16384, 32768, 65536];
+const fmtMaxOutput = (v) => (v ? `${fmtK(v)} tokens` : "Server default");
 const CONTENT_CHAR_STEPS = [16000, 32000, 48000, 64000, 96000, 128000, 192000, 256000, 384000, 512000, 768000, 1000000];
 // System prompt, instructions and SAST context sent alongside the code (approx.).
 const PROMPT_OVERHEAD_TOKENS = 2500;
@@ -245,6 +247,29 @@ function urlOrigin(url) {
   } catch {
     return null;
   }
+}
+
+// Mirrors the API's is_local_url(): loopback, private and link-local IPs,
+// single-label names (compose services) and internal-only suffixes.
+function isLocalUrl(url) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, ""); } catch { return false; }
+  if (host === "localhost" || host === "host.docker.internal" || !host.includes(".")) return true;
+  if (/\.(local|internal|lan|home\.arpa)$/.test(host)) return true;
+  const ip = host.split(".").map(Number);
+  if (ip.length === 4 && ip.every(n => Number.isInteger(n) && n >= 0 && n <= 255)) {
+    return ip[0] === 10 || ip[0] === 127 || (ip[0] === 172 && ip[1] >= 16 && ip[1] <= 31)
+      || (ip[0] === 192 && ip[1] === 168) || (ip[0] === 169 && ip[1] === 254);
+  }
+  return host === "::1";
+}
+
+// Plain http:// to a non-local host: the API key and code would cross the
+// network unencrypted. Allowed only by an explicit per-host admin exception.
+function needsHttpException(d, cfg) {
+  if (d?.llm_provider !== "responses") return false;
+  if (!/^http:\/\//i.test(d.responses_base_url || "") || isLocalUrl(d.responses_base_url)) return false;
+  return !!(d.responses_api_key_input || (cfg?.responses_api_key_set && !d.responses_api_key_clear));
 }
 
 // https://api.openai.com:443 → https://api.openai.com
@@ -266,6 +291,10 @@ function validate(d, cfg) {
   if (!URL_RE.test(d.responses_base_url || "")) e.responses_base_url = "Enter an http:// or https:// URL";
   if (d.llm_provider === "ollama" && !d.ollama_model?.trim()) e.ollama_model = "Enter a model name";
   if (d.llm_provider === "responses") {
+    if (needsHttpException(d, cfg) && d.responses_http_allowed_origin !== urlOrigin(d.responses_base_url)) {
+      e.responses_base_url = "Plain HTTP to a non-local host sends the API key and source code unencrypted. "
+        + "Use https://, or explicitly allow plain HTTP for this host.";
+    }
     if (!d.responses_model?.trim()) e.responses_model = "Pick a model from the connection test, or type its name";
     const bound = cfg?.responses_api_key_origin;
     if (bound && !d.responses_api_key_input && !d.responses_api_key_clear
@@ -305,10 +334,11 @@ function fieldForServerError(msg) {
 // Live health of the *saved* provider config, shown in the card header.
 function useProviderStatus(cfg) {
   const [status, setStatus] = useState(null);
+  const [result, setResult] = useState(null);
   useEffect(() => {
     if (!cfg) return undefined;
     let live = true;
-    const done = (s) => live && setStatus(s);
+    const done = (s, r = null) => { if (live) { setStatus(s); setResult(r); } };
     setStatus({ tone: "pending", text: "Checking…" });
     const check = (res, model) => {
       if (!res.ok) return { tone: "error", text: res.error || "Unreachable" };
@@ -322,17 +352,17 @@ function useProviderStatus(cfg) {
         done({ tone: "warn", text: "No API key saved" });
       } else {
         testResponses(cfg.responses_base_url)
-          .then((r) => done(check(r, cfg.responses_model)))
+          .then((r) => done(check(r, cfg.responses_model), r))
           .catch(() => done({ tone: "error", text: "Check failed" }));
       }
     } else {
       testOllama(cfg.ollama_base_url)
-        .then((r) => done(check(r, cfg.ollama_model)))
+        .then((r) => done(check(r, cfg.ollama_model), r))
         .catch(() => done({ tone: "error", text: "Check failed" }));
     }
     return () => { live = false; };
   }, [cfg]);
-  return status;
+  return [status, result];
 }
 
 function useS1Status(cfg) {
@@ -364,7 +394,7 @@ function StatusPill({ theme, status }) {
   );
 }
 
-function ConnectionResult({ theme, result, selected, onPick }) {
+function ConnectionResult({ theme, result }) {
   if (!result || result === "testing") return null;
   const t = theme;
   const green = t.status.signed_off[t.mode === "light" ? "light" : "dark"];
@@ -377,19 +407,9 @@ function ConnectionResult({ theme, result, selected, onPick }) {
           <span style={{ color: green, fontWeight: 600 }}>✓ Connected</span>
           {result.note && <span style={{ marginLeft: 8, color: t.c.text3 }}>{result.note}</span>}
           {result.models?.length > 0 && (
-            <>
-              <div style={{ marginTop: 6, color: t.c.text3 }}>Click a model to use it:</div>
-              <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 132, overflowY: "auto" }}>
-                {result.models.map((m) => (
-                  <button type="button" key={m} onClick={() => onPick(m)} aria-pressed={selected === m}
-                    style={{ cursor: "pointer", padding: "2px 9px", borderRadius: 999,
-                      fontFamily: t.fontMono, fontSize: 11.5, transition: "all 0.12s",
-                      background: selected === m ? t.c.accentBg : t.c.raised2,
-                      border: `1px solid ${selected === m ? t.c.accent : t.c.border}`,
-                      color: selected === m ? t.c.accent : t.c.text2 }}>{m}</button>
-                ))}
-              </div>
-            </>
+            <span style={{ marginLeft: 8, color: t.c.text3 }}>
+              · {result.models.length} model{result.models.length === 1 ? "" : "s"} — pick one in the Model list
+            </span>
           )}
         </>
       ) : (
@@ -409,9 +429,10 @@ function AnalysisTab({ theme }) {
   const [ollamaTest, setOllamaTest] = useState(null);
   const [respTest, setRespTest] = useState(null);
   const [s1Test, setS1Test] = useState(null);
+  const [confirmHttp, setConfirmHttp] = useState(false);
   const [repos, setRepos] = useState([]);
   const { setDirty } = useUnsavedGuard();
-  const status = useProviderStatus(cfg);
+  const [status, statusResult] = useProviderStatus(cfg);
   const s1Status = useS1Status(cfg);
   const t = theme;
 
@@ -437,7 +458,28 @@ function AnalysisTab({ theme }) {
   }, [fb]);
 
   const errors = { ...validate(draft, cfg), ...serverErr };
-  const errorCount = Object.keys(validate(draft, cfg)).length;
+  const modelsFrom = (test, url, savedUrl, provider) => {
+    if (test && test !== "testing" && test.ok) return test.details || test.models?.map(name => ({ name, thinking: null }));
+    if (statusResult?.ok && cfg?.llm_provider === provider && url === savedUrl) {
+      return statusResult.details || statusResult.models?.map(name => ({ name, thinking: null }));
+    }
+    return null;
+  };
+  const ollamaModels = draft && modelsFrom(ollamaTest, draft.ollama_base_url, cfg?.ollama_base_url, "ollama");
+  const respModels = draft && modelsFrom(respTest, draft.responses_base_url, cfg?.responses_base_url, "responses");
+  const ollamaThinks = ollamaModels?.find(m => m.name === draft?.ollama_model)?.thinking ?? null;
+  const respThinks = respModels?.find(m => m.name === draft?.responses_model)?.thinking ?? null;
+  const respContext = respModels?.find(m => m.name === draft?.responses_model)?.context_length ?? null;
+  if (draft?.llm_provider === "responses" && ["low", "medium", "high"].includes(draft.responses_reasoning_effort)
+      && respThinks === false) {
+    errors.responses_reasoning_effort = "This model doesn't support reasoning; set Thinking to Off or pick a model labelled think.";
+  }
+  if (draft?.llm_provider === "ollama" && draft.ollama_think && ollamaThinks === false) {
+    // Ollama rejects think=true for models without the capability.
+    errors.ollama_think = "This model doesn't support thinking; turn chain-of-thought off or pick a model labelled think.";
+  }
+  const errorCount = Object.keys(validate(draft, cfg)).length
+    + (errors.ollama_think ? 1 : 0) + (errors.responses_reasoning_effort ? 1 : 0);
 
   const update = (patch) => {
     setDraft(d => ({ ...d, ...patch }));
@@ -454,7 +496,9 @@ function AnalysisTab({ theme }) {
 
   const handleTestResponses = async () => {
     setRespTest("testing");
-    try { setRespTest(await testResponses(draft.responses_base_url, draft.responses_api_key_input)); }
+    const allowHttp = !!draft.responses_http_allowed_origin
+      && draft.responses_http_allowed_origin === urlOrigin(draft.responses_base_url);
+    try { setRespTest(await testResponses(draft.responses_base_url, draft.responses_api_key_input, allowHttp)); }
     catch (e) { setRespTest({ ok: false, error: errorMessage(e, "Request failed"), models: [] }); }
   };
 
@@ -487,9 +531,13 @@ function AnalysisTab({ theme }) {
         llm_provider: draft.llm_provider,
         responses_base_url: draft.responses_base_url,
         responses_model: draft.responses_model,
+        responses_reasoning_effort: draft.responses_reasoning_effort || "",
+        responses_max_output_tokens: Number(draft.responses_max_output_tokens) || 0,
         ...keyUpdate,
         ...s1TokenUpdate,
         self_update_repo: draft.self_update_repo || "",
+        ...((draft.responses_http_allowed_origin || null) !== (cfg.responses_http_allowed_origin || null)
+          ? { responses_http_allowed_origin: draft.responses_http_allowed_origin || "" } : {}),
         s1_enabled: draft.s1_enabled,
         ...(draft.s1_console_url ? { s1_console_url: draft.s1_console_url } : {}),
         s1_scope_type: draft.s1_scope_type,
@@ -525,7 +573,10 @@ function AnalysisTab({ theme }) {
   const boundOrigin = cfg?.responses_api_key_origin;
   const promptTokens = Math.round((Number(draft.llm_max_content_chars) || 0) / 4) + PROMPT_OVERHEAD_TOKENS;
   const numCtx = Number(draft.ollama_num_ctx) || 0;
-  const overflowsCtx = !isResponses && numCtx > 0 && promptTokens > numCtx;
+  // The window prompts must fit: Ollama's num_ctx override, or the context
+  // the Responses server reports for the selected model.
+  const effectiveCtx = isResponses ? respContext : numCtx;
+  const overflowsCtx = !!effectiveCtx && promptTokens > effectiveCtx;
   const hint = { fontSize: 11.5, color: t.c.text3, marginTop: 6, lineHeight: 1.5 };
 
   return (
@@ -565,7 +616,47 @@ function AnalysisTab({ theme }) {
                 <TextInput theme={t} value={draft.responses_base_url || ""} mono
                   onChange={e => { set("responses_base_url")(e); setRespTest(null); }}
                   placeholder="https://api.openai.com/v1" />
+                {needsHttpException(draft, cfg) && (
+                  draft.responses_http_allowed_origin === urlOrigin(draft.responses_base_url) ? (
+                    <div role="note" style={{ ...hint, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                      color: t.sev.high.fg }}>
+                      <span>⚠ Plain HTTP allowed for <code style={{ fontFamily: t.fontMono }}>
+                        {prettyOrigin(draft.responses_http_allowed_origin)}</code>: the key and code are not encrypted in transit.</span>
+                      <Btn theme={t} size="sm" variant="quiet"
+                        onClick={() => update({ responses_http_allowed_origin: "" })}>Revoke</Btn>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 8 }}>
+                      <Btn theme={t} size="sm" variant="danger" onClick={() => setConfirmHttp(true)}>
+                        Allow plain HTTP for this host…
+                      </Btn>
+                    </div>
+                  )
+                )}
               </Field>
+              {confirmHttp && (
+                <Modal theme={t} title="Send over unencrypted HTTP?" onClose={() => setConfirmHttp(false)}
+                  subtitle={prettyOrigin(urlOrigin(draft.responses_base_url))}>
+                  <div style={{ fontSize: 13, lineHeight: 1.55, color: t.c.text2 }}>
+                    <p style={{ marginTop: 0 }}>Every review request to this host would travel <b>unencrypted</b>:</p>
+                    <ul style={{ paddingLeft: 18, margin: "0 0 12px" }}>
+                      <li>the <b>API key</b>, readable by anyone on the network path;</li>
+                      <li>the <b>source code under review</b>, including whatever secrets it contains;</li>
+                      <li>the <b>model&rsquo;s answers</b>, which someone in between could alter, e.g. to hide findings.</li>
+                    </ul>
+                    <p>Only allow this if the whole path to the server is a network you trust (for example a
+                      campus gateway reached over the university network or VPN). It applies to this host only;
+                      any other http:// address is still refused.</p>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+                    <Btn theme={t} onClick={() => setConfirmHttp(false)}>Cancel</Btn>
+                    <Btn theme={t} variant="danger" onClick={() => {
+                      update({ responses_http_allowed_origin: urlOrigin(draft.responses_base_url) });
+                      setConfirmHttp(false);
+                    }}>Yes, allow HTTP for this host</Btn>
+                  </div>
+                </Modal>
+              )}
 
               <Field theme={t} label="API key" hint="stored encrypted, never shown again" error={errors.responses_api_key}>
                 <TextInput theme={t} type="password" autoComplete="off" mono
@@ -602,14 +693,49 @@ function AnalysisTab({ theme }) {
                   disabled={respTest === "testing" || !!errors.responses_base_url}>
                   {respTest === "testing" ? "Testing…" : "Test connection"}
                 </Btn>
-                <ConnectionResult theme={t} result={respTest} selected={draft.responses_model}
-                  onPick={(m) => update({ responses_model: m })} />
+                <ConnectionResult theme={t} result={respTest} />
               </div>
 
-              <Field theme={t} label="Model" error={errors.responses_model}>
-                <TextInput theme={t} value={draft.responses_model || ""} onChange={set("responses_model")}
-                  mono placeholder="e.g. gpt-5.1-codex" />
+              <Field theme={t} label="Model" hint="think = supports reasoning" error={errors.responses_model}>
+                <ModelPicker theme={t} value={draft.responses_model} models={respModels}
+                  onChange={v => update({ responses_model: v })} placeholder="e.g. gpt-5.1-codex" />
+                {draft.responses_model && respModels && (
+                  <div style={{ ...hint, display: "flex", alignItems: "center", gap: 8 }}>
+                    <ThinkBadge theme={t} value={respThinks} />
+                    {respThinks === null && "This server doesn't report whether the model can reason."}
+                    {respContext && <span>· context window <b>{fmtK(respContext)} tokens</b>, set by the server</span>}
+                  </div>
+                )}
               </Field>
+              <Field theme={t} label="Thinking" hint="reasoning effort, for models that reason"
+                error={errors.responses_reasoning_effort}>
+                <SelectInput theme={t} value={draft.responses_reasoning_effort || ""}
+                  onChange={set("responses_reasoning_effort")}
+                  options={[{ value: "", label: "Model default" }, { value: "none", label: "Off" },
+                    { value: "low", label: "Low" }, { value: "medium", label: "Medium" },
+                    { value: "high", label: "High" }]} />
+                <div style={hint}>
+                  {!draft.responses_reasoning_effort
+                    ? "Sends no reasoning setting, so the model's own default applies — a model that can think may still think."
+                    : draft.responses_reasoning_effort === "none"
+                      ? "Asks the model not to think (reasoning.effort: none). Not every server accepts this; if one rejects it, use Model default."
+                      : "Higher effort gives deeper analysis but slower, costlier reviews."}
+                </div>
+              </Field>
+              <Field theme={t} label="Max output tokens">
+                <Slider theme={t} value={Number(draft.responses_max_output_tokens) || 0} steps={MAX_OUTPUT_STEPS}
+                  format={fmtMaxOutput} onChange={v => update({ responses_max_output_tokens: v })} />
+                <div style={hint}>
+                  Caps each response, including reasoning tokens. Too low and reviews get cut off.
+                </div>
+              </Field>
+              <div style={{ ...hint, marginTop: -4, marginBottom: 6 }}>
+                <b>Context window:</b> {respContext
+                  ? <>{fmtK(respContext)} tokens for this model, configured on the server. </>
+                  : <>set by the server for each model. </>}
+                The Responses API has no per-request setting for it (MindRouter, for example, applies its own
+                per-model value), so use <i>Prompt size</i> below to control how much code goes into each request.
+              </div>
             </>
           ) : (
             <>
@@ -624,14 +750,15 @@ function AnalysisTab({ theme }) {
                     {ollamaTest === "testing" ? "Testing…" : "Test"}
                   </Btn>
                 </div>
-                <ConnectionResult theme={t} result={ollamaTest} selected={draft.ollama_model}
-                  onPick={(m) => update({ ollama_model: m })} />
+                <ConnectionResult theme={t} result={ollamaTest} />
               </Field>
-              <Field theme={t} label="Model" error={errors.ollama_model}>
-                <TextInput theme={t} value={draft.ollama_model || ""} onChange={set("ollama_model")}
-                  mono placeholder="e.g. qwen3:4b, llama3:8b" />
+              <Field theme={t} label="Model" hint="think = supports chain-of-thought" error={errors.ollama_model}>
+                <ModelPicker theme={t} value={draft.ollama_model} models={ollamaModels}
+                  onChange={v => update({ ollama_model: v })} placeholder="e.g. qwen3:4b, llama3:8b" />
               </Field>
-              <Field theme={t} label="Chain-of-thought" hint="for models that support <think> blocks">
+              <Field theme={t} label="Chain-of-thought" error={errors.ollama_think}
+                hint={ollamaThinks === true ? "supported by this model"
+                  : ollamaThinks === false ? "not supported by this model" : "for models that support thinking"}>
                 <Toggle theme={t} value={!!draft.ollama_think}
                   onChange={v => update({ ollama_think: v })}
                   label={draft.ollama_think ? "Enabled" : "Disabled"} />
@@ -782,8 +909,8 @@ function AnalysisTab({ theme }) {
             </div>
             {overflowsCtx && (
               <div role="alert" style={{ ...hint, color: t.sev.medium.fg }}>
-                ⚠ This is larger than the {fmtK(numCtx)}-token context window above, so Ollama will
-                cut prompts short. Raise the window or lower this.
+                ⚠ This is larger than the model&rsquo;s {fmtK(effectiveCtx)}-token context window, so
+                prompts would be cut short. {isResponses ? "Lower this" : "Raise the window or lower this"}.
               </div>
             )}
           </Field>
