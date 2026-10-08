@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: API tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: Custos
+          POSTGRES_PASSWORD: Custos
+          POSTGRES_DB: custos_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U Custos"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/requirements*.txt
+      - run: pip install -r api/requirements-dev.txt
+      - name: pytest
+        working-directory: api
+        # conftest defaults point at the service containers above
+        run: python -m pytest -q
+
+  dashboard:
+    name: Dashboard build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - working-directory: dashboard
+        run: npm ci && npm run build
+
+  docker:
+    name: Docker deploy (end to end)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy with the launcher, exactly as a user would
+        run: ./custos --yes deploy
+
+      - name: Generated .env is private and has real keys
+        run: |
+          test "$(stat -c %a .env)" = "600"
+          grep -Eq '^SECRET_KEY=[0-9a-f]{64}$' .env
+          grep -Eq '^ENCRYPTION_KEY=[0-9a-f]{64}$' .env
+          grep -Eq '^POSTGRES_PASSWORD=[0-9a-f]{32}$' .env
+
+      - name: Image ships every analysis tool
+        run: |
+          docker compose exec -T worker sh -c '
+            git --version && gitleaks version && semgrep --version &&
+            npm --version && python -m pip_audit --version'
+
+      # Note: `! cmd` never fails a step under `bash -e`, so use explicit ifs.
+      - name: Secrets are not baked into the image
+        run: |
+          if docker compose exec -T api sh -c 'ls -a /app/api /app' | grep -qx '.env'; then
+            echo "::error::.env found inside the image"; exit 1
+          fi
+
+      - name: Dashboard proxy, user creation and login work
+        run: |
+          curl -fsS http://localhost:3000/ > /dev/null
+          curl -fsS http://localhost:3000/api/healthz
+          echo 'ci-password-123' | ./custos user add ci --role admin
+          curl -fsS -X POST http://localhost:3000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"ci","password":"ci-password-123"}' | grep -q access_token
+
+      - name: Redis and Postgres are not exposed on the host
+        run: |
+          for port in 6379 5432; do
+            if nc -z localhost "$port"; then
+              echo "::error::port $port is reachable from the host"; exit 1
+            fi
+          done
+
+      - name: Re-running deploy is a safe upgrade
+        run: |
+          cp .env /tmp/env.before
+          ./custos --yes deploy
+          diff -q .env /tmp/env.before
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 100
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v || true
