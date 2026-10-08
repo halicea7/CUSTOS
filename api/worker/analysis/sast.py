@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,21 +120,28 @@ async def run_semgrep(repo_path: str) -> list[RawFinding]:
 # ── Gitleaks ──────────────────────────────────────────────────────────────────
 
 async def run_gitleaks(repo_path: str) -> list[RawFinding]:
-    cmd = [
-        "gitleaks",
-        "detect",
-        f"--source={repo_path}",
-        "--report-format=json",
-        "--report-path=stdout",
-        "--no-git",
-    ]
-    rc, stdout, stderr = await _run(cmd)
-    if rc not in (0, 1):
-        logger.warning("gitleaks exited %d: %s", rc, stderr[:200])
-        return []
+    # The report goes to a private temp file (gitleaks treats "stdout" as a
+    # filename), and --redact keeps secret values out of it altogether.
+    with tempfile.TemporaryDirectory(prefix="custos-gitleaks-") as tmp:
+        report = Path(tmp) / "report.json"
+        cmd = [
+            "gitleaks",
+            "detect",
+            f"--source={repo_path}",
+            "--report-format=json",
+            f"--report-path={report}",
+            "--redact",
+            "--no-git",
+            "--no-banner",
+        ]
+        rc, _stdout, stderr = await _run(cmd, cwd=tmp)
+        if rc not in (0, 1):
+            logger.warning("gitleaks exited %d: %s", rc, stderr[:200])
+            return []
+        raw = report.read_text() if report.is_file() else ""
 
     try:
-        leaks = json.loads(stdout) if stdout.strip() else []
+        leaks = json.loads(raw) if raw.strip() else []
     except json.JSONDecodeError:
         logger.warning("gitleaks produced non-JSON output")
         return []

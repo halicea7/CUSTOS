@@ -10,7 +10,7 @@ Started by `./custos dev` (after setup); not meant to be run directly.
 """
 from __future__ import annotations
 
-import argparse, os, re, select, shutil, signal, socket, sys, termios, threading, tty
+import argparse, os, re, select, shlex, shutil, signal, socket, sys, termios, threading, tty
 import subprocess
 from datetime import datetime
 from pathlib  import Path
@@ -120,8 +120,12 @@ def _cmd(key: str) -> list[str] | None:
 
     if key == "redis":     return ["redis-server", "--loglevel", "warning"]
     if key == "api":       return [uvi, "main:app", "--reload", "--host", host, "--port", "8000"]
-    # --watch: restart on code changes, like the API's --reload (needs watchfiles).
-    if key == "worker":    return [py, "-m", "arq", "worker.queue.WorkerSettings", "--watch", "."]
+    if key == "worker":
+        # Restart on Python changes only, like the API's --reload. Not arq --watch:
+        # it reacts to any file, and the self-scan writes files under api/ itself.
+        wf = str(ROOT / ".venv" / "bin" / "watchfiles")
+        return [wf, "--filter", "python", "--target-type", "command",
+                shlex.join([py, "-m", "arq", "worker.queue.WorkerSettings"]), "."]
     if key == "dashboard":
         cmd = ["npm", "run", "dev"]
         if _bind: cmd += ["--", "--host", "0.0.0.0"]

@@ -31,7 +31,6 @@ dashboard/dist/
 # Logs
 .dev-logs/
 *.log
-stdout
 
 # OS
 .DS_Store
