@@ -11,11 +11,17 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    // A failed login is a 401 too; let the login form show the error.
-    const isLogin = err.config?.url?.endsWith("/auth/login");
-    if (err.response?.status === 401 && !isLogin) {
+    if (err.response?.status === 401) {
+      const url = err.config?.url || "";
+      // A failed login is a 401 too; let the login form show the error.
+      // The startup /auth/me check handles its own 401 (AuthProvider sends
+      // the user to /login without a reload). And never reload /login
+      // itself: that wipes whatever the user is typing.
+      const handledElsewhere = url.endsWith("/auth/login") || url.endsWith("/auth/me");
       localStorage.removeItem("custos_token");
-      window.location.href = "/login";
+      if (!handledElsewhere && window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
     }
     return Promise.reject(err);
   }
