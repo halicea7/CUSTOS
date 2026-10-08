@@ -5,7 +5,7 @@ import json
 
 import httpx
 
-from worker.analysis.llm import _USER_PROMPT_TEMPLATE, _call_batch
+from worker.analysis.llm import _USER_PROMPT_TEMPLATE, PROVIDER_OLLAMA, LlmProvider, _call_batch
 
 
 def test_user_prompt_template_formats():
@@ -24,9 +24,10 @@ async def test_ollama_round_trip_with_braces_in_code():
         return httpx.Response(200, json={"message": {"content": content},
                                          "prompt_eval_count": 10, "eval_count": 2})
 
+    provider = LlmProvider(kind=PROVIDER_OLLAMA, base_url="http://ollama:11434", model="m")
     files = [("app.py", "d = {'k': 1}\nprint(f'{d}')")]
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await _call_batch(client, "http://ollama:11434", "m", files, [], False, 0)
+        result = await _call_batch(client, provider, files, [])
 
     user_msg = seen["body"]["messages"][1]["content"]
     assert "=== app.py ===" in user_msg and "print(f'{d}')" in user_msg

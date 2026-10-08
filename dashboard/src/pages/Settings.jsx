@@ -3,7 +3,7 @@ import { useAuth } from "../App.jsx";
 import { useTheme } from "../App.jsx";
 import {
   getUsers, createUser, updateUserRole, deleteUser,
-  changePassword, getConfig, updateConfig, testOllama,
+  changePassword, getConfig, updateConfig, testOllama, testResponses,
 } from "../api/settings.js";
 import { Btn, Avatar, RoleBadge } from "../components/atoms.jsx";
 import { PageHeader, PageWrap, SectionCard, Field, TextInput, SelectInput, Toggle, Tabs, Feedback } from "../components/ui.jsx";
@@ -232,6 +232,7 @@ function AnalysisTab({ theme }) {
   const [saving,  setSaving]  = useState(false);
   const [fb,      setFb]      = useState(null);
   const [ollamaTest, setOllamaTest] = useState(null);
+  const [respTest, setRespTest] = useState(null);
   const t = theme;
 
   useEffect(() => {
@@ -251,10 +252,23 @@ function AnalysisTab({ theme }) {
     catch { setOllamaTest({ ok: false, error: "Request failed", models: [] }); }
   };
 
+  const handleTestResponses = async () => {
+    setRespTest("testing");
+    try { setRespTest(await testResponses(draft.responses_base_url, draft.responses_api_key_input)); }
+    catch (e) { setRespTest({ ok: false, error: errorMessage(e, "Request failed"), models: [] }); }
+  };
+
   const handleSave = async () => {
     setSaving(true); setFb(null);
+    // The API key is write-only: send it only when typed, or "" to remove it.
+    const keyUpdate = draft.responses_api_key_clear ? { responses_api_key: "" }
+      : draft.responses_api_key_input ? { responses_api_key: draft.responses_api_key_input } : {};
     try {
       const updated = await updateConfig({
+        llm_provider: draft.llm_provider,
+        responses_base_url: draft.responses_base_url,
+        responses_model: draft.responses_model,
+        ...keyUpdate,
         ollama_base_url: draft.ollama_base_url,
         ollama_model: draft.ollama_model,
         ollama_think: draft.ollama_think,
@@ -280,6 +294,96 @@ function AnalysisTab({ theme }) {
 
   return (
     <>
+      <SectionCard theme={t} title="LLM provider" subtitle="takes effect on next job">
+        <div style={{ maxWidth: 540 }}>
+          <Field theme={t} label="Provider">
+            <SelectInput theme={t} value={draft?.llm_provider || "ollama"} onChange={set("llm_provider")}
+              options={[
+                { value: "ollama", label: "Ollama (local — code stays on your infrastructure)" },
+                { value: "responses", label: "Responses API (/v1/responses, API key)" },
+              ]} />
+          </Field>
+          {draft?.llm_provider === "responses" && (
+            <div style={{ padding: "10px 12px", borderRadius: t.radius, fontSize: 12, lineHeight: 1.5,
+              background: `${t.sev.medium.fg}14`, border: `1px solid ${t.sev.medium.fg}33`, color: t.c.text2 }}>
+              Source code under review will be <b>sent to this provider</b>. Requests ask it not to
+              store them (<code>store: false</code>), but its own retention policy applies.
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      {draft?.llm_provider === "responses" && (
+        <SectionCard theme={t} title="Responses API" subtitle="OpenAI or any compatible server">
+          <div style={{ maxWidth: 540 }}>
+            <Field theme={t} label="Base URL" hint="requests go to {base}/responses">
+              <div style={{ display: "flex", gap: 8 }}>
+                <TextInput theme={t} value={draft?.responses_base_url || ""}
+                  onChange={e => { set("responses_base_url")(e); setRespTest(null); }}
+                  mono placeholder="https://api.openai.com/v1" />
+                <Btn theme={t} size="md"
+                  variant={respTest && respTest !== "testing" ? (respTest.ok ? "success" : "danger") : "ghost"}
+                  onClick={handleTestResponses} disabled={respTest === "testing" || !draft?.responses_base_url}>
+                  {respTest === "testing" ? "Testing…" : "Test"}
+                </Btn>
+              </div>
+              {respTest && respTest !== "testing" && (
+                <div style={{ marginTop: 9, padding: "10px 12px", borderRadius: t.radius,
+                  background: `${respTest.ok ? green : t.sev.critical.fg}14`,
+                  border: `1px solid ${respTest.ok ? green : t.sev.critical.fg}33`, fontSize: 12 }}>
+                  {respTest.ok ? (
+                    <>
+                      <span style={{ color: green, fontWeight: 600 }}>✓ Connected</span>
+                      {respTest.note && <span style={{ marginLeft: 8, color: t.c.text3 }}>{respTest.note}</span>}
+                      {respTest.models?.length > 0 && (
+                        <div style={{ marginTop: 7, display: "flex", gap: 6, flexWrap: "wrap",
+                          maxHeight: 132, overflowY: "auto" }}>
+                          {respTest.models.map(m => (
+                            <span key={m} onClick={() => setDraft(d => ({ ...d, responses_model: m }))}
+                              style={{ cursor: "pointer", padding: "2px 9px", borderRadius: 999,
+                                fontFamily: t.fontMono, fontSize: 11.5, transition: "all 0.12s",
+                                background: draft?.responses_model === m ? t.c.accentBg : t.c.raised2,
+                                border: `1px solid ${draft?.responses_model === m ? t.c.accent : t.c.border}`,
+                                color: draft?.responses_model === m ? t.c.accent : t.c.text2 }}>{m}</span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ color: t.sev.critical.fg }}>✗ {respTest.error}</span>
+                  )}
+                </div>
+              )}
+            </Field>
+            <Field theme={t} label="Model">
+              <TextInput theme={t} value={draft?.responses_model || ""} onChange={set("responses_model")}
+                mono placeholder="e.g. gpt-5.1-codex" />
+            </Field>
+            <Field theme={t} label="API key" hint="stored encrypted; never shown again">
+              <TextInput theme={t} type="password" value={draft?.responses_api_key_input || ""}
+                onChange={e => { setDraft(d => ({ ...d, responses_api_key_input: e.target.value,
+                  responses_api_key_clear: false })); setRespTest(null); }}
+                mono placeholder={cfg?.responses_api_key_set && !draft?.responses_api_key_clear
+                  ? `Saved key ••••${cfg.responses_api_key_last4 || ""} — leave blank to keep`
+                  : "sk-…"} />
+              {cfg?.responses_api_key_set && (
+                <div style={{ marginTop: 6, fontSize: 11.5, color: t.c.text3 }}>
+                  {draft?.responses_api_key_clear ? (
+                    <>Saved key will be removed on save. <a href="#" onClick={e => { e.preventDefault();
+                      setDraft(d => ({ ...d, responses_api_key_clear: false })); }}>Undo</a></>
+                  ) : (
+                    <a href="#" onClick={e => { e.preventDefault();
+                      setDraft(d => ({ ...d, responses_api_key_clear: true, responses_api_key_input: "" })); }}>
+                      Remove saved key</a>
+                  )}
+                </div>
+              )}
+            </Field>
+          </div>
+        </SectionCard>
+      )}
+
+      {draft?.llm_provider !== "responses" && (
       <SectionCard theme={t} title="Ollama" subtitle="takes effect on next job">
         <div style={{ maxWidth: 540 }}>
           <Field theme={t} label="Base URL">
@@ -339,6 +443,7 @@ function AnalysisTab({ theme }) {
           </Field>
         </div>
       </SectionCard>
+      )}
 
       <SectionCard theme={t} title="LLM context" subtitle="takes effect on next job">
         <div style={{ maxWidth: 540 }}>

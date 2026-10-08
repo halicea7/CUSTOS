@@ -1,4 +1,5 @@
-"""Ollama async client, prompt builder, and JSON response parser.
+"""LLM client (Ollama or any OpenAI Responses API server), prompt builder,
+and JSON response parser.
 
 Security note: the system prompt is hardened against prompt injection embedded
 in submitted source code. It must never be user-configurable.
@@ -11,6 +12,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -89,9 +91,10 @@ Review the above code for the following vulnerability classes:
 
 Return your findings as {{"findings": [...]}} per the schema in your instructions."""
 
-# Structured-output schema passed to Ollama's `format` field. Ollama constrains
-# generation to this schema, so the response is always an object with a
-# "findings" array (older servers that only accept "json" are handled below).
+# Structured-output schema passed to Ollama's `format` field (and, in strict
+# form below, to the Responses API). The server constrains generation to it,
+# so the response is always an object with a "findings" array; older servers
+# that only accept plain JSON mode are handled by fallbacks.
 _FINDING_SCHEMA = {
     "type": "object",
     "properties": {
@@ -114,12 +117,53 @@ _RESPONSE_SCHEMA = {
 }
 
 
+# OpenAI-style strict structured outputs require every property to be listed
+# in "required" (optional ones are expressed as nullable) and objects to forbid
+# extra keys.
+_STRICT_FINDING_SCHEMA = {
+    **_FINDING_SCHEMA,
+    "required": list(_FINDING_SCHEMA["properties"]),
+    "additionalProperties": False,
+}
+_STRICT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {"findings": {"type": "array", "items": _STRICT_FINDING_SCHEMA}},
+    "required": ["findings"],
+    "additionalProperties": False,
+}
+
+PROVIDER_OLLAMA = "ollama"
+PROVIDER_RESPONSES = "responses"
+
+
 class LlmError(RuntimeError):
-    """Raised when every LLM batch failed (Ollama unreachable, bad response...)."""
+    """Raised when every LLM batch failed (server unreachable, bad response...)."""
 
 
 @dataclass
-class OllamaResult:
+class LlmProvider:
+    """Where and how to send prompts.
+
+    ``ollama``: a local Ollama server's native /api/chat endpoint.
+    ``responses``: any server implementing the OpenAI Responses API
+    (POST {base_url}/responses), authenticated with a bearer API key.
+    """
+
+    kind: str
+    base_url: str
+    model: str
+    api_key: str = field(default="", repr=False)
+    ollama_think: bool = False
+    ollama_num_ctx: int = 0
+
+    @property
+    def label(self) -> str:
+        """Model name as recorded on LLM runs."""
+        return self.model if self.kind == PROVIDER_OLLAMA else f"{self.model} (Responses API)"
+
+
+@dataclass
+class LlmResult:
     findings: list[RawFinding] = field(default_factory=list)
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -128,25 +172,31 @@ class OllamaResult:
     errors: list[str] = field(default_factory=list)
 
 
-async def call_ollama(
+def responses_endpoint(base_url: str) -> str:
+    """Accept https://host/v1, https://host/v1/responses or a bare https://host."""
+    base = base_url.rstrip("/")
+    if base.endswith("/responses"):
+        return base
+    if not urlsplit(base).path:
+        base += "/v1"
+    return f"{base}/responses"
+
+
+async def call_llm(
     repo_path: str,
     sast_context: list[RawFinding],
-    model: str,
-    ollama_base_url: str = "",
-    ollama_think: bool = False,
-    ollama_num_ctx: int = 0,
+    provider: LlmProvider,
     max_content_chars: int = 96_000,
     max_file_size_kb: int | None = None,
     max_files: int | None = None,
-) -> OllamaResult:
-    """Review the repo with the local Ollama model.
+) -> LlmResult:
+    """Review the repo with the configured LLM provider.
 
     Files are packed into batches of at most *max_content_chars*; up to
     LLM_MAX_BATCHES batches are sent, LLM_CONCURRENCY at a time. Raises
     LlmError if every batch fails; partial failures are reported in
-    ``OllamaResult.errors``.
+    ``LlmResult.errors``.
     """
-    base_url = (ollama_base_url or settings.OLLAMA_BASE_URL).rstrip("/")
     files = _select_files(
         repo_path,
         sast_context,
@@ -156,24 +206,22 @@ async def call_ollama(
     )
     if not files:
         logger.info("No files selected for LLM review")
-        return OllamaResult()
+        return LlmResult()
 
     batches = _batch_files(files, max_content_chars)[: settings.LLM_MAX_BATCHES]
     sem = asyncio.Semaphore(max(1, settings.LLM_CONCURRENCY))
 
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
 
-        async def run(batch: list[tuple[str, str]]) -> OllamaResult:
+        async def run(batch: list[tuple[str, str]]) -> LlmResult:
             async with sem:
                 batch_paths = {p for p, _ in batch}
                 context = [f for f in sast_context if f.file_path is None or f.file_path in batch_paths]
-                return await _call_batch(
-                    client, base_url, model, batch, context, ollama_think, ollama_num_ctx
-                )
+                return await _call_batch(client, provider, batch, context)
 
         results = await asyncio.gather(*(run(b) for b in batches), return_exceptions=True)
 
-    combined = OllamaResult(batches=len(batches))
+    combined = LlmResult(batches=len(batches))
     for r in results:
         if isinstance(r, BaseException):
             combined.errors.append(str(r) or type(r).__name__)
@@ -193,21 +241,28 @@ async def call_ollama(
     return combined
 
 
-async def _call_batch(
-    client: httpx.AsyncClient,
-    base_url: str,
-    model: str,
-    files: list[tuple[str, str]],
-    sast_context: list[RawFinding],
-    think: bool,
-    num_ctx: int,
-) -> OllamaResult:
+def _build_user_prompt(files: list[tuple[str, str]], sast_context: list[RawFinding]) -> str:
     sast_json = json.dumps([_finding_to_context(f) for f in sast_context], indent=2)
     file_contents = "\n\n".join(f"=== {rel} ===\n{content}" for rel, content in files)
-    user_prompt = _USER_PROMPT_TEMPLATE.format(sast_json=sast_json, file_contents=file_contents)
+    return _USER_PROMPT_TEMPLATE.format(sast_json=sast_json, file_contents=file_contents)
 
+
+async def _call_batch(
+    client: httpx.AsyncClient,
+    provider: LlmProvider,
+    files: list[tuple[str, str]],
+    sast_context: list[RawFinding],
+) -> LlmResult:
+    user_prompt = _build_user_prompt(files, sast_context)
+    if provider.kind == PROVIDER_RESPONSES:
+        return await _responses_request(client, provider, user_prompt)
+    return await _ollama_request(client, provider, user_prompt)
+
+
+async def _ollama_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
+    base_url = (provider.base_url or settings.OLLAMA_BASE_URL).rstrip("/")
     payload: dict = {
-        "model": model,
+        "model": provider.model,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -215,10 +270,10 @@ async def _call_batch(
         "stream": False,
         "format": _RESPONSE_SCHEMA,
     }
-    if think:
+    if provider.ollama_think:
         payload["think"] = True
-    if num_ctx and num_ctx > 0:
-        payload["options"] = {"num_ctx": num_ctx}
+    if provider.ollama_num_ctx and provider.ollama_num_ctx > 0:
+        payload["options"] = {"num_ctx": provider.ollama_num_ctx}
 
     try:
         resp = await client.post(f"{base_url}/api/chat", json=payload)
@@ -236,11 +291,105 @@ async def _call_batch(
         raise LlmError("Ollama returned a non-JSON body") from exc
 
     raw_content = body.get("message", {}).get("content", "")
-    return OllamaResult(
+    return LlmResult(
         findings=_parse_llm_response(raw_content),
         prompt_tokens=body.get("prompt_eval_count"),
         completion_tokens=body.get("eval_count"),
     )
+
+
+# Output formats tried in order. Strict JSON schema is ideal; some
+# Responses-compatible servers only support json_object, or no format at all
+# (the prompt still asks for JSON and the parser is lenient).
+_RESPONSES_FORMATS: list[dict | None] = [
+    {"type": "json_schema", "name": "security_findings", "schema": _STRICT_RESPONSE_SCHEMA, "strict": True},
+    {"type": "json_object"},
+    None,
+]
+
+
+async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
+    url = responses_endpoint(provider.base_url)
+    headers = {"Authorization": f"Bearer {provider.api_key}"} if provider.api_key else {}
+    payload: dict = {
+        "model": provider.model,
+        "instructions": _SYSTEM_PROMPT,
+        "input": user_prompt,
+        # Don't let the provider retain the code under review.
+        "store": False,
+    }
+
+    resp = None
+    for fmt in _RESPONSES_FORMATS:
+        if fmt is None:
+            payload.pop("text", None)
+        else:
+            payload["text"] = {"format": fmt}
+        try:
+            resp = await client.post(url, json=payload, headers=headers)
+        except httpx.HTTPError as exc:
+            raise LlmError(f"Responses API request failed: {type(exc).__name__}: {exc}") from exc
+        # Only fall back when the server rejects the *format*; other 400s are real errors.
+        if resp.status_code == 400 and _mentions_format(resp.text):
+            continue
+        break
+
+    if resp.status_code in (401, 403):
+        raise LlmError(f"Responses API rejected the API key (HTTP {resp.status_code})")
+    if resp.status_code >= 400:
+        raise LlmError(f"Responses API returned HTTP {resp.status_code}: {_api_error_message(resp)}")
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise LlmError("Responses API returned a non-JSON body") from exc
+
+    if body.get("error"):
+        raise LlmError(f"Responses API error: {_api_error_message(resp)}")
+    if body.get("status") == "incomplete":
+        reason = (body.get("incomplete_details") or {}).get("reason", "unknown")
+        raise LlmError(f"Responses API returned an incomplete response ({reason})")
+
+    text, refusal = _responses_output_text(body)
+    if refusal and not text:
+        raise LlmError(f"Model refused: {refusal[:200]}")
+    usage = body.get("usage") or {}
+    return LlmResult(
+        findings=_parse_llm_response(text),
+        prompt_tokens=usage.get("input_tokens"),
+        completion_tokens=usage.get("output_tokens"),
+    )
+
+
+def _responses_output_text(body: dict) -> tuple[str, str]:
+    """Concatenate output_text parts of message items (and any refusal)."""
+    texts, refusals = [], []
+    for item in body.get("output") or []:
+        if item.get("type") != "message":
+            continue  # reasoning items, tool calls, ...
+        for part in item.get("content") or []:
+            if part.get("type") == "output_text":
+                texts.append(part.get("text", ""))
+            elif part.get("type") == "refusal":
+                refusals.append(part.get("refusal", ""))
+    text = "".join(texts) or body.get("output_text") or ""  # some servers add the SDK-style shortcut
+    return text, " ".join(refusals)
+
+
+def _mentions_format(text: str) -> bool:
+    lowered = text.lower()
+    return any(w in lowered for w in ("json_schema", "json_object", "text.format", "response_format", "format"))
+
+
+def _api_error_message(resp: httpx.Response) -> str:
+    try:
+        err = resp.json().get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])[:300]
+        if isinstance(err, str):
+            return err[:300]
+    except ValueError:
+        pass
+    return resp.text[:200]
 
 
 def _strip_thinking(content: str) -> str:

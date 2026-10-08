@@ -6,8 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app_config import CONFIG_KEYS, load_app_config  # noqa: F401 — re-exported
+from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
+    CONFIG_KEYS,
+    RESPONSES_API_KEY,
+    is_local_url,
+    load_app_config,
+    load_responses_api_key,
+)
 from auth import get_current_user, hash_password, require_admin, verify_password
+from crypto import encrypt
 from database import get_db
 from models import AppConfig, User
 from schemas import (
@@ -15,9 +22,11 @@ from schemas import (
     AppConfigUpdateRequest,
     ChangePasswordRequest,
     CreateUserRequest,
+    TestResponsesRequest,
     UpdateUserRoleRequest,
     UserListResponse,
 )
+from worker.analysis.llm import responses_endpoint
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -121,6 +130,52 @@ async def test_ollama(
     return {"ok": True, "models": models}
 
 
+def _check_responses_target(base_url: str, has_key: bool) -> None:
+    if has_key and base_url.lower().startswith("http://") and not is_local_url(base_url):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Refusing to send an API key over plain HTTP to a non-local host — use https://",
+        )
+
+
+@router.post("/config/test-responses")
+async def test_responses(
+    body: TestResponsesRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Check a Responses API server and list its models (GET {base}/models).
+
+    Uses the API key from the request if given, else the stored one.
+    """
+    api_key = (body.api_key or "").strip() or await load_responses_api_key(db)
+    _check_responses_target(body.base_url, bool(api_key))
+    models_url = responses_endpoint(body.base_url).removesuffix("/responses") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(models_url, headers=headers)
+    except httpx.ConnectError:
+        return {"ok": False, "error": "Connection failed — check the base URL", "models": []}
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Request timed out after 10s", "models": []}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "models": []}
+
+    if resp.status_code in (401, 403):
+        return {"ok": False, "error": "API key rejected", "models": []}
+    if resp.status_code == 404:
+        return {"ok": True, "models": [], "note": "Server has no /models endpoint — enter the model name manually"}
+    if resp.status_code >= 400:
+        return {"ok": False, "error": f"HTTP {resp.status_code}", "models": []}
+    try:
+        data = resp.json().get("data", [])
+        models = sorted({m["id"] for m in data if isinstance(m, dict) and m.get("id")})
+    except (ValueError, AttributeError):
+        models = []
+    return {"ok": True, "models": models[:300]}
+
+
 @router.get("/config", response_model=AppConfigResponse)
 async def get_config(
     db: AsyncSession = Depends(get_db),
@@ -136,6 +191,28 @@ async def update_config(
     current_user: User = Depends(require_admin),
 ):
     updates = body.model_dump(exclude_none=True)
+    api_key = updates.pop("responses_api_key", None)
+    if api_key is not None:
+        api_key = api_key.strip()
+
+    current = await load_app_config(db)
+    provider = updates.get("llm_provider", current.llm_provider)
+    base_url = updates.get("responses_base_url", current.responses_base_url)
+    key_set = bool(api_key) if api_key is not None else current.responses_api_key_set
+    _check_responses_target(base_url, key_set)
+    if provider == "responses" and not updates.get("responses_model", current.responses_model):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Set a model for the Responses API provider")
+
+    if api_key is not None:
+        row = await db.get(AppConfig, RESPONSES_API_KEY)
+        if api_key:
+            if row:
+                row.value, row.updated_by = encrypt(api_key), current_user.username
+            else:
+                db.add(AppConfig(key=RESPONSES_API_KEY, value=encrypt(api_key), updated_by=current_user.username))
+        elif row:
+            await db.delete(row)
+
     for key, value in updates.items():
         existing = await db.get(AppConfig, key)
         if existing:

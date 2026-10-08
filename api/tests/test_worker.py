@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from models import Finding, LlmRun, Submission
 from tests.conftest import make_repo, make_submission
 from worker import tasks
-from worker.analysis.llm import LlmError, OllamaResult
+from worker.analysis.llm import LlmError, LlmResult
 from worker.analysis.sast import RawFinding
 
 SAST = [RawFinding("semgrep", "high", "sql-injection", file_path="app.py", line_start=3)]
@@ -53,12 +53,12 @@ async def test_success_merges_and_dedups(db, pipeline, monkeypatch):
     sub = await make_submission(db, "org/r", status="pending")
 
     async def fake_llm(*a, **kw):
-        return OllamaResult(findings=[
+        return LlmResult(findings=[
             RawFinding("llm", "high", "SQL injection via formatted query", file_path="app.py", line_start=4),
             RawFinding("llm", "medium", "Missing CSRF protection", file_path="views.py"),
         ], prompt_tokens=10, completion_tokens=5, batches=1)
 
-    monkeypatch.setattr(tasks, "call_ollama", fake_llm)
+    monkeypatch.setattr(tasks, "call_llm", fake_llm)
     await tasks.analyze_submission({}, str(sub.id))
 
     sub, findings, runs = await _load(db, sub.id)
@@ -78,7 +78,7 @@ async def test_llm_failure_keeps_sast_findings(db, pipeline, monkeypatch):
     async def broken_llm(*a, **kw):
         raise LlmError("Ollama request failed: ConnectError")
 
-    monkeypatch.setattr(tasks, "call_ollama", broken_llm)
+    monkeypatch.setattr(tasks, "call_llm", broken_llm)
     await tasks.analyze_submission({}, str(sub.id))
 
     sub, findings, runs = await _load(db, sub.id)

@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:32b"
 
+    # Which LLM backend reviews code: "ollama" (local, the default) or
+    # "responses" — any server implementing the OpenAI Responses API
+    # (POST {RESPONSES_BASE_URL}/responses). With "responses", source code is
+    # sent to that server. All three can be overridden on the Settings page;
+    # an API key saved there is stored encrypted and takes precedence.
+    LLM_PROVIDER: str = "ollama"
+    RESPONSES_BASE_URL: str = "https://api.openai.com/v1"
+    RESPONSES_MODEL: str = ""
+    RESPONSES_API_KEY: str = ""
+
     # Comma-separated Semgrep rulesets (registry names like p/default, or local paths).
     SEMGREP_CONFIG: str = "p/default"
 

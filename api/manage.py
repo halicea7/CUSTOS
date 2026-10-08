@@ -23,10 +23,11 @@ import sys
 
 from sqlalchemy import func, select
 
+from app_config import RESPONSES_API_KEY
 from auth import hash_password
 from database import async_session_factory, engine
 from enums import Role
-from models import Repo, User
+from models import AppConfig, Repo, User
 
 _ROLES = tuple(r.value for r in Role)
 
@@ -87,11 +88,17 @@ async def rotate_keys() -> None:
                 rotated += 1
             except InvalidToken:
                 unreadable.append(repo.repo_full_name)
+        api_key_row = await db.get(AppConfig, RESPONSES_API_KEY)
+        if api_key_row:
+            try:
+                api_key_row.value = rotate(api_key_row.value)
+            except InvalidToken:
+                unreadable.append("Responses API key (Settings)")
         await db.commit()
     print(f"Re-encrypted credentials for {rotated} repo(s).")
     if unreadable:
         print(
-            "Could not decrypt (re-enter token/secret on the Repos page): "
+            "Could not decrypt (re-enter on the Repos / Settings page): "
             + ", ".join(unreadable)
         )
 

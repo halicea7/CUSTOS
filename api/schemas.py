@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -150,6 +150,13 @@ class UpdateUserRoleRequest(BaseModel):
 
 
 class AppConfigResponse(BaseModel):
+    # Provider: "ollama" (local) or "responses" (OpenAI Responses API format)
+    llm_provider: str
+    responses_base_url: str
+    responses_model: str
+    # The key itself is write-only.
+    responses_api_key_set: bool
+    responses_api_key_last4: str | None = None
     # Ollama
     ollama_base_url: str
     ollama_model: str
@@ -168,6 +175,11 @@ class AppConfigResponse(BaseModel):
 
 
 class AppConfigUpdateRequest(BaseModel):
+    llm_provider: Literal["ollama", "responses"] | None = None
+    responses_base_url: str | None = Field(None, pattern=r"^https?://[^\s]+$", max_length=500)
+    responses_model: str | None = Field(None, max_length=200)
+    # Write-only. An empty string removes the stored key.
+    responses_api_key: str | None = Field(None, max_length=1000)
     ollama_base_url: str | None = Field(None, pattern=r"^https?://[^\s]+$", max_length=500)
     ollama_model: str | None = Field(None, min_length=1, max_length=200)
     ollama_think: bool | None = None
@@ -178,6 +190,11 @@ class AppConfigUpdateRequest(BaseModel):
     access_token_expire_minutes: int | None = Field(None, ge=5, le=10_080)
     worker_max_jobs: int | None = Field(None, ge=1, le=64)
     worker_job_timeout: int | None = Field(None, ge=60, le=86_400)
+
+
+class TestResponsesRequest(BaseModel):
+    base_url: str = Field(..., pattern=r"^https?://[^\s]+$", max_length=500)
+    api_key: str | None = Field(None, max_length=1000)
 
 
 # ── Repo schemas ───────────────────────────────────────────────────────────────

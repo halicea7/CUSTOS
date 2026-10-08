@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select, update
 
-from app_config import load_app_config
+from app_config import load_app_config, load_responses_api_key
 from config import settings
 from crypto import decrypt
 from database import async_session_factory
@@ -23,7 +23,7 @@ from redis_util import LLM_ACTIVE_SET, llm_lock_key, llm_start_key
 from schemas import AppConfigResponse
 from worker.analysis.clone import clone_repo, redact
 from worker.analysis.config_checks import run_config_checks
-from worker.analysis.llm import LlmError, OllamaResult, call_ollama
+from worker.analysis.llm import PROVIDER_OLLAMA, PROVIDER_RESPONSES, LlmError, LlmProvider, LlmResult, call_llm
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
 from worker.analysis.synthesizer import dedup_raw_findings, synthesize
 
@@ -57,14 +57,30 @@ async def _job_deadline(job_timeout: int):
         raise
 
 
-async def _run_llm(repo_path: str, sast_context: list[RawFinding], cfg: AppConfigResponse) -> OllamaResult:
-    return await call_ollama(
-        repo_path=repo_path,
-        sast_context=sast_context,
+async def _llm_provider(db, cfg: AppConfigResponse) -> LlmProvider:
+    if cfg.llm_provider == PROVIDER_RESPONSES:
+        return LlmProvider(
+            kind=PROVIDER_RESPONSES,
+            base_url=cfg.responses_base_url,
+            model=cfg.responses_model,
+            api_key=await load_responses_api_key(db),
+        )
+    return LlmProvider(
+        kind=PROVIDER_OLLAMA,
+        base_url=cfg.ollama_base_url,
         model=cfg.ollama_model,
-        ollama_base_url=cfg.ollama_base_url,
         ollama_think=cfg.ollama_think,
         ollama_num_ctx=cfg.ollama_num_ctx,
+    )
+
+
+async def _run_llm(
+    repo_path: str, sast_context: list[RawFinding], cfg: AppConfigResponse, provider: LlmProvider
+) -> LlmResult:
+    return await call_llm(
+        repo_path=repo_path,
+        sast_context=sast_context,
+        provider=provider,
         max_content_chars=cfg.llm_max_content_chars,
         max_file_size_kb=cfg.max_file_size_kb,
         max_files=cfg.max_files_per_repo,
@@ -78,7 +94,7 @@ async def _run_sast(repo_path: str) -> list[RawFinding]:
     return semgrep + gitleaks + deps
 
 
-def _finish_llm_run(run: LlmRun, result: OllamaResult, duration: float) -> None:
+def _finish_llm_run(run: LlmRun, result: LlmResult, duration: float) -> None:
     run.status = RunStatus.COMPLETE.value
     run.duration_seconds = round(duration, 1)
     run.findings_count = len(result.findings)
@@ -142,6 +158,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
         repo = submission.repo_full_name
         sha = submission.commit_sha
         cfg = await load_app_config(db)
+        provider = await _llm_provider(db, cfg)
         github_token = await _repo_token(db, repo)
 
         submission.check_run_id = await post_github_check(
@@ -151,7 +168,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
         llm_run = LlmRun(
             submission_id=submission.id,
             triggered_by="initial",
-            model=cfg.ollama_model,
+            model=provider.label,
             status=RunStatus.RUNNING.value,
             started_at=_now(),
         )
@@ -172,7 +189,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 llm_error: str | None = None
                 llm_start = time.monotonic()
                 try:
-                    result = await _run_llm(repo_path, sast_findings, cfg)
+                    result = await _run_llm(repo_path, sast_findings, cfg, provider)
                     llm_findings = result.findings
                     _finish_llm_run(llm_run, result, time.monotonic() - llm_start)
                     await _record_llm_duration(db, time.monotonic() - llm_start)
@@ -250,6 +267,8 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                 await arq_redis.set(llm_start_key(submission_id), str(start_time), ex=7200)
 
             cfg = await load_app_config(db)
+
+            provider = await _llm_provider(db, cfg)
             github_token = await _repo_token(db, sub.repo_full_name)
 
             result = await db.execute(
@@ -274,7 +293,7 @@ async def rerun_llm(ctx, submission_id: str) -> None:
             llm_run = LlmRun(
                 submission_id=sub.id,
                 triggered_by="rerun",
-                model=cfg.ollama_model,
+                model=provider.label,
                 status=RunStatus.RUNNING.value,
                 started_at=_now(),
             )
@@ -289,11 +308,11 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                         base_dir=settings.CLONE_BASE_DIR,
                         github_token=github_token,
                     )
-                    ollama_result = await _run_llm(repo_path, sast_context, cfg)
+                    llm_result = await _run_llm(repo_path, sast_context, cfg, provider)
 
                     # Same dedup as the initial run: drop LLM findings the tools already cover.
                     new_llm = [
-                        f for f in dedup_raw_findings(sast_context + ollama_result.findings)
+                        f for f in dedup_raw_findings(sast_context + llm_result.findings)
                         if f.source == "llm"
                     ]
                     await db.execute(
@@ -303,8 +322,8 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                         db.add(Finding(submission_id=sub.id, **f))
 
                     duration = time.time() - start_time
-                    ollama_result.findings = new_llm
-                    _finish_llm_run(llm_run, ollama_result, duration)
+                    llm_result.findings = new_llm
+                    _finish_llm_run(llm_run, llm_result, duration)
                     if sub.error_message and sub.error_message.startswith("LLM review failed"):
                         sub.error_message = None
                     await _record_llm_duration(db, duration)
@@ -365,6 +384,7 @@ async def scan_self(
 
         try:
             cfg = await load_app_config(db)
+            provider = await _llm_provider(db, cfg)
             async with _job_deadline(cfg.worker_job_timeout):
                 sast_findings, config_findings = await asyncio.gather(
                     _run_sast(custos_path), run_config_checks(db)
@@ -373,7 +393,7 @@ async def scan_self(
 
                 llm_findings: list[RawFinding] = []
                 try:
-                    llm_findings = (await _run_llm(custos_path, sast_context, cfg)).findings
+                    llm_findings = (await _run_llm(custos_path, sast_context, cfg, provider)).findings
                 except LlmError as exc:
                     logger.warning("Self-scan LLM phase failed: %s", exc)
                     scan.error = f"LLM review failed; showing static analysis only. {exc}"[:2000]

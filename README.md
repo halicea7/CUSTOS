@@ -1,13 +1,13 @@
 # Custos
 
-Automated code security review for university IT teams. Custos receives GitHub webhooks on push/PR events, fetches the commit, runs static analysis (Semgrep, Gitleaks, pip-audit/npm-audit), feeds the results to a local LLM via Ollama, and surfaces prioritised findings in a dashboard where analysts can triage, annotate, and sign off.
+Automated code security review for university IT teams. Custos receives GitHub webhooks on push/PR events, fetches the commit, runs static analysis (Semgrep, Gitleaks, pip-audit/npm-audit), feeds the results to an LLM (a local Ollama model by default, or any OpenAI Responses API-compatible service), and surfaces prioritised findings in a dashboard where analysts can triage, annotate, and sign off.
 
 ```
 GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
                                    ↘ GitHub check run (one per commit, updated in place)
 ```
 
-**Stack:** FastAPI · PostgreSQL · Redis · ARQ · React 18 · TanStack Query · Vite · Ollama (local LLM)
+**Stack:** FastAPI · PostgreSQL · Redis · ARQ · React 18 · TanStack Query · Vite · Ollama (local LLM) or any Responses API (`/v1/responses`) provider
 
 ---
 
@@ -18,12 +18,13 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 3. [Local development setup](#local-development-setup)
 4. [Configuration reference](#configuration-reference)
 5. [Ollama setup](#ollama-setup)
-6. [SAST tools](#sast-tools)
-7. [Connecting repositories](#connecting-repositories)
-8. [Users and access](#users-and-access)
-9. [Security model](#security-model)
-10. [Testing and CI](#testing-and-ci)
-11. [Useful commands](#useful-commands)
+6. [Responses API provider](#responses-api-provider)
+7. [SAST tools](#sast-tools)
+8. [Connecting repositories](#connecting-repositories)
+9. [Users and access](#users-and-access)
+10. [Security model](#security-model)
+11. [Testing and CI](#testing-and-ci)
+12. [Useful commands](#useful-commands)
 
 ---
 
@@ -41,7 +42,7 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 
 Everything goes through one launcher, **`./custos`** (`./custos --help`). It needs only `python3` to run and checks for everything else itself.
 
-> **Ollama note:** Custos deliberately keeps the LLM local — no code leaves your infrastructure. Ollama must be reachable from the worker. See [Ollama setup](#ollama-setup).
+> **LLM note:** by default Custos keeps the LLM local with Ollama, so no code leaves your infrastructure; Ollama must be reachable from the worker ([Ollama setup](#ollama-setup)). You can instead point it at a hosted or self-hosted model over the OpenAI Responses API ([Responses API provider](#responses-api-provider)) — in that case **the code under review is sent to that provider**.
 
 ---
 
@@ -110,6 +111,10 @@ Settings are read from environment variables (`api/.env` for local dev, `.env` a
 | `REDIS_URL` | yes | `redis://localhost:6379` | Full Redis URL; password, db number and `rediss://` are honoured |
 | `OLLAMA_BASE_URL` | yes | `http://localhost:11434` | Base URL for the Ollama API |
 | `OLLAMA_MODEL` | yes | `qwen2.5-coder:32b` | Model name as it appears in `ollama list` |
+| `LLM_PROVIDER` | no | `ollama` | `ollama`, or `responses` for an OpenAI Responses API server |
+| `RESPONSES_BASE_URL` | no | `https://api.openai.com/v1` | Responses API base; requests go to `{base}/responses` |
+| `RESPONSES_MODEL` | with `responses` | — | Model name at that provider |
+| `RESPONSES_API_KEY` | with `responses` | — | Bearer API key. A key saved on the Settings page (stored encrypted) takes precedence |
 | `LLM_MAX_BATCHES` | no | `4` | Extra prompts per submission when a repo exceeds one prompt's budget |
 | `LLM_CONCURRENCY` | no | `1` | Batches in flight at once (match Ollama's `OLLAMA_NUM_PARALLEL`) |
 | `LLM_TIMEOUT_SECONDS` | no | `600` | Per-request timeout for Ollama |
@@ -126,6 +131,7 @@ Runtime settings editable on the dashboard **Settings → Analysis** page (store
 
 | Key | Takes effect |
 |---|---|
+| `llm_provider`, `responses_base_url`, `responses_model`, Responses API key | next job |
 | `ollama_base_url`, `ollama_model`, `ollama_num_ctx`, `ollama_think` | next job |
 | `llm_max_content_chars` — characters of source per LLM prompt | next job |
 | `max_file_size_kb`, `max_files_per_repo` — LLM file selection limits | next job |
@@ -152,6 +158,24 @@ PARAMETER num_ctx 32768
 ```
 
 If the LLM is unreachable or returns garbage, the run is recorded as **failed** (visible under *LLM details* on the submission) and the submission still lands in the queue with its static-analysis findings, flagged with a note. Use **Re-run LLM** once Ollama is back.
+
+---
+
+## Responses API provider
+
+Instead of Ollama, Custos can use any server that implements the OpenAI **Responses API** (`POST /v1/responses`): OpenAI itself, or compatible gateways and self-hosted servers. On the dashboard, open **Settings → Analysis**, set **Provider** to *Responses API*, then enter:
+
+- **Base URL**: for example `https://api.openai.com/v1`. Requests go to `{base}/responses`, and **Test** lists models from `{base}/models`.
+- **Model**: the provider's model name (click one from the Test results).
+- **API key**: sent as a bearer token. It is stored encrypted with `ENCRYPTION_KEY` and is write-only: the API only ever reports whether a key is set and its last 4 characters. **Remove saved key** deletes it. It can also come from `RESPONSES_API_KEY` in the env.
+
+How requests are made:
+
+- The fixed system prompt goes in `instructions` and the code in `input`. Batching, file selection and the findings parser are the same as for Ollama.
+- Output is constrained with a strict JSON schema (`text.format`). Servers that don't support that are retried with `json_object`, then with no format (the parser is lenient).
+- `store: false` asks the provider not to retain the request. Its own retention and training policies still apply, so check them before sending university code.
+- A key is never sent over plain `http://` to a non-local host. HTTP is allowed only for localhost, private IPs and internal hostnames.
+- LLM runs are recorded as `<model> (Responses API)`. An invalid key, rate limit, refusal or truncated response fails the run with a clear message, and SAST findings are still kept.
 
 ---
 
@@ -208,6 +232,7 @@ Custos analyses untrusted code, so the worker treats every repository as hostile
 - **No repo-controlled execution.** Git hooks are disabled and the `file://` protocol is blocked; `pip-audit` runs with `--no-deps` (no package builds); `npm audit` is pinned to the public registry so a hostile `.npmrc` can't redirect it.
 - **No escaping the checkout.** Files sent to the LLM must be regular files inside the checkout; symlinks are never followed (so a repo can't exfiltrate e.g. `/app/.env` through the model). Env files, private keys and credential stores are never sent to the model at all (Gitleaks still reports them). Only real 40-hex commit SHAs are ever passed to git.
 - **Jobs can't hang.** Each job enforces its own deadline just inside `worker_job_timeout`, so an overrun is recorded as failed immediately; a worker restart mid-job leaves the row for ARQ's retry to resume, and a reaper catches anything else.
+- **Where code goes.** With the default Ollama provider, code never leaves your infrastructure. With the Responses API provider it is sent to the configured server (`store: false`). Its API key is encrypted at rest, write-only through the API, and never sent over plain HTTP to a non-local host.
 - **Prompt injection.** The system prompt is fixed in code and instructs the model to ignore instructions embedded in the source.
 - **Rendering.** Code snippets are always HTML-escaped (via highlight.js or an explicit escape) before display; nginx sends a strict Content-Security-Policy.
 - **Secrets at rest.** Repo tokens and webhook secrets are encrypted with `ENCRYPTION_KEY` (separate from the JWT key, rotatable).
