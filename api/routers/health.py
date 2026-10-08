@@ -10,6 +10,7 @@ from auth import get_current_user, require_admin
 from database import get_db
 from enums import SEVERITY_ORDER
 from models import SelfScan, SelfScanFinding, User
+from redis_util import scan_stages_key
 
 router = APIRouter(prefix="/health", tags=["health-dashboard"])
 
@@ -55,6 +56,7 @@ def _finding_to_dict(f: SelfScanFinding) -> dict:
 
 @router.get("/status")
 async def health_dashboard_status(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -74,10 +76,21 @@ async def health_dashboard_status(
     )
     running = running_result.scalar_one_or_none()
 
+    # Real per-stage states published by the worker (None until it starts).
+    stages = None
+    if running is not None:
+        raw = await request.app.state.redis.get(scan_stages_key(running.id))
+        try:
+            stages = json.loads(raw) if raw else None
+        except ValueError:
+            stages = None
+
     return {
         "latest_scan": _scan_to_dict(latest) if latest else None,
         "running": running is not None,
         "running_scan_id": str(running.id) if running else None,
+        "running_started_at": running.started_at.isoformat() if running and running.started_at else None,
+        "running_stages": stages,
     }
 
 

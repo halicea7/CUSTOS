@@ -30,16 +30,6 @@ const CAT_LABEL = {
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 const CATEGORY_ORDER = ["sast", "secrets", "dependencies", "config", "llm"];
 
-// Stages run concurrently in phase 1 (SAST tools), then LLM runs after.
-// doneAfter is an optimistic estimate in seconds used only for the UI indicator.
-const SCAN_STAGES = [
-  { id: "config",  label: "Config Checks",    tool: "internal",   doneAfter: 3,        startAfter: 0  },
-  { id: "sast",    label: "SAST Analysis",    tool: "semgrep",    doneAfter: 22,       startAfter: 0  },
-  { id: "secrets", label: "Secret Detection", tool: "gitleaks",   doneAfter: 14,       startAfter: 0  },
-  { id: "deps",    label: "Dependency Audit", tool: "pip-audit",  doneAfter: 32,       startAfter: 0  },
-  { id: "llm",     label: "LLM Review",       tool: "local model",doneAfter: Infinity, startAfter: 28 },
-];
-
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function relativeTime(isoStr) {
@@ -108,6 +98,16 @@ function StageIcon({ state }) {
       }} />
     );
   }
+  if (state === "failed") {
+    return (
+      <span style={{ color: "#f85149", fontSize: "12px", width: 16, textAlign: "center", flexShrink: 0 }}>✗</span>
+    );
+  }
+  if (state === "skipped") {
+    return (
+      <span style={{ color: "var(--text-3)", fontSize: "12px", width: 16, textAlign: "center", flexShrink: 0 }}>–</span>
+    );
+  }
   // pending
   return (
     <span style={{
@@ -117,9 +117,7 @@ function StageIcon({ state }) {
   );
 }
 
-function ScanStagesPanel({ elapsed }) {
-  const llmEstimate = 90; // rough LLM estimate for indeterminate bar
-
+function ScanStagesPanel({ elapsed, stages }) {
   return (
     <div style={{
       background: "var(--bg-2)",
@@ -154,62 +152,52 @@ function ScanStagesPanel({ elapsed }) {
         </span>
       </div>
 
-      {/* Stages */}
-      <div style={{ padding: "12px 20px", display: "flex", flexDirection: "column", gap: "0px" }}>
-        {SCAN_STAGES.map((stage, i) => {
-          const started = elapsed >= stage.startAfter;
-          const done = started && elapsed >= stage.doneAfter;
-          const state = done ? "done" : started ? "running" : "pending";
-          const isLlm = stage.id === "llm";
-
-          // LLM indeterminate progress bar progress
-          const llmElapsed = Math.max(0, elapsed - stage.startAfter);
-          const llmPct = isLlm && started ? Math.min((llmElapsed / llmEstimate) * 100, 94) : 0;
-
+      {/* Stages: real states reported by the worker */}
+      <div role="list" aria-label="Scan stages" style={{ padding: "12px 20px", display: "flex", flexDirection: "column" }}>
+        {!stages && (
+          <div style={{ padding: "8px 0", color: "var(--text-3)", fontSize: "12px" }}>
+            Waiting for the worker to start the scan…
+          </div>
+        )}
+        {(stages || []).map((stage, i) => {
+          const state = stage.state;
           return (
-            <div key={stage.id} style={{
+            <div key={stage.id} role="listitem" title={stage.detail || undefined}
+              aria-label={`${stage.label}: ${state}`} style={{
               display: "flex", alignItems: "center", gap: "10px",
               padding: "8px 0",
-              borderBottom: i < SCAN_STAGES.length - 1 ? "1px solid var(--border)" : "none",
-              opacity: state === "pending" ? 0.4 : 1,
+              borderBottom: i < stages.length - 1 ? "1px solid var(--border)" : "none",
+              opacity: state === "pending" || state === "skipped" ? 0.4 : 1,
               transition: "opacity 0.4s ease",
             }}>
               <StageIcon state={state} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: isLlm && started && !done ? "5px" : 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                  marginBottom: state === "running" ? "5px" : 0 }}>
                   <span style={{
-                    color: state === "done" ? "var(--text-2)" : state === "running" ? "var(--text)" : "var(--text-3)",
-                    fontSize: "12px",
-                    transition: "color 0.3s",
+                    color: state === "failed" ? "#f85149" : state === "running" ? "var(--text)"
+                      : state === "done" ? "var(--text-2)" : "var(--text-3)",
+                    fontSize: "12px", transition: "color 0.3s",
                   }}>
                     {stage.label}
+                    {state === "failed" && stage.detail && (
+                      <span style={{ marginLeft: 8, color: "var(--text-3)", fontSize: "11px" }}>
+                        {stage.detail.length > 90 ? `${stage.detail.slice(0, 90)}…` : stage.detail}
+                      </span>
+                    )}
                   </span>
                   <span style={{ color: "var(--text-3)", fontSize: "10px", flexShrink: 0, marginLeft: "12px" }}>
                     {stage.tool}
                   </span>
                 </div>
-                {/* LLM gets an indeterminate progress bar */}
-                {isLlm && started && !done && (
-                  <div style={{
-                    position: "relative", height: "3px",
-                    background: "var(--bg-4)", borderRadius: "2px",
-                    overflow: "hidden",
-                  }}>
-                    {/* Determinate portion (estimated progress) */}
+                {/* Running: indeterminate bar (no made-up percentage) */}
+                {state === "running" && (
+                  <div style={{ position: "relative", height: "3px", background: "var(--bg-4)",
+                    borderRadius: "2px", overflow: "hidden" }}>
                     <div style={{
-                      position: "absolute", top: 0, left: 0,
-                      width: `${llmPct}%`, height: "100%",
-                      background: "rgba(240,165,0,0.3)",
-                      borderRadius: "2px",
-                      transition: "width 1s linear",
-                    }} />
-                    {/* Shimmer overlay */}
-                    <div style={{
-                      position: "absolute", top: 0, left: 0,
-                      width: "30%", height: "100%",
+                      position: "absolute", top: 0, left: 0, width: "30%", height: "100%",
                       background: "linear-gradient(90deg, transparent, var(--accent), transparent)",
-                      animation: "scanSweep 2.2s ease-in-out infinite",
-                      borderRadius: "2px",
+                      animation: "scanSweep 2.2s ease-in-out infinite", borderRadius: "2px",
                     }} />
                   </div>
                 )}
@@ -564,7 +552,7 @@ export default function Health() {
       </div>
 
       {/* ── Scan stages panel (while running) ── */}
-      {isScanning && <ScanStagesPanel elapsed={elapsed} />}
+      {isScanning && <ScanStagesPanel elapsed={elapsed} stages={status?.running_stages} />}
 
       {selectedScan?.error && (
         <div style={{ marginBottom: 16, padding: "10px 14px", borderRadius: t.radius,

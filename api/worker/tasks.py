@@ -27,6 +27,7 @@ from worker.analysis.llm import PROVIDER_OLLAMA, PROVIDER_RESPONSES, LlmError, L
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
 from worker.analysis.sentinelone import RepoMeta, S1Error, S1Settings, run_sentinelone
 from worker.analysis.synthesizer import dedup_raw_findings, synthesize
+from worker.progress import StageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,9 @@ def _check_summary(findings: list[dict], llm_error: str | None) -> str:
     return summary
 
 
-async def _run_s1(db, cfg: AppConfigResponse, repo_path: str, submission) -> tuple[list[RawFinding], str | None]:
+async def _run_s1(
+    db, cfg: AppConfigResponse, repo_path: str, repo_meta: RepoMeta | None
+) -> tuple[list[RawFinding], str | None]:
     """Optional SentinelOne CNS layer. Never fails the submission: returns
     (findings, note) where *note* explains any problem for the analyst."""
     if not cfg.s1_enabled:
@@ -147,9 +150,7 @@ async def _run_s1(db, cfg: AppConfigResponse, repo_path: str, submission) -> tup
         publish=cfg.s1_publish,
     )
     try:
-        result = await run_sentinelone(
-            repo_path, s1, RepoMeta(full_name=submission.repo_full_name, branch=submission.branch)
-        )
+        result = await run_sentinelone(repo_path, s1, repo_meta)
     except S1Error as exc:
         logger.warning("SentinelOne layer failed: %s", exc)
         return [], f"SentinelOne scan failed: {redact(str(exc), token)}"[:1000]
@@ -213,7 +214,9 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                     github_token=github_token,
                 )
                 sast_findings = await _run_sast(repo_path)
-                s1_findings, s1_note = await _run_s1(db, cfg, repo_path, submission)
+                s1_findings, s1_note = await _run_s1(
+                    db, cfg, repo_path, RepoMeta(full_name=submission.repo_full_name, branch=submission.branch)
+                )
                 sast_findings += s1_findings
 
                 llm_findings: list[RawFinding] = []
@@ -385,6 +388,20 @@ async def rerun_llm(ctx, submission_id: str) -> None:
             await arq_redis.srem(LLM_ACTIVE_SET, submission_id)
 
 
+def _self_scan_stages(cfg: AppConfigResponse, provider: LlmProvider) -> list[tuple[str, str, str]]:
+    """The self-scan's stages, in order. S1 appears only when it will run."""
+    stages = [
+        ("config", "Config checks", "internal"),
+        ("sast", "SAST analysis", "semgrep"),
+        ("secrets", "Secret detection", "gitleaks"),
+        ("deps", "Dependency audit", "pip-audit / npm audit"),
+    ]
+    if cfg.s1_enabled:
+        stages.append(("s1", "SentinelOne CNS", "s1-cns-cli"))
+    stages.append(("llm", "LLM review", provider.label))
+    return stages
+
+
 _SOURCE_CATEGORY = {
     "semgrep": "sast",
     "gitleaks": "secrets",
@@ -392,6 +409,9 @@ _SOURCE_CATEGORY = {
     "npm_audit": "dependencies",
     "config": "config",
     "llm": "llm",
+    "s1_secret": "secrets",
+    "s1_iac": "config",
+    "s1_vuln": "dependencies",
 }
 
 
@@ -419,21 +439,43 @@ async def scan_self(
             db.add(scan)
             await db.commit()
 
+        tracker = None
         try:
             cfg = await load_app_config(db)
             provider = await _llm_provider(db, cfg)
+            tracker = StageTracker(ctx.get("redis") if ctx else None, scan.id, _self_scan_stages(cfg, provider))
+            await tracker.publish()
             async with _job_deadline(cfg.worker_job_timeout):
-                sast_findings, config_findings = await asyncio.gather(
-                    _run_sast(custos_path), run_config_checks(db)
+                # Tools run concurrently; each stage reports its own real state.
+                config_findings, semgrep, gitleaks, deps = await asyncio.gather(
+                    tracker.run("config", run_config_checks(db)),
+                    tracker.run("sast", run_semgrep(custos_path)),
+                    tracker.run("secrets", run_gitleaks(custos_path)),
+                    tracker.run("deps", run_dep_audit(custos_path)),
                 )
-                sast_context = sast_findings + config_findings
+                sast_context = config_findings + semgrep + gitleaks + deps
+                notes: list[str] = []
+
+                if cfg.s1_enabled:
+                    # After the gather: it shares the DB session (token lookup).
+                    await tracker.set("s1", "running")
+                    s1_findings, s1_note = await _run_s1(db, cfg, custos_path, None)  # never published
+                    sast_context += s1_findings
+                    await tracker.set("s1", "failed" if s1_note and not s1_findings else "done", s1_note)
+                    if s1_note:
+                        notes.append(s1_note)
 
                 llm_findings: list[RawFinding] = []
+                await tracker.set("llm", "running")
                 try:
                     llm_findings = (await _run_llm(custos_path, sast_context, cfg, provider)).findings
+                    await tracker.set("llm", "done")
                 except LlmError as exc:
                     logger.warning("Self-scan LLM phase failed: %s", exc)
-                    scan.error = f"LLM review failed; showing static analysis only. {exc}"[:2000]
+                    await tracker.set("llm", "failed", str(exc)[:300])
+                    notes.insert(0, f"LLM review failed; showing static analysis only. {exc}")
+                if notes:
+                    scan.error = "\n".join(notes)[:2000]
 
                 all_findings = dedup_raw_findings(sast_context + llm_findings)
                 sev_counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -475,6 +517,11 @@ async def scan_self(
 
         except Exception as exc:
             logger.exception("Self-scan failed")
+            if tracker:
+                for stage in tracker.stages.values():
+                    if stage["state"] in ("pending", "running"):
+                        stage["state"] = "failed" if stage["state"] == "running" else "skipped"
+                await tracker.publish()
             await db.rollback()
             await db.refresh(scan)
             scan.status = RunStatus.FAILED.value
