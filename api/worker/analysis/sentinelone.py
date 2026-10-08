@@ -105,8 +105,17 @@ async def _exec(label: str, args: list[str], env: dict, timeout: int, token: str
 
 
 def _last_lines(text: str, n: int = 3) -> str:
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    return " | ".join(lines[-n:])[:500]
+    lines = [" ".join(ln.split()) for ln in text.splitlines() if ln.strip()]
+    # Prefer the CLI's ERROR lines over its WARNING/INFO chatter.
+    errors = [ln for ln in lines if ln.startswith("ERROR")]
+    return " | ".join((errors or lines)[-n:])[:500]
+
+
+def _scan_error(scanner: str, out: str, context: str = "") -> str:
+    if f"{scanner} scan is disabled" in out:
+        return (f"{scanner}: not enabled for this account/scope in the SentinelOne console "
+                f"(enable it there, or untick it in Settings → SentinelOne)")
+    return f"{scanner}: {context}{_last_lines(out) or 'no output'}"
 
 
 async def _ensure_configured(cli: str, cfg: S1Settings, env: dict) -> None:
@@ -180,12 +189,12 @@ async def run_sentinelone(repo_path: str, cfg: S1Settings, repo: RepoMeta | None
                 env, _SCAN_TIMEOUT, cfg.token,
             )
             if rc == _CRASH_EXIT_CODE:
-                result.errors.append(f"{scanner}: {_last_lines(out) or 'scan failed'}")
+                result.errors.append(_scan_error(scanner, out))
                 continue
             if not os.path.exists(out_file) and rc != 0:
                 # Exited abnormally without results (e.g. an uncaught error):
                 # don't mistake that for a clean scan.
-                result.errors.append(f"{scanner}: exited {rc}: {_last_lines(out) or 'no output'}")
+                result.errors.append(_scan_error(scanner, out, f"exited {rc}: "))
                 continue
             if os.path.exists(out_file):  # exit 0 and no file = no findings
                 try:

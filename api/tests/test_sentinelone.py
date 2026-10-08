@@ -331,3 +331,19 @@ def test_s1_cli_version_pinned_consistently():
     docker = re.search(r"ARG S1_CLI_VERSION=(\S+)", (ROOT / "Dockerfile").read_text()).group(1)
     launcher = re.search(r'S1_CLI_VERSION = "([^"]+)"', (ROOT / "custos").read_text()).group(1)
     assert docker == launcher == settings.S1_CLI_VERSION
+
+
+def test_scan_errors_show_the_error_not_warnings():
+    from worker.analysis.sentinelone import _scan_error
+
+    out = ("WARNING\tThreshold is set to LOW by default. You can change it using --threshold flag.\n"
+           "ERROR\tsomething broke\n")
+    assert _scan_error("iac", out) == "iac: ERROR something broke"
+
+
+def test_disabled_scanner_is_explained():
+    from worker.analysis.sentinelone import _scan_error
+
+    out = "WARNING\tThreshold is set to LOW by default.\nERROR\tvuln scan is disabled\n"
+    msg = _scan_error("vuln", out)
+    assert "not enabled for this account/scope" in msg and "Settings" in msg
