@@ -800,7 +800,7 @@ function AnalysisTab({ theme }) {
                 </Field>
                 <Field theme={t} label="Scope ID" hint="where the service user was created" error={errors.s1_scope_id}>
                   <TextInput theme={t} value={draft.s1_scope_id || ""} mono
-                    onChange={e => { set("s1_scope_id")(e); setS1Test(null); }} placeholder="e.g. 123456789012345678" />
+                    onChange={e => { set("s1_scope_id")(e); setS1Test(null); }} placeholder="numeric account or site ID" />
                 </Field>
               </div>
 
