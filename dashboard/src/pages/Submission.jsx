@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useTheme } from "../App.jsx";
 import { Severity, StatusBadge, SEV_ORDER, fmtDate, Btn, Pill } from "../components/atoms.jsx";
 import ReportModal from "../components/submission/ReportModal.jsx";
+import { downloadBlob, generateRemediations, remediationTasks } from "../components/submission/report.js";
 import LlmRerunPanel from "../components/submission/LlmPanel.jsx";
 import SummaryPanel from "../components/submission/SummaryPanel.jsx";
 import FindingRow from "../components/submission/FindingRow.jsx";
@@ -90,6 +91,15 @@ export default function Submission() {
               <MetaItem theme={t} label="Submitted" mono>{fmtDate(sub.created_at)}</MetaItem>
               <StatusBadge theme={t} status={sub.status} size="lg" />
               <Btn theme={t} size="sm" onClick={() => setShowReport(true)}>↓ Report</Btn>
+              <span title={remediationTasks(findings).length
+                ? "Task file for an AI coding agent: fixes for the findings, most severe first"
+                : "Nothing to remediate"}>
+                <Btn theme={t} size="sm"
+                  disabled={inFlight || !remediationTasks(findings).length}
+                  onClick={() => downloadBlob(generateRemediations(sub, findings), "REMEDIATIONS.md", "text/markdown")}>
+                  ↓ REMEDIATIONS.md
+                </Btn>
+              </span>
             </div>
           </div>
         </div>
