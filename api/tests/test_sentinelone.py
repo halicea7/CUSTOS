@@ -259,6 +259,11 @@ async def test_s1_connection_test(client, db, monkeypatch):
 
     def handler(request):
         seen.append((str(request.url), request.headers.get("Authorization")))
+        # The real console rejects calls without the CLI's headers.
+        if not request.headers.get("user-agent", "").startswith("s1-cns-cli-") \
+                or not request.headers.get("x-runtime-arch"):
+            return httpx.Response(400, json={"errors": [{"code": 400, "detail": "Missing required headers",
+                                                         "title": "BAD_REQUEST"}]})
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return httpx.Response(401, json={})
         return httpx.Response(200, json={"data": {"version": "1.0.4"}})
@@ -302,3 +307,27 @@ async def test_worker_layer_disabled_or_failing_never_breaks_analysis(db, client
     monkeypatch.setattr(tasks, "run_sentinelone", boom)
     findings, note = await tasks._run_s1(db, await load_app_config(db), "/tmp/x", Sub())
     assert findings == [] and note.startswith("SentinelOne scan failed") and TOKEN not in note
+
+
+async def test_s1_error_detail_is_surfaced(client, db, monkeypatch):
+    from routers import settings as settings_router
+
+    h = await _admin(db)
+    monkeypatch.setattr(settings_router.httpx, "AsyncClient", functools.partial(
+        httpx.AsyncClient, transport=httpx.MockTransport(lambda r: httpx.Response(
+            400, json={"errors": [{"detail": "Invalid scope id", "title": "BAD_REQUEST"}]}))))
+    resp = await client.post("/settings/config/test-s1", headers=h, json={
+        "console_url": CONSOLE, "scope_type": "ACCOUNT", "scope_id": "1", "api_token": TOKEN})
+    assert resp.json() == {"ok": False, "error": "HTTP 400: Invalid scope id"}
+
+
+def test_s1_cli_version_pinned_consistently():
+    """Dockerfile, launcher and API must agree on the CLI version."""
+    import re
+
+    from config import settings
+    from tests.test_launcher import ROOT
+
+    docker = re.search(r"ARG S1_CLI_VERSION=(\S+)", (ROOT / "Dockerfile").read_text()).group(1)
+    launcher = re.search(r'S1_CLI_VERSION = "([^"]+)"', (ROOT / "custos").read_text()).group(1)
+    assert docker == launcher == settings.S1_CLI_VERSION

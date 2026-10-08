@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     S1_SCOPE_ID: str = ""
     S1_SERVICE_USER_API_TOKEN: str = ""
     S1_CNS_CLI: str = "s1-cns-cli"
+    # Must match the version installed (Dockerfile S1_CLI_VERSION); the console
+    # expects the CLI's user-agent on its API.
+    S1_CLI_VERSION: str = "1.0.4"
     S1_HOME: str = ""
 
     # Comma-separated Semgrep rulesets (registry names like p/default, or local paths).

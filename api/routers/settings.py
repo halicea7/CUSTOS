@@ -1,4 +1,5 @@
 import asyncio
+import platform
 from uuid import UUID
 
 import httpx
@@ -20,6 +21,7 @@ from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
     url_origin,
 )
 from auth import get_current_user, hash_password, require_admin, verify_password
+from config import settings
 from crypto import encrypt
 from database import get_db
 from models import AppConfig, Repo, User
@@ -268,6 +270,26 @@ def model_reasoning_support(model: dict) -> bool | None:
 S1_LATEST_VERSION_API = "/web/api/v2.1/cnapp/cli/latest-version"
 
 
+def s1_cli_headers() -> dict[str, str]:
+    """Headers s1-cns-cli sends on every console call (s1_cns_cli.cli.utils.
+    generate_headers). The console answers 400 "Missing required headers"
+    without them."""
+    return {
+        "Content-Type": "application/json",
+        "user-agent": f"s1-cns-cli-{settings.S1_CLI_VERSION}",
+        "x-runtime-arch": f"{platform.system().lower()}_{platform.machine().lower()}",
+    }
+
+
+def _s1_error_detail(resp: httpx.Response) -> str:
+    try:
+        errors = resp.json().get("errors") or []
+        detail = "; ".join(str(e.get("detail") or e.get("title")) for e in errors if isinstance(e, dict))
+    except (ValueError, AttributeError):
+        detail = ""
+    return (detail or resp.text)[:200]
+
+
 @router.post("/config/test-s1")
 async def test_s1(
     body: TestS1Request,
@@ -292,7 +314,7 @@ async def test_s1(
             resp = await client.get(
                 console + S1_LATEST_VERSION_API,
                 params={"scopeType": body.scope_type, "scopeIds": body.scope_id},
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {token}", **s1_cli_headers()},
             )
     except httpx.ConnectError:
         return {"ok": False, "error": "Connection failed — check the console URL"}
@@ -307,7 +329,7 @@ async def test_s1(
     if resp.status_code == 404:
         return {"ok": False, "error": "Console URL or scope not found"}
     if resp.status_code >= 400:
-        return {"ok": False, "error": f"HTTP {resp.status_code}"}
+        return {"ok": False, "error": f"HTTP {resp.status_code}: {_s1_error_detail(resp)}"}
     try:
         version = (resp.json().get("data") or {}).get("version")
     except (ValueError, AttributeError):
