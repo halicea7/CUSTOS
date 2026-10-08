@@ -7,6 +7,7 @@ Run from the api/ directory (or inside the api container):
     python manage.py create-user <username> [--role admin|analyst]   # password on stdin
     python manage.py reset-password <username>                       # password on stdin
     python manage.py rotate-keys
+    python manage.py self-update-status <commit-sha>   # used by ./custos update
 
 Passwords are read from stdin (not argv) so they never show up in `ps` or
 shell history. Interactive terminals get a hidden prompt.
@@ -105,6 +106,67 @@ async def rotate_keys() -> None:
         )
 
 
+async def self_update_status(sha: str) -> None:
+    """Print, as JSON, whether *sha* of Custos's own repo is approved to deploy.
+
+    Approved = the configured self-update repo has a submission for exactly
+    this commit, an admin signed it off, and no critical/high finding was
+    dispositioned as a real issue (confirmed/escalated). Exit code 0 if
+    approved, 1 otherwise, so ./custos update can rely on either.
+    """
+    import json
+
+    from sqlalchemy import desc
+
+    from app_config import SELF_UPDATE_REPO
+    from enums import BLOCKING_SEVERITIES, Disposition, SubmissionStatus
+    from models import AuditLog, Finding, Submission
+
+    out: dict = {"sha": sha, "approved": False}
+    async with async_session_factory() as db:
+        row = await db.get(AppConfig, SELF_UPDATE_REPO)
+        out["repo"] = row.value if row else ""
+        if not out["repo"]:
+            out["reason"] = "No self-update repo is set (Settings → Analysis → Self-update)."
+        else:
+            sub = (await db.execute(
+                select(Submission)
+                .where(Submission.repo_full_name == out["repo"], Submission.commit_sha == sha)
+                .order_by(desc(Submission.created_at)).limit(1)
+            )).scalar_one_or_none()
+            if not sub:
+                out["reason"] = "Custos has not scanned this commit (is the webhook set up for the repo?)."
+            else:
+                out["status"] = sub.status
+                findings = (await db.execute(
+                    select(Finding.severity, Finding.disposition).where(Finding.submission_id == sub.id)
+                )).all()
+                out["findings"] = len(findings)
+                real_blockers = sum(
+                    1 for sev, disp in findings
+                    if sev in BLOCKING_SEVERITIES and disp in (Disposition.CONFIRMED, Disposition.ESCALATED)
+                )
+                signoff = (await db.execute(
+                    select(AuditLog, User.role)
+                    .join(User, User.username == AuditLog.analyst, isouter=True)
+                    .where(AuditLog.submission_id == sub.id, AuditLog.action == "sign_off")
+                    .order_by(desc(AuditLog.created_at)).limit(1)
+                )).first()
+                if signoff:
+                    out["signed_off_by"] = signoff[0].analyst
+                if sub.status != SubmissionStatus.SIGNED_OFF:
+                    out["reason"] = f"Not signed off yet (status: {sub.status})."
+                elif not signoff or signoff[1] != Role.ADMIN:
+                    out["reason"] = "Signed off, but not by an admin."
+                elif real_blockers:
+                    out["reason"] = (f"{real_blockers} critical/high finding(s) were confirmed as real "
+                                     "issues; fix them in a new commit.")
+                else:
+                    out["approved"] = True
+    print(json.dumps(out))
+    sys.exit(0 if out["approved"] else 1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -115,6 +177,8 @@ def main() -> None:
     p = sub.add_parser("reset-password")
     p.add_argument("username")
     sub.add_parser("rotate-keys")
+    p = sub.add_parser("self-update-status")
+    p.add_argument("sha")
     args = parser.parse_args()
 
     async def run():
@@ -127,6 +191,8 @@ def main() -> None:
                 await reset_password(args.username)
             elif args.cmd == "rotate-keys":
                 await rotate_keys()
+            elif args.cmd == "self-update-status":
+                await self_update_status(args.sha)
         finally:
             await engine.dispose()
 

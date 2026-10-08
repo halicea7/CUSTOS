@@ -40,6 +40,8 @@ class SubmissionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     finding_counts: dict | None = None
+    # Custos's own repo: signing off approves `./custos update` deploying it.
+    is_self_update: bool = False
 
     @field_validator("finding_counts", mode="before")
     @classmethod
@@ -150,6 +152,8 @@ class UpdateUserRoleRequest(BaseModel):
 
 
 class AppConfigResponse(BaseModel):
+    # Registered repo that is Custos's own source ("" = self-update off).
+    self_update_repo: str = ""
     # SentinelOne CNS layer. The token itself is write-only.
     s1_enabled: bool = False
     s1_console_url: str = ""
@@ -189,6 +193,8 @@ class AppConfigResponse(BaseModel):
 
 
 class AppConfigUpdateRequest(BaseModel):
+    # "" turns self-update off.
+    self_update_repo: str | None = Field(None, max_length=200)
     s1_enabled: bool | None = None
     s1_console_url: str | None = Field(None, pattern=r"^https://[^\s/]+/?$", max_length=300)
     s1_scope_type: Literal["ACCOUNT", "SITE"] | None = None

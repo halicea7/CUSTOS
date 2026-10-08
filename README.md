@@ -20,12 +20,13 @@ GitHub → webhook → API → ARQ worker → SAST tools + Ollama → Dashboard
 5. [Ollama setup](#ollama-setup)
 6. [Responses API provider](#responses-api-provider)
 7. [SentinelOne CNS layer](#sentinelone-cns-layer)
-8. [SAST tools](#sast-tools)
-9. [Connecting repositories](#connecting-repositories)
-10. [Users and access](#users-and-access)
-11. [Security model](#security-model)
-12. [Testing and CI](#testing-and-ci)
-13. [Useful commands](#useful-commands)
+8. [Self-update](#self-update)
+9. [SAST tools](#sast-tools)
+10. [Connecting repositories](#connecting-repositories)
+11. [Users and access](#users-and-access)
+12. [Security model](#security-model)
+13. [Testing and CI](#testing-and-ci)
+14. [Useful commands](#useful-commands)
 
 ---
 
@@ -209,6 +210,39 @@ Optionally, every submission can also be scanned with SentinelOne's CNS Shift Le
 
 ---
 
+## Self-update
+
+Custos can review its own updates the same way it reviews any repository, and deploy them only after review.
+
+**Setup:**
+
+1. **Register the repo.** Add the Custos repository on the **Repos** page, with its webhook, like any other.
+2. **Mark it as Custos.** On **Settings → Analysis → Self-update**, select that repository.
+3. **Schedule the updater.** On the server, run `./custos update` from cron or a systemd timer, for example:
+
+   ```cron
+   */15 * * * * cd /opt/custos && ./custos update >> /var/log/custos-update.log 2>&1
+   ```
+
+**What `./custos update` checks.** It fetches `main` and deploys the new commit **only if all of these hold**:
+
+- **Fast-forward:** the commit extends what's deployed. A rewritten history is refused.
+- **Clean checkout:** the deployed checkout has no local changes.
+- **CI:** every CI check for that exact commit passed. Custos's own check run doesn't count here, because review is verified separately.
+- **Review:** Custos scanned that exact commit and **an admin signed it off**, with no critical or high finding marked *confirmed* or *escalated*. Only admins can sign off this repository; the submission page says that sign-off approves a deployment.
+- **Signature (optional):** if `UPDATE_REQUIRE_SIGNED_COMMITS=true`, `git verify-commit` passes, so even a stolen GitHub account can't ship an update.
+
+**How it deploys.** It backs up the database to `backups/` (mode 700; keep these safe, they contain your data), deploys, and waits for the API and worker to come up healthy. If they don't, it rolls back the code. If the update changed the database schema, it also restores the backup.
+
+**What it never does:**
+
+- **Auto-deploy on a clean scan.** A clean scan proves little: scanners miss things, and the code under review can try to steer the LLM.
+- **Run inside a container.** The containers get no Docker socket, so a compromised worker can't redeploy anything.
+
+`./custos update --check` reports the decision without changing anything: exit code 0 means ready, 2 means waiting. For a private repo, set `UPDATE_GITHUB_TOKEN` in `.env` (read access is enough) or log in with `gh`.
+
+---
+
 ## SAST tools
 
 The worker runs `semgrep`, `gitleaks`, `pip-audit` and `npm audit`, each with a timeout. A missing tool is logged and skipped. In Docker they are all installed in the `worker` image target; on a host, `./custos dev` installs them, or by hand:
@@ -289,6 +323,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs lint, the test suite against Po
 ./custos dev              # full local stack with live logs
 ./custos deploy           # Docker deploy / upgrade
 ./custos logs | stop      # Docker stack
+./custos update --check   # is a reviewed Custos update ready to deploy?
 ./custos user add NAME    # create a login
 docker compose down -v    # stop and DELETE the database volume
 ```

@@ -14,6 +14,9 @@
   ./custos user add NAME [--role admin|analyst]
   ./custos user reset NAME   Manage logins (Docker or local, auto-detected).
   ./custos test | lint       Run the test suite / ruff + eslint.
+  ./custos update [--check]  Deploy the latest main of Custos itself, but only
+                             once CI passed and an admin signed it off in
+                             Custos (run it from cron/systemd; see README).
 
 Add --yes to accept defaults without prompting (generated passwords are
 printed once). Needs only python3 to run; everything else it checks for.
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import getpass
 import hashlib
 import os
@@ -32,7 +36,9 @@ import shutil
 import socket
 import subprocess
 import sys
+import json
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -346,6 +352,208 @@ def _docker_running() -> bool:
     return bool(res.stdout.strip())
 
 
+# ── self-update ───────────────────────────────────────────────────────────────
+# Runs on the host (cron/systemd), never inside a container: the containers
+# get no Docker socket, so a compromised worker can't redeploy anything.
+
+CUSTOS_CHECK_NAME = "Custos Security Review"  # Custos's own check run; not "CI"
+
+
+def _git(*args: str, check: bool = True) -> str:
+    res = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    if check and res.returncode != 0:
+        die(f"git {' '.join(args)} failed: {res.stderr.strip()[:300]}")
+    return res.stdout.strip()
+
+
+def github_repo_from_remote(url: str) -> str | None:
+    """owner/repo from an https or ssh GitHub remote URL."""
+    m = re.match(r"^(?:https://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                 r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$", url.strip())
+    return m.group(1) if m else None
+
+
+def ci_verdict(check_runs: list[dict]) -> tuple[bool, str]:
+    """Decide from a commit's GitHub check runs whether CI passed.
+
+    Custos's own check run is ignored: it reflects review, which is checked
+    separately against Custos's database (a check run can be forged by anyone
+    with checks:write; the database can't).
+    """
+    runs = [r for r in check_runs if r.get("name") != CUSTOS_CHECK_NAME]
+    if not runs:
+        return False, "no CI check runs found for this commit"
+    pending = [r["name"] for r in runs if r.get("status") != "completed"]
+    if pending:
+        return False, "CI still running: " + ", ".join(sorted(set(pending)))
+    failed = [r["name"] for r in runs if r.get("conclusion") not in ("success", "skipped", "neutral")]
+    if failed:
+        return False, "CI failed: " + ", ".join(sorted(set(failed)))
+    return True, f"{len(runs)} CI check(s) passed"
+
+
+def _github_token() -> str:
+    env = read_env(DOCKER_ENV)
+    token = env.get("UPDATE_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+    if not token and shutil.which("gh"):
+        token = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True).stdout.strip()
+    return token
+
+
+def _check_runs(repo: str, sha: str) -> list[dict]:
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs?per_page=100",
+        headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+    )
+    token = _github_token()
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r).get("check_runs", [])
+    except urllib.error.HTTPError as exc:
+        die(f"GitHub API returned HTTP {exc.code} for check runs"
+            + (" (private repo? set UPDATE_GITHUB_TOKEN in .env)" if exc.code in (401, 403, 404) else ""))
+    except OSError as exc:
+        die(f"Could not reach the GitHub API: {exc}")
+
+
+def _review_status(compose: list[str], sha: str) -> dict:
+    res = run(compose + ["exec", "-T", "api", "python", "manage.py", "self-update-status", sha],
+              cwd=ROOT, capture=True, check=False)
+    try:
+        return json.loads(res.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        die("Could not read the review status from Custos: " + (res.stderr or res.stdout).strip()[-300:])
+
+
+def _db_creds() -> tuple[str, str]:
+    env = read_env(DOCKER_ENV)
+    return env.get("POSTGRES_USER") or "custos", env.get("POSTGRES_DB") or "custos"
+
+
+def _alembic_version(compose: list[str]) -> str:
+    user, db = _db_creds()
+    res = run(compose + ["exec", "-T", "postgres", "psql", "-U", user, "-d", db, "-tAc",
+                         "SELECT version_num FROM alembic_version"], cwd=ROOT, capture=True, check=False)
+    return res.stdout.strip()
+
+
+def _backup_db(compose: list[str], label: str) -> Path:
+    user, db = _db_creds()
+    backups = ROOT / "backups"
+    backups.mkdir(exist_ok=True)
+    backups.chmod(0o700)
+    path = backups / f"custos-{time.strftime('%Y%m%d-%H%M%S')}-{label}.dump"
+    with open(path, "wb") as fh:
+        res = subprocess.run(compose + ["exec", "-T", "postgres", "pg_dump", "-U", user, "-d", db, "-Fc"],
+                             cwd=ROOT, stdout=fh, stderr=subprocess.PIPE)
+    path.chmod(0o600)
+    if res.returncode != 0 or path.stat().st_size == 0:
+        die("Database backup failed; not updating. " + res.stderr.decode(errors="replace")[-300:])
+    return path
+
+
+def _restore_db(compose: list[str], path: Path) -> None:
+    user, db = _db_creds()
+    with open(path, "rb") as fh:
+        subprocess.run(compose + ["exec", "-T", "postgres", "pg_restore", "-U", user, "-d", db,
+                                  "--clean", "--if-exists", "--single-transaction"],
+                       cwd=ROOT, stdin=fh, check=False)
+
+
+def _healthy(compose: list[str]) -> bool:
+    if not _wait_http("http://localhost:8000/healthz", 180):
+        return False
+    worker = subprocess.run(compose + ["ps", "-q", "worker"], cwd=ROOT,
+                            capture_output=True, text=True).stdout.strip()
+    if not worker:
+        return False
+    time.sleep(10)  # a worker that crashes on start (bad config/import) exits within seconds
+    state = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", worker],
+                           capture_output=True, text=True).stdout.strip()
+    return state == "true"
+
+
+def cmd_update(args) -> None:
+    if not DOCKER_ENV.exists():
+        die("No Docker deployment here (.env missing). Run ./custos deploy first.")
+    lock_file = open(ROOT / ".custos-update.lock", "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        die("Another ./custos update is already running.")
+
+    compose = compose_cmd()
+    step("Checking for a new version")
+    if _git("rev-parse", "--abbrev-ref", "HEAD") != "main":
+        die("The checkout is not on main; refusing to update.")
+    if _git("status", "--porcelain", "--untracked-files=no"):
+        die("The checkout has local changes to tracked files; refusing to update.")
+    repo = github_repo_from_remote(_git("remote", "get-url", "origin"))
+    if not repo:
+        die("origin is not a GitHub repository.")
+    _git("fetch", "--quiet", "origin", "main")
+    head, target = _git("rev-parse", "HEAD"), _git("rev-parse", "origin/main")
+    if head == target:
+        ok(f"Up to date ({head[:8]})")
+        return
+    if subprocess.run(["git", "merge-base", "--is-ancestor", head, target], cwd=ROOT).returncode != 0:
+        die(f"origin/main ({target[:8]}) is not a fast-forward of {head[:8]} — history was rewritten. "
+            "Not updating; investigate before deploying by hand.")
+    info(f"{head[:8]} → {target[:8]}:")
+    for line in _git("log", "--oneline", "--no-decorate", f"{head}..{target}").splitlines()[:20]:
+        print("      " + line)
+
+    step("Gates")
+    gates: list[tuple[bool, str]] = []
+    gates.append(ci_verdict(_check_runs(repo, target)))
+    status = _review_status(compose, target)
+    gates.append((status.get("approved", False),
+                  f"signed off in Custos by {status['signed_off_by']}" if status.get("approved")
+                  else status.get("reason", "not approved")))
+    if read_env(DOCKER_ENV).get("UPDATE_REQUIRE_SIGNED_COMMITS", "").lower() == "true":
+        signed = subprocess.run(["git", "verify-commit", target], cwd=ROOT, capture_output=True).returncode == 0
+        gates.append((signed, "commit signature verified" if signed else
+                      "commit is not signed by an allowed key (git verify-commit failed)"))
+    for passed, text in gates:
+        (ok if passed else warn)(text)
+    if not all(p for p, _ in gates):
+        info("Not updating. Re-run once the gates above pass.")
+        if args.check:
+            sys.exit(2)
+        return  # a pending update isn't an error: cron sees exit 0
+    if args.check:
+        ok("All gates pass: ./custos update would deploy this version.")
+        return
+
+    step("Backing up the database")
+    old_schema = _alembic_version(compose)
+    backup = _backup_db(compose, head[:8])
+    ok(f"Saved {backup.relative_to(ROOT)}")
+
+    step(f"Deploying {target[:8]}")
+    _git("merge", "--ff-only", "--quiet", target)
+    up = run(compose + ["up", "-d", "--build", "--remove-orphans"], cwd=ROOT, capture=True, check=False)
+    if up.returncode == 0 and _healthy(compose):
+        ok(f"Custos is now at {target[:8]}")
+        return
+
+    step(f"Update failed — rolling back to {head[:8]}")
+    if up.returncode != 0:
+        print("    " + (up.stderr or up.stdout).strip()[-500:])
+    _git("reset", "--hard", "--quiet", head)
+    if _alembic_version(compose) != old_schema:
+        warn("The database schema changed; restoring the pre-update backup")
+        _restore_db(compose, backup)
+    run(compose + ["up", "-d", "--build", "--remove-orphans"], cwd=ROOT, capture=True, check=False)
+    if _healthy(compose):
+        die(f"Update to {target[:8]} failed; rolled back to {head[:8]} and it is healthy. "
+            "See ./custos logs.")
+    die(f"Update failed and the rollback to {head[:8]} is not healthy either — check ./custos logs. "
+        f"Database backup: {backup.relative_to(ROOT)}")
+
+
 # ── local development ─────────────────────────────────────────────────────────
 
 _INSTALL_HINTS = {
@@ -614,6 +822,10 @@ def main() -> None:
     p.add_argument("pytest_args", nargs=argparse.REMAINDER)
     p.set_defaults(fn=cmd_test)
     sub.add_parser("lint", help="ruff + eslint").set_defaults(fn=cmd_lint)
+    p = sub.add_parser("update", help="deploy the latest reviewed version of Custos itself")
+    p.add_argument("--check", action="store_true",
+                   help="only report whether an update is ready (exit 0 ready, 2 not ready)")
+    p.set_defaults(fn=cmd_update)
 
     args = parser.parse_args()
     YES = args.yes

@@ -21,7 +21,7 @@ from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
 from auth import get_current_user, hash_password, require_admin, verify_password
 from crypto import encrypt
 from database import get_db
-from models import AppConfig, User
+from models import AppConfig, Repo, User
 from schemas import (
     AppConfigResponse,
     AppConfigUpdateRequest,
@@ -292,6 +292,14 @@ async def update_config(
     _check_responses_target(base_url, key_set)
     if provider == "responses" and not updates.get("responses_model", current.responses_model):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Set a model for the Responses API provider")
+
+    if updates.get("self_update_repo"):
+        exists = (await db.execute(
+            select(Repo.id).where(Repo.repo_full_name == updates["self_update_repo"])
+        )).scalar_one_or_none()
+        if not exists:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "Self-update repo must be a registered repository")
 
     # ── SentinelOne ──
     s1_token = updates.pop("s1_api_token", None)

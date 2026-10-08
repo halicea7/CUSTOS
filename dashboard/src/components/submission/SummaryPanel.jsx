@@ -76,6 +76,15 @@ export default function SummaryPanel({ theme, sub, findings }) {
         </div>
       ) : (
         <div>
+          {sub.is_self_update && (
+            <div role="note" style={{ marginBottom: 12, padding: "9px 12px", borderRadius: t.radius,
+              background: `${t.sev.medium.fg}14`, border: `1px solid ${t.sev.medium.fg}33`,
+              fontSize: 12, lineHeight: 1.5, color: t.c.text2 }}>
+              <b>This is Custos&rsquo;s own repository.</b> Signing off approves deploying this commit to
+              Custos itself on its next <code style={{ fontFamily: t.fontMono }}>./custos update</code>
+              {" "}(admins only). Findings marked <i>confirmed</i> or <i>escalated</i> block the update.
+            </div>
+          )}
           {!gateOpen && (
             <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: t.radius,
               background: `${t.sev.critical.fg}0e`, border: `1px solid ${t.sev.critical.fg}22`,

@@ -3,12 +3,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from access import get_visible_submission
+from app_config import SELF_UPDATE_REPO
 from auth import get_current_user
 from crypto import decrypt
 from database import get_db
-from enums import BLOCKING_SEVERITIES, SubmissionStatus
+from enums import BLOCKING_SEVERITIES, Role, SubmissionStatus
 from github_client import post_github_check
-from models import AuditLog, Finding, Repo, Submission, User
+from models import AppConfig, AuditLog, Finding, Repo, Submission, User
 from schemas import SignoffRequest, SubmissionResponse
 
 router = APIRouter(prefix="/submissions", tags=["signoff"])
@@ -21,6 +22,12 @@ async def sign_off(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    self_repo = await db.get(AppConfig, SELF_UPDATE_REPO)
+    if self_repo and self_repo.value == sub.repo_full_name and current_user.role != Role.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can sign off commits to Custos itself: sign-off approves deploying them.",
+        )
     if sub.status == SubmissionStatus.SIGNED_OFF:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Submission already signed off")
     if sub.status != SubmissionStatus.NEEDS_REVIEW:

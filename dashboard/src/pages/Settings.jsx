@@ -4,6 +4,7 @@ import {
   getUsers, createUser, updateUserRole, deleteUser,
   changePassword, getConfig, updateConfig, testOllama, testResponses, testS1,
 } from "../api/settings.js";
+import { listRepos } from "../api/repos.js";
 import { Btn, Avatar, RoleBadge } from "../components/atoms.jsx";
 import {
   ChoiceCards, Feedback, Field, PageHeader, PageWrap, SectionCard, SelectInput, Slider, Tabs, TextInput, Toggle,
@@ -408,10 +409,15 @@ function AnalysisTab({ theme }) {
   const [ollamaTest, setOllamaTest] = useState(null);
   const [respTest, setRespTest] = useState(null);
   const [s1Test, setS1Test] = useState(null);
+  const [repos, setRepos] = useState([]);
   const { setDirty } = useUnsavedGuard();
   const status = useProviderStatus(cfg);
   const s1Status = useS1Status(cfg);
   const t = theme;
+
+  useEffect(() => {
+    listRepos().then(setRepos).catch(() => setRepos([]));
+  }, []);
 
   useEffect(() => {
     getConfig().then(c => { setCfg(c); setDraft(c); })
@@ -483,6 +489,7 @@ function AnalysisTab({ theme }) {
         responses_model: draft.responses_model,
         ...keyUpdate,
         ...s1TokenUpdate,
+        self_update_repo: draft.self_update_repo || "",
         s1_enabled: draft.s1_enabled,
         ...(draft.s1_console_url ? { s1_console_url: draft.s1_console_url } : {}),
         s1_scope_type: draft.s1_scope_type,
@@ -745,6 +752,22 @@ function AnalysisTab({ theme }) {
               </Field>
             </>
           )}
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="Self-update" subtitle="Custos reviewing its own updates">
+        <div style={{ maxWidth: 600 }}>
+          <Field theme={t} label="Custos source repository" hint="must be registered on the Repos page">
+            <SelectInput theme={t} value={draft.self_update_repo || ""} onChange={set("self_update_repo")}
+              options={[{ value: "", label: "Off — don't treat any repo as Custos itself" },
+                ...repos.map(r => ({ value: r.repo_full_name, label: r.repo_full_name }))]} />
+          </Field>
+          <div style={{ ...hint, marginTop: -6 }}>
+            Commits to this repo are scanned like any other. <code style={{ fontFamily: t.fontMono }}>./custos update</code>,
+            run on the server from cron or systemd, deploys the latest <code style={{ fontFamily: t.fontMono }}>main</code> only
+            when CI passed for that exact commit <b>and</b> an admin signed it off here, with no critical or high
+            finding confirmed as real. Only admins can sign off this repo. A clean scan never deploys on its own.
+          </div>
         </div>
       </SectionCard>
 

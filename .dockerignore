@@ -11,3 +11,5 @@ dashboard/node_modules
 dashboard/dist
 .dev-logs
 *.log
+backups
+.custos-update.lock

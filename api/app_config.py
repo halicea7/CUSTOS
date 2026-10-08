@@ -24,11 +24,15 @@ RESPONSES_API_KEY_ORIGIN = "responses_api_key_origin"
 S1_TOKEN = "s1_api_token"
 S1_TOKEN_ORIGIN = "s1_api_token_origin"
 S1_SCANNERS = ("secret", "iac", "vuln")
+# The registered repo that is Custos's own source. Signing off its commits
+# approves them for `./custos update` to deploy.
+SELF_UPDATE_REPO = "self_update_repo"
 
 CONFIG_KEYS = {
     "llm_provider", "responses_base_url", "responses_model", RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN,
     "s1_enabled", "s1_console_url", "s1_scope_type", "s1_scope_id", "s1_scanners",
     "s1_verify_secrets", "s1_publish", S1_TOKEN, S1_TOKEN_ORIGIN,
+    SELF_UPDATE_REPO,
     "ollama_base_url", "ollama_model", "ollama_think", "ollama_num_ctx",
     "llm_max_content_chars",
     "max_file_size_kb", "max_files_per_repo",
@@ -49,6 +53,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
     s1_token = _s1_token_for_url(ov, s1_console_url) if s1_console_url else ""
     s1_scanners = [s for s in ov.get("s1_scanners", ",".join(S1_SCANNERS)).split(",") if s in S1_SCANNERS]
     return AppConfigResponse(
+        self_update_repo=ov.get(SELF_UPDATE_REPO, ""),
         s1_enabled=_bool(ov.get("s1_enabled"), settings.S1_ENABLED),
         s1_console_url=s1_console_url,
         s1_scope_type=ov.get("s1_scope_type", settings.S1_SCOPE_TYPE),

@@ -7,6 +7,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from access import can_see_group, get_visible_submission, restrict_to_visible
+from app_config import SELF_UPDATE_REPO
 from auth import get_current_user
 from database import get_db
 from enums import BLOCKING_SEVERITIES, SEVERITY_ORDER
@@ -106,7 +107,10 @@ async def get_submission(
     db: AsyncSession = Depends(get_db),
 ):
     counts_map = await _finding_counts(db, [sub.id])
-    return _with_counts(sub, counts_map.get(sub.id))
+    resp = _with_counts(sub, counts_map.get(sub.id))
+    self_repo = await db.get(AppConfig, SELF_UPDATE_REPO)
+    resp.is_self_update = bool(self_repo and self_repo.value == sub.repo_full_name)
+    return resp
 
 
 @router.get("/{submission_id}/llm-runs", response_model=list[LlmRunResponse])
