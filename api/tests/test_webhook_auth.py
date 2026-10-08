@@ -78,3 +78,22 @@ async def test_tag_push_is_ignored(client, db):
     assert resp.json()["status"] == "ignored"
     assert (await db.execute(select(Submission))).scalars().all() == []
 
+
+
+async def test_rotating_ips_still_hit_the_per_account_limit(client, db, monkeypatch):
+    """Many source addresses (botnet, cloud IP pool) must not multiply the
+    number of guesses an attacker gets against one account."""
+    import itertools
+
+    from config import settings
+    from routers import auth as auth_router
+
+    await make_user(db, "dave")
+    ips = (f"203.0.113.{i}" for i in itertools.count())
+    monkeypatch.setattr(auth_router, "_client_ip", lambda request: next(ips))
+
+    for _ in range(settings.LOGIN_MAX_ATTEMPTS_PER_ACCOUNT):
+        r = await client.post("/auth/login", json={"username": "dave", "password": "nope"})
+        assert r.status_code == 401
+    locked = await client.post("/auth/login", json={"username": "dave", "password": "password123"})
+    assert locked.status_code == 429

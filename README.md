@@ -119,6 +119,7 @@ Settings are read from environment variables (`api/.env` for local dev, `.env` a
 | `MAX_FILES_PER_REPO` | no | `200` | Default for the Settings page value of the same name |
 | `STALE_JOB_MINUTES` | no | `60` | Jobs stuck "analyzing" longer than this are marked as errored |
 | `LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_SECONDS` | no | `10` / `300` | Failed-login rate limit per username + IP |
+| `LOGIN_MAX_ATTEMPTS_PER_ACCOUNT` | no | `50` | Failed logins per username across all IPs within the window (stops distributed brute force) |
 | `POSTGRES_PASSWORD` / `REDIS_PASSWORD` | Docker | — | Credentials for the bundled services |
 
 Runtime settings editable on the dashboard **Settings → Analysis** page (stored in the database, override the env defaults):
@@ -211,7 +212,7 @@ Custos analyses untrusted code, so the worker treats every repository as hostile
 - **Rendering.** Code snippets are always HTML-escaped (via highlight.js or an explicit escape) before display; nginx sends a strict Content-Security-Policy.
 - **Secrets at rest.** Repo tokens and webhook secrets are encrypted with `ENCRYPTION_KEY` (separate from the JWT key, rotatable).
 - **Webhooks.** HMAC-SHA256 verified per repo; unknown repos and bad signatures get an identical response; redeliveries are de-duplicated; branch deletions and tag pushes are ignored.
-- **Logins.** Failed attempts are rate-limited per username + client IP. nginx overwrites `X-Forwarded-For` with the real peer address, so clients can't rotate fake IPs to dodge the limit.
+- **Logins.** Failed attempts are rate-limited per username + client IP, and separately per username across all IPs, so neither faked nor real rotating addresses buy unlimited guesses. nginx overwrites `X-Forwarded-For` with the real peer address.
 
 ---
 

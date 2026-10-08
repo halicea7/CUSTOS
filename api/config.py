@@ -48,6 +48,8 @@ class Settings(BaseSettings):
 
     # Login rate limiting (per username+IP).
     LOGIN_MAX_ATTEMPTS: int = 10
+    # Across all source IPs, so rotating addresses doesn't buy more guesses.
+    LOGIN_MAX_ATTEMPTS_PER_ACCOUNT: int = 50
     LOGIN_WINDOW_SECONDS: int = 300
 
     # Submissions stuck in "analyzing" longer than this are marked as errored.

@@ -25,9 +25,17 @@ def _client_ip(request: Request) -> str:
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     redis = request.app.state.redis
-    rl_key = f"custos:login_fail:{body.username.lower()}:{_client_ip(request)}"
-    failures = int(await redis.get(rl_key) or 0)
-    if failures >= settings.LOGIN_MAX_ATTEMPTS:
+    username = body.username.lower()
+    # Two counters: per username+IP (tight, so one source can't lock a real
+    # user out) and per username across all IPs (looser, so an attacker with
+    # many addresses still can't brute-force a single account).
+    rl_key = f"custos:login_fail:{username}:{_client_ip(request)}"
+    account_key = f"custos:login_fail_account:{username}"
+    failures, account_failures = await redis.mget(rl_key, account_key)
+    if (
+        int(failures or 0) >= settings.LOGIN_MAX_ATTEMPTS
+        or int(account_failures or 0) >= settings.LOGIN_MAX_ATTEMPTS_PER_ACCOUNT
+    ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many failed login attempts. Try again later.",
@@ -42,8 +50,9 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
     )
     if not user or not password_ok:
         pipe = redis.pipeline()
-        pipe.incr(rl_key)
-        pipe.expire(rl_key, settings.LOGIN_WINDOW_SECONDS)
+        for key in (rl_key, account_key):
+            pipe.incr(key)
+            pipe.expire(key, settings.LOGIN_WINDOW_SECONDS)
         await pipe.execute()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
