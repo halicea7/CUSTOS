@@ -9,7 +9,7 @@ redis[hiredis]
 httpx
 python-jose[cryptography]
 bcrypt
+cryptography
 gitpython
-pygithub
+pip-audit
 python-multipart
-textual>=0.80
