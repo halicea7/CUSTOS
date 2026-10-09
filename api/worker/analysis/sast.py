@@ -7,6 +7,7 @@ absence or non-zero exit is logged and returns an empty list.
 import asyncio
 import json
 import logging
+import os
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -167,7 +168,37 @@ async def run_gitleaks(repo_path: str) -> list[RawFinding]:
     return findings
 
 
-# ── pip-audit ─────────────────────────────────────────────────────────────────
+# ── dependency audits ─────────────────────────────────────────────────────────
+
+# Manifests often live in subfolders (api/requirements.txt, web/package.json).
+_MANIFEST_MAX_DEPTH = 4
+_MANIFEST_MAX_DIRS = 20
+_SKIP_DIRS = {"node_modules", "vendor", "venv", "env", "site-packages", "dist", "build", "__pycache__"}
+
+
+def _manifest_dirs(root: Path, has_manifest) -> list[Path]:
+    """Directories under *root* (root included) for which has_manifest(dir) is true."""
+    found: list[Path] = []
+    for dirpath, dirnames, _ in os.walk(root):  # does not follow symlinked dirs
+        here = Path(dirpath)
+        depth = len(here.relative_to(root).parts)
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if depth < _MANIFEST_MAX_DEPTH and not d.startswith(".") and d not in _SKIP_DIRS
+        )
+        if has_manifest(here):
+            found.append(here)
+            if len(found) >= _MANIFEST_MAX_DIRS:
+                logger.warning("dependency audit: more than %d manifest folders, skipping the rest",
+                               _MANIFEST_MAX_DIRS)
+                break
+    return found
+
+
+def _is_file(p: Path) -> bool:
+    # Never follow a symlink out of the checkout.
+    return p.is_file() and not p.is_symlink()
+
 
 async def run_dep_audit(repo_path: str) -> list[RawFinding]:
     findings: list[RawFinding] = []
@@ -176,12 +207,15 @@ async def run_dep_audit(repo_path: str) -> list[RawFinding]:
     return findings
 
 
+def _requirement_files(root: Path) -> list[Path]:
+    def in_dir(d: Path) -> list[Path]:
+        return [c for c in [d / "requirements.txt", *sorted(d.glob("requirements/*.txt"))] if _is_file(c)]
+    return [req for d in _manifest_dirs(root, lambda d: bool(in_dir(d))) for req in in_dir(d)]
+
+
 async def _pip_audit(repo_path: str) -> list[RawFinding]:
-    req_paths: list[Path] = []
     root = Path(repo_path)
-    for candidate in [root / "requirements.txt", *root.glob("requirements/*.txt")]:
-        if candidate.is_file():
-            req_paths.append(candidate)
+    req_paths = _requirement_files(root)
     if not req_paths:
         return []
 
@@ -231,16 +265,27 @@ _NPM_SEVERITY = {
 }
 
 
-async def _npm_audit(repo_path: str) -> list[RawFinding]:
-    if not (Path(repo_path) / "package.json").is_file():
-        return []
+def _npm_lock(d: Path) -> bool:
+    # npm audit needs a lockfile; workspace members share the root's.
+    return _is_file(d / "package.json") and (
+        _is_file(d / "package-lock.json") or _is_file(d / "npm-shrinkwrap.json"))
 
+
+async def _npm_audit(repo_path: str) -> list[RawFinding]:
+    root = Path(repo_path)
+    findings: list[RawFinding] = []
+    for pkg_dir in _manifest_dirs(root, _npm_lock):
+        findings.extend(await _npm_audit_dir(pkg_dir, str((pkg_dir / "package.json").relative_to(root))))
+    return findings
+
+
+async def _npm_audit_dir(pkg_dir: Path, manifest: str) -> list[RawFinding]:
     # Force the public registry: a hostile repo's .npmrc could otherwise
     # redirect the audit request (and its lockfile) to an attacker's server.
     cmd = ["npm", "audit", "--json", "--registry=https://registry.npmjs.org/"]
-    rc, stdout, stderr = await _run(cmd, cwd=repo_path)
+    rc, stdout, stderr = await _run(cmd, cwd=str(pkg_dir))
     if rc not in (0, 1):
-        logger.warning("npm audit exited %d: %s", rc, stderr[:200])
+        logger.warning("npm audit (%s) exited %d: %s", manifest, rc, stderr[:200])
         return []
 
     try:
@@ -263,10 +308,10 @@ async def _npm_audit(repo_path: str) -> list[RawFinding]:
                 title=f"{name}: {desc or raw_sev + ' severity vulnerability'}",
                 description=desc,
                 remediation="npm audit fix" if vuln.get("fixAvailable") else None,
-                file_path="package.json",
+                file_path=manifest,
             )
         )
-    logger.info("npm audit: %d findings", len(findings))
+    logger.info("npm audit (%s): %d findings", manifest, len(findings))
     return findings
 
 
