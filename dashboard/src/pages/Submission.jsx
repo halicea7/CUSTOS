@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate } from "react-router";
 import { useTheme } from "../App.jsx";
 import { Severity, StatusBadge, SEV_ORDER, fmtDate, Btn, Pill } from "../components/atoms.jsx";
 import ReportModal from "../components/submission/ReportModal.jsx";

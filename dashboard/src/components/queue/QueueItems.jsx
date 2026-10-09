@@ -95,7 +95,9 @@ export function QueueCards({ theme, subs, onOpen, activeJobs }) {
           <div key={sub.id} onClick={() => onOpen(sub)}
             onMouseEnter={() => setHover(sub.id)} onMouseLeave={() => setHover(null)}
             style={{ background: t.c.surface,
-              border: `1px solid ${hov ? t.c.border2 : t.c.border}`,
+              // Not the `border` shorthand: updating it on hover would reset borderTop.
+              ...Object.fromEntries(["borderLeft", "borderRight", "borderBottom"].map(
+                (side) => [side, `1px solid ${hov ? t.c.border2 : t.c.border}`])),
               borderRadius: t.radiusLg, padding: 20, cursor: "pointer",
               transition: "all 0.16s", transform: hov ? "translateY(-3px)" : "none",
               boxShadow: hov ? t.c.shadowHi : t.c.shadow,

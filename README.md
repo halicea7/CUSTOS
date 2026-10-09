@@ -36,7 +36,7 @@ GitHub ← update check (scheduled / button) or → webhook → API → ARQ work
 |---|---|---|
 | Docker + Docker Compose | required | — |
 | Python 3.11+ | — | required |
-| Node.js 20+ | — | required |
+| Node.js 20.19+ (22 recommended) | — | required |
 | PostgreSQL 16 | provided by compose | required |
 | Redis 7 | provided by compose | required |
 | Ollama | running separately | running separately |
@@ -73,7 +73,7 @@ It prints the dashboard and webhook URLs when done. The dashboard's nginx proxie
 
 ## Local development setup
 
-Requires Python 3.11+, Node.js 20+, PostgreSQL 16, Redis and git (macOS: `brew install python node postgresql@16 redis`).
+Requires Python 3.11+, Node.js 20.19+ (22 recommended), PostgreSQL 16, Redis and git (macOS: `brew install python node postgresql@16 redis`).
 
 ```bash
 ./custos dev                  # add --ngrok and/or --bind-all to start with those on

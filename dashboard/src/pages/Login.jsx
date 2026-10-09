@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router";
 import { useAuth, useTheme, Icon } from "../App.jsx";
 import api, { getMe } from "../api/client.js";
 import { Btn } from "../components/atoms.jsx";

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useTheme } from "../App.jsx";
 import { Btn } from "../components/atoms.jsx";
 import QueueStats from "../components/queue/QueueStats.jsx";

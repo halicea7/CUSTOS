@@ -2,7 +2,7 @@ import React, { createContext, lazy, Suspense, useCallback, useContext, useState
 import {
   BrowserRouter, Routes, Route, Navigate,
   useNavigate, useLocation,
-} from "react-router-dom";
+} from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { getMe } from "./api/client.js";
 import { makeTheme, applyCssVars } from "./theme.js";
