@@ -306,7 +306,7 @@ function validate(d, cfg) {
     if (!S1_CONSOLE_RE.test(d.s1_console_url || "")) e.s1_console_url = "Enter the console's https:// address, e.g. https://<region>.sentinelone.net";
     if (!/^\d{1,30}$/.test(d.s1_scope_id || "")) e.s1_scope_id = "The numeric account or site ID";
     if (!d.s1_scanners?.length) e.s1_scanners = "Pick at least one scanner";
-    if (!/^[A-Za-z0-9_-]{0,100}$/.test(d.s1_policy_id || "")) e.s1_policy_id = "Letters, digits, - and _ only";
+    if (!/^(?:[A-Za-z0-9_][A-Za-z0-9_-]{0,99})?$/.test(d.s1_policy_id || "")) e.s1_policy_id = "Letters, digits, - and _ only (not starting with -)";
     const bound = cfg?.s1_token_origin;
     const sameConsole = bound && urlOrigin(d.s1_console_url) === bound;
     if (!d.s1_api_token_input && (d.s1_api_token_clear || !sameConsole)) {

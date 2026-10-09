@@ -214,7 +214,7 @@ class AppConfigUpdateRequest(BaseModel):
     s1_scope_type: Literal["ACCOUNT", "SITE"] | None = None
     s1_scope_id: str | None = Field(None, pattern=r"^\d{1,30}$")
     # "" clears it.
-    s1_policy_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{0,100}$")
+    s1_policy_id: str | None = Field(None, pattern=r"^(?:[A-Za-z0-9_][A-Za-z0-9_-]{0,99})?$")
     s1_scanners: list[Literal["secret", "iac", "vuln"]] | None = Field(None, min_length=1)
     s1_verify_secrets: bool | None = None
     s1_publish: bool | None = None

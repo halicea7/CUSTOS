@@ -383,6 +383,8 @@ async def test_policy_id_setting_round_trip(client, db):
     h = auth_headers("root")
     bad = await client.patch("/settings/config", json={"s1_policy_id": "x; rm -rf /"}, headers=h)
     assert bad.status_code == 422
+    flag = await client.patch("/settings/config", json={"s1_policy_id": "--publish-result"}, headers=h)
+    assert flag.status_code == 422  # would read as a CLI option
     ok = await client.patch("/settings/config", json={"s1_policy_id": "pol-1"}, headers=h)
     assert ok.status_code == 200 and ok.json()["s1_policy_id"] == "pol-1"
     cleared = await client.patch("/settings/config", json={"s1_policy_id": ""}, headers=h)
