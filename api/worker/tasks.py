@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import shutil
+import subprocess
+import tempfile
 import time
 from collections import Counter
 from contextlib import asynccontextmanager
@@ -416,6 +418,28 @@ _SOURCE_CATEGORY = {
 }
 
 
+def _snapshot_without_ignored(src: Path, dest: Path) -> bool:
+    """Copy the files git would commit (tracked + untracked, minus .gitignore'd) to *dest*.
+
+    Keeps local-only files such as api/.env out of the self-scan. Returns False
+    when *src* isn't in a git checkout (e.g. the Docker image, whose
+    .dockerignore already leaves env files out).
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(src), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True, timeout=60, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for rel in filter(None, out.decode(errors="surrogateescape").split("\0")):
+        f = src / rel
+        if f.is_file() and not f.is_symlink():  # skips files deleted but not yet committed
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dest / rel)
+    return True
+
+
 async def scan_self(
     ctx,
     existing_scan_id: str | None = None,
@@ -423,8 +447,20 @@ async def scan_self(
     triggered_by_user: str | None = None,
 ) -> None:
     """Full security self-assessment of the Custos codebase."""
-    custos_path = str(Path(__file__).parent.parent)
+    src = Path(__file__).parent.parent
+    with tempfile.TemporaryDirectory(prefix="custos-selfscan-") as tmp:
+        snapshot = await asyncio.to_thread(_snapshot_without_ignored, src, Path(tmp))
+        await _scan_self_at(str(Path(tmp) if snapshot else src), ctx, existing_scan_id,
+                            triggered_by, triggered_by_user)
 
+
+async def _scan_self_at(
+    custos_path: str,
+    ctx,
+    existing_scan_id: str | None,
+    triggered_by: str,
+    triggered_by_user: str | None,
+) -> None:
     async with async_session_factory() as db:
         scan = await db.get(SelfScan, UUID(existing_scan_id)) if existing_scan_id else None
         if existing_scan_id and scan is None:

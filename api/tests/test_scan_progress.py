@@ -129,3 +129,24 @@ def test_worker_and_api_use_custos_queue():
 
     assert WorkerSettings.queue_name == ARQ_QUEUE != "arq:queue"
     assert "default_queue_name=ARQ_QUEUE" in open("main.py").read()
+
+
+def test_self_scan_snapshot_leaves_out_gitignored_files(tmp_path):
+    import subprocess
+
+    from worker.tasks import _snapshot_without_ignored
+
+    repo = tmp_path / "repo"
+    (repo / "api").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("api/.env\n")
+    (repo / "api" / ".env").write_text("SECRET_KEY=live\n")
+    (repo / "api" / "main.py").write_text("print('hi')\n")      # untracked, not ignored
+    (repo / "api" / ".env.example").write_text("SECRET_KEY=\n")
+
+    dest = tmp_path / "snap"
+    dest.mkdir()
+    assert _snapshot_without_ignored(repo / "api", dest)
+    assert sorted(p.name for p in dest.rglob("*") if p.is_file()) == [".env.example", "main.py"]
+
+    assert not _snapshot_without_ignored(tmp_path / "not-a-repo", dest)
