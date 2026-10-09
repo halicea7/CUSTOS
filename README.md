@@ -255,6 +255,10 @@ pip install semgrep pip-audit
 brew install gitleaks   # or download a release binary from github.com/gitleaks/gitleaks
 ```
 
+`pip-audit` and `npm audit` find `requirements.txt` and `package-lock.json` files up to four folders deep (skipping `node_modules`, virtualenvs and hidden folders).
+
+**False positives carry forward.** When a new scan of a repository reports a finding an analyst already marked *false positive* in an earlier scan of that repository, it is marked again automatically ("Last set by auto: *analyst*", with an audit-log entry naming the earlier finding). Tool findings must have the same tool, rule and file and a nearby line; LLM findings, whose wording changes between runs, the same file, a nearby line and the same CWE or a similar title. The most recent decision wins (a later *confirmed* stops it), and a finding that comes back more severe is always left for review.
+
 ---
 
 ## Connecting repositories

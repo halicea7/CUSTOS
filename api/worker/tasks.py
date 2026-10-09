@@ -24,6 +24,7 @@ from intake import check_repo_for_updates
 from models import AppConfig, Finding, LlmRun, Repo, SelfScan, SelfScanFinding, Submission
 from redis_util import LLM_ACTIVE_SET, llm_lock_key, llm_start_key
 from schemas import AppConfigResponse
+from worker.analysis.carryover import apply_previous_false_positives, audit_carried
 from worker.analysis.clone import clone_repo, redact
 from worker.analysis.config_checks import run_config_checks
 from worker.analysis.llm import PROVIDER_OLLAMA, PROVIDER_RESPONSES, LlmError, LlmProvider, LlmResult, call_llm
@@ -237,8 +238,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                     llm_error = llm_run.error
 
                 all_findings = synthesize(sast_findings, llm_findings)
-                for f in all_findings:
-                    db.add(Finding(submission_id=submission.id, **f))
+                await _save_findings(db, submission, all_findings)
 
                 submission.status = SubmissionStatus.NEEDS_REVIEW.value
                 notes = []
@@ -249,7 +249,9 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 submission.error_message = "\n".join(notes) or None
                 await db.commit()
 
-                blocking = any(f["severity"] in BLOCKING_SEVERITIES for f in all_findings)
+                blocking = any(
+                    f["severity"] in BLOCKING_SEVERITIES and not f.get("disposition") for f in all_findings
+                )
                 await post_github_check(
                     repo=repo,
                     sha=sha,
@@ -356,11 +358,13 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                         f for f in dedup_raw_findings(sast_context + llm_result.findings)
                         if f.source == "llm"
                     ]
+                    # Decisions on the findings being replaced are matched before they go.
+                    new_dicts = synthesize(new_llm)
+                    carried = await apply_previous_false_positives(db, sub.repo_full_name, new_dicts)
                     await db.execute(
                         sql_delete(Finding).where(Finding.submission_id == sub.id, Finding.source == "llm")
                     )
-                    for f in synthesize(new_llm):
-                        db.add(Finding(submission_id=sub.id, **f))
+                    await _save_findings(db, sub, new_dicts, carried)
 
                     duration = time.time() - start_time
                     llm_result.findings = new_llm
@@ -438,6 +442,21 @@ def _snapshot_without_ignored(src: Path, dest: Path) -> bool:
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dest / rel)
     return True
+
+
+async def _save_findings(
+    db, submission: Submission, findings: list[dict], carried: list[tuple[dict, Finding]] | None = None
+) -> None:
+    """Add *findings*, carrying earlier false-positive decisions forward (audited)."""
+    if carried is None:
+        carried = await apply_previous_false_positives(db, submission.repo_full_name, findings)
+    rows = {id(f): Finding(submission_id=submission.id, **f) for f in findings}
+    db.add_all(rows.values())
+    if carried:
+        await db.flush()  # assigns ids for the audit entries
+        audit_carried(db, submission.id, [(rows[id(f)], old) for f, old in carried])
+        logger.info("Submission %s: %d finding(s) marked false positive from earlier decisions",
+                    submission.id, len(carried))
 
 
 async def scan_self(
