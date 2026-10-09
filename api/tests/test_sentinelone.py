@@ -349,6 +349,15 @@ def test_disabled_scanner_is_explained():
     assert "policy ID" in msg and "Settings" in msg
 
 
+def test_unknown_policy_is_explained():
+    from worker.analysis.sentinelone import _scan_error
+
+    out = ("WARNING GraphQL Error: [{'message': '{\"error\":\"Policy not found\"}', "
+           "'path': ['CNSShiftLeftScannerPolicyGetScannerPolicy']}]\n")
+    msg = _scan_error("secret", out)
+    assert "can't find the scanner policy" in msg and "scope" in msg
+
+
 async def test_policy_id_is_configured_and_changes_reconfigure(fake_cli, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

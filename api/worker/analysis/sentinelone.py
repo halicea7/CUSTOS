@@ -115,6 +115,10 @@ def _last_lines(text: str, n: int = 3) -> str:
 
 
 def _scan_error(scanner: str, out: str, context: str = "") -> str:
+    if "Policy not found" in out:
+        return (f"{scanner}: SentinelOne can't find the scanner policy ID in Settings → SentinelOne. "
+                "Check it is the policy's ID (not its name) and that the policy was created at the "
+                "scope Custos uses (scope type and ID), or clear the field to use the default policy")
     if f"{scanner} scan is disabled" in out:
         return (f"{scanner}: not enabled by the SentinelOne scanner policy. Without a policy ID "
                 f"only secret scanning runs: set one in Settings → SentinelOne (and enable "
