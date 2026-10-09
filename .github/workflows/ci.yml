@@ -29,8 +29,8 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://custos:custos@localhost:5432/custos_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -44,7 +44,7 @@ jobs:
       - name: Migrations apply cleanly and match the models
         env:
           DATABASE_URL: postgresql+asyncpg://custos:custos@localhost:5432/custos_migrations
-          SECRET_KEY: ci-secret-key-0123456789abcdef0123456789abcdef
+          SECRET_KEY: ci-secret-key-0123456789abcdef0123456789abcdef  # nosemgrep gitleaks:allow (dummy, CI only)
         run: |
           PGPASSWORD=custos psql -h localhost -U custos -d custos_test -c "CREATE DATABASE custos_migrations"
           alembic upgrade head
@@ -58,8 +58,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 20
           cache: npm
@@ -72,16 +72,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend, dashboard]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with: { context: ., target: api, push: false, cache-from: type=gha, cache-to: "type=gha,mode=max" }
       - name: Build worker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with: { context: ., target: worker, push: false, cache-from: type=gha }
       - name: Build dashboard image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with: { context: ./dashboard, push: false }
 
   deploy:
@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend, dashboard]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Deploy with the launcher, exactly as a user would
         run: ./custos --yes deploy
