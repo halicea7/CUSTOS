@@ -56,13 +56,15 @@ def upgrade() -> None:
     op.add_column("submissions", sa.Column("check_run_id", sa.BigInteger(), nullable=True))
     op.add_column("repos", sa.Column("token_last4", sa.Text(), nullable=True))
 
-    # Normalise any stray values so the constraints can be added.
+    # Normalise any stray values so the constraints can be added. The SQL here
+    # is built only from the Severity enum and the constant tables above, never
+    # from input.
     sev = ", ".join(f"'{s.value}'" for s in Severity)
-    op.execute(f"UPDATE findings SET severity = 'info' WHERE severity NOT IN ({sev})")
-    op.execute(f"UPDATE self_scan_findings SET severity = 'info' WHERE severity NOT IN ({sev})")
+    op.execute(f"UPDATE findings SET severity = 'info' WHERE severity NOT IN ({sev})")  # nosemgrep
+    op.execute(f"UPDATE self_scan_findings SET severity = 'info' WHERE severity NOT IN ({sev})")  # nosemgrep
 
     for table, col in _NOT_NULL:
-        op.execute(f"UPDATE {table} SET {col} = now() WHERE {col} IS NULL")
+        op.execute(f"UPDATE {table} SET {col} = now() WHERE {col} IS NULL")  # nosemgrep
         op.alter_column(table, col, nullable=False)
     for name, table, cols in _INDEXES:
         op.create_index(name, table, cols)

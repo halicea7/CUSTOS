@@ -54,7 +54,7 @@ def test_budget_skips_files_that_do_not_fit(tmp_path):
 def test_secret_files_never_reach_the_prompt(tmp_path):
     _write(tmp_path, ".env", "SECRET_KEY=live")
     _write(tmp_path, "config/.env.production", "DB_PASSWORD=live")
-    _write(tmp_path, "deploy/server.pem", "-----BEGIN PRIVATE KEY-----")
+    _write(tmp_path, "deploy/server.pem", "-----BEGIN PRIVATE KEY-----")  # gitleaks:allow (fake)
     _write(tmp_path, ".ssh/id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----")
     _write(tmp_path, ".env.example", "SECRET_KEY=")
     _write(tmp_path, "app.py", "print('hi')")

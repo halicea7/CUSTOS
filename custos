@@ -267,7 +267,7 @@ def _wait_http(url: str, timeout: int) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3) as r:
+            with urllib.request.urlopen(url, timeout=3) as r:  # nosemgrep (local health URL built by this script)
                 if r.status == 200:
                     return True
         except Exception:
@@ -409,7 +409,7 @@ def _check_runs(repo: str, sha: str) -> list[dict]:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=20) as r:  # nosemgrep (fixed api.github.com URL)
             return json.load(r).get("check_runs", [])
     except urllib.error.HTTPError as exc:
         die(f"GitHub API returned HTTP {exc.code} for check runs"
