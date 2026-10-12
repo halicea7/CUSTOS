@@ -3,12 +3,13 @@ import {
   listGroups, createGroup, updateGroup, deleteGroup,
   listMembers, addMember, removeMember,
 } from "../api/groups.js";
+import { getUsers } from "../api/settings.js";
 import { useTheme, Icon } from "../App.jsx";
 import { Btn, Avatar } from "../components/atoms.jsx";
-import { PageHeader, PageWrap, SectionCard, TextInput } from "../components/ui.jsx";
+import { PageHeader, PageWrap, SectionCard, TextInput, SelectInput } from "../components/ui.jsx";
 import { errorMessage } from "../api/errors.js";
 
-function GroupCard({ theme, group, preloadedMembers = [], onUpdated, onDeleted }) {
+function GroupCard({ theme, group, users, preloadedMembers = [], onUpdated, onDeleted }) {
   const [expanded,   setExpanded]   = useState(false);
   const [members,    setMembers]    = useState(null);
   const [newUser,    setNewUser]    = useState("");
@@ -29,10 +30,10 @@ function GroupCard({ theme, group, preloadedMembers = [], onUpdated, onDeleted }
   };
 
   const handleAddMember = async () => {
-    if (!newUser.trim()) return;
+    if (!newUser) return;
     setAdding(true); setErr("");
     try {
-      await addMember(group.id, newUser.trim());
+      await addMember(group.id, newUser);
       setNewUser(""); await loadMembers();
       onUpdated({ ...group, member_count: group.member_count + 1 });
     } catch (e) {
@@ -121,14 +122,22 @@ function GroupCard({ theme, group, preloadedMembers = [], onUpdated, onDeleted }
           background: t.c.raised }}>
           {err && <div style={{ color: t.sev.critical.fg, fontSize: 12, marginBottom: 10 }}>{err}</div>}
 
-          <div style={{ display: "flex", gap: 8, marginBottom: 14, maxWidth: 420 }}>
-            <TextInput theme={t} value={newUser} onChange={e => setNewUser(e.target.value)}
-              placeholder="Add member by username" mono
-              onKeyDown={e => e.key === "Enter" && handleAddMember()} />
-            <Btn theme={t} variant="primary" onClick={handleAddMember} disabled={adding || !newUser.trim()}>
-              Add
-            </Btn>
-          </div>
+          {(() => {
+            const taken = new Set((members || []).map(m => m.username));
+            const choices = users.filter(u => !taken.has(u.username));
+            return (
+              <div style={{ display: "flex", gap: 8, marginBottom: 14, maxWidth: 420 }}>
+                <SelectInput theme={t} value={newUser} onChange={e => setNewUser(e.target.value)}
+                  options={[
+                    { value: "", label: choices.length ? "Add a member…" : "Everyone is already a member" },
+                    ...choices.map(u => ({ value: u.username, label: `${u.username} (${u.role})` })),
+                  ]} />
+                <Btn theme={t} variant="primary" onClick={handleAddMember} disabled={adding || !newUser}>
+                  Add
+                </Btn>
+              </div>
+            );
+          })()}
 
           {members === null ? (
             <div style={{ fontSize: 11, color: t.c.text3 }}>Loading…</div>
@@ -164,6 +173,7 @@ export default function Groups() {
   const { theme }     = useTheme();
   const [groups,       setGroups]     = useState([]);
   const [membersMap,   setMembersMap] = useState({});  // {groupId: [username, ...]}
+  const [users,        setUsers]      = useState([]);
   const [loading,      setLoading]    = useState(true);
   const [name,         setName]       = useState("");
   const [desc,         setDesc]       = useState("");
@@ -172,6 +182,7 @@ export default function Groups() {
   const t = theme;
 
   useEffect(() => {
+    getUsers().then(setUsers).catch(() => {});
     listGroups()
       .then(async (gs) => {
         setGroups(gs);
@@ -210,7 +221,7 @@ export default function Groups() {
   return (
     <PageWrap theme={t} max={840}>
       <PageHeader theme={t} title="Groups"
-        subtitle="Organize users into teams. Members see every repository assigned to their group." />
+        subtitle="Organize users into teams. Members see every repository assigned to their group; assign repositories on the Repositories page." />
 
       <SectionCard theme={t} title="Create group">
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -234,7 +245,7 @@ export default function Groups() {
         <div style={{ color: t.c.text3, fontSize: 13 }}>No groups yet.</div>
       ) : (
         groups.map(g => (
-          <GroupCard key={g.id} theme={t} group={g}
+          <GroupCard key={g.id} theme={t} group={g} users={users}
             preloadedMembers={membersMap[g.id] || []}
             onUpdated={handleUpdated} onDeleted={handleDeleted} />
         ))

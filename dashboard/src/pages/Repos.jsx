@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { listRepos, deleteRepo, updateRepo, checkRepoUpdates } from "../api/repos.js";
+import {
+  listRepos, deleteRepo, updateRepo, checkRepoUpdates, addRepoToGroup, removeRepoFromGroup,
+} from "../api/repos.js";
+import { listGroups } from "../api/groups.js";
 import { errorMessage } from "../api/errors.js";
-import { useTheme, Icon } from "../App.jsx";
+import { useTheme, useAuth, Icon } from "../App.jsx";
 import { Btn } from "../components/atoms.jsx";
 import { PageHeader, PageWrap } from "../components/ui.jsx";
 import AddRepoModal from "../components/AddRepoModal.jsx";
@@ -18,7 +21,52 @@ function checkSummary(result) {
     .map(q => q.pr_number ? `PR #${q.pr_number}` : q.branch).join(", ");
 }
 
-function RepoRow({ theme, repo, onToggle, onDelete, onChecked, last }) {
+// Group chips, plus add/remove for the repo's owner or an admin. Analysts can
+// only pick groups they belong to (that's all GET /groups returns for them).
+function RepoGroups({ theme, repo, groups, canManage, onChanged }) {
+  const [err, setErr] = useState("");
+  const t = theme;
+  const assigned = new Set((repo.groups || []).map(g => g.id));
+  const choices = groups.filter(g => !assigned.has(g.id));
+
+  const change = async (fn, groupId) => {
+    setErr("");
+    try { await fn(repo.id, groupId); onChanged(); }
+    catch (e) { setErr(errorMessage(e, "Couldn't update groups")); }
+  };
+
+  if (!repo.groups?.length && !(canManage && choices.length)) return null;
+  return (
+    <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap", alignItems: "center", paddingLeft: 23 }}>
+      {(repo.groups || []).map((g) => (
+        <span key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 5,
+          padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 500,
+          color: t.c.accent, background: t.c.accentBg }}>
+          {g.name}
+          {canManage && (
+            <button aria-label={`Remove from ${g.name}`} title={`Remove from ${g.name}`}
+              onClick={() => change(removeRepoFromGroup, g.id)}
+              style={{ background: "none", border: "none", cursor: "pointer", padding: 0,
+                color: "inherit", fontSize: 12, lineHeight: 1 }}>×</button>
+          )}
+        </span>
+      ))}
+      {canManage && choices.length > 0 && (
+        <select value="" aria-label="Add to group"
+          onChange={e => e.target.value && change(addRepoToGroup, e.target.value)}
+          style={{ fontSize: 11, padding: "2px 6px", borderRadius: 999, cursor: "pointer",
+            color: t.c.text2, background: "transparent", border: `1px dashed ${t.c.border2}`,
+            fontFamily: t.fontUi }}>
+          <option value="">+ Add to group</option>
+          {choices.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+        </select>
+      )}
+      {err && <span style={{ fontSize: 11, color: "var(--red)" }}>{err}</span>}
+    </div>
+  );
+}
+
+function RepoRow({ theme, repo, groups, canManage, onToggle, onDelete, onChecked, last }) {
   const [confirming, setConfirming] = useState(false);
   const [hover,      setHover]      = useState(false);
   const [checking,   setChecking]   = useState(false);
@@ -55,15 +103,7 @@ function RepoRow({ theme, repo, onToggle, onDelete, onChecked, last }) {
             {repo.repo_full_name}
           </span>
         </div>
-        {repo.groups?.length > 0 && (
-          <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap", paddingLeft: 23 }}>
-            {repo.groups.map((g) => (
-              <span key={g.id} style={{ display: "inline-flex", alignItems: "center",
-                padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 500,
-                color: t.c.accent, background: t.c.accentBg }}>{g.name}</span>
-            ))}
-          </div>
-        )}
+        <RepoGroups theme={t} repo={repo} groups={groups} canManage={canManage} onChanged={onChecked} />
         {checkMsg && (
           <div role="status" style={{ marginTop: 7, paddingLeft: 23, fontSize: 12,
             color: checkMsg.ok ? t.c.text2 : "var(--red)" }}>
@@ -113,7 +153,9 @@ const GRID = "1fr 130px 100px 120px 330px";
 
 export default function Repos() {
   const { theme }  = useTheme();
+  const { user }   = useAuth();
   const [repos,     setRepos]     = useState([]);
+  const [groups,    setGroups]    = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [showModal, setShowModal] = useState(false);
   const t = theme;
@@ -123,7 +165,10 @@ export default function Repos() {
     listRepos().then(setRepos).catch(() => {}).finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    listGroups().then(setGroups).catch(() => {});
+  }, []);
 
   // Quiet refresh (no loading state) so a row's check result stays on screen.
   const refresh = () => { listRepos().then(setRepos).catch(() => {}); };
@@ -170,7 +215,8 @@ export default function Repos() {
           </div>
         ) : (
           repos.map((repo, i) => (
-            <RepoRow key={repo.id} theme={t} repo={repo}
+            <RepoRow key={repo.id} theme={t} repo={repo} groups={groups}
+              canManage={user?.role === "admin" || repo.added_by === user?.username}
               onToggle={handleToggle} onDelete={handleDelete} onChecked={refresh} last={i === repos.length - 1} />
           ))
         )}

@@ -73,3 +73,29 @@ async def test_llm_active_only_lists_visible(client, db):
     assert (await client.get("/submissions/llm-active", headers=auth_headers("bob"))).json()["active"] == []
     # Second concurrent re-run is refused.
     assert (await client.post(f"/submissions/{sub.id}/rerun-llm", headers=auth_headers("alice"))).status_code == 409
+
+
+async def test_sharing_an_existing_repo_with_a_group(client, db):
+    """Being in the same group isn't enough: the repo itself must be assigned to it."""
+    sub, _ = await _setup(db)
+    await make_user(db, "carol")
+    team, other = Group(name="team", created_by="root"), Group(name="other", created_by="root")
+    db.add_all([team, other])
+    await db.flush()
+    db.add_all([GroupMember(group_id=team.id, username=u, added_by="root") for u in ("alice", "bob")])
+    await db.commit()
+    alice, bob = auth_headers("alice"), auth_headers("bob")
+    repo_id = (await client.get("/repos", headers=alice)).json()[0]["id"]
+
+    assert (await client.get(f"/submissions/{sub.id}", headers=bob)).status_code == 404
+
+    # Only the owner (or an admin) can share, and only into a group they belong to.
+    assert (await client.post(f"/repos/{repo_id}/groups/{team.id}", headers=bob)).status_code == 403
+    assert (await client.post(f"/repos/{repo_id}/groups/{other.id}", headers=alice)).status_code == 404
+    assert (await client.post(f"/repos/{repo_id}/groups/{team.id}", headers=alice)).status_code == 204
+
+    assert (await client.get(f"/submissions/{sub.id}", headers=bob)).status_code == 200
+    assert (await client.get(f"/submissions/{sub.id}", headers=auth_headers("carol"))).status_code == 404
+
+    assert (await client.delete(f"/repos/{repo_id}/groups/{team.id}", headers=alice)).status_code == 204
+    assert (await client.get(f"/submissions/{sub.id}", headers=bob)).status_code == 404
