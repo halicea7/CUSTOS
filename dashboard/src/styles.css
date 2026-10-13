@@ -412,3 +412,15 @@ button.tile:disabled, button.tile:disabled:hover { cursor: default; transform: n
 .tour-dots span.done { background: var(--accent-line); }
 .tour-dots span.on { width: 18px; background: var(--grad); }
 .tour-actions { display: flex; align-items: center; gap: 8px; }
+
+/* ── Users tab ─────────────────────────────────────────────────────────────── */
+.users-tbl tr.open td { background: var(--raised); }
+.users-tbl tr.users-log > td { padding: 0; background: var(--raised); }
+.ulog { padding: 4px 16px 14px 52px; animation: fadeIn .25s var(--ease); }
+.ulog-h { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 0 6px; font-size: .86rem; color: var(--text); }
+.ulog-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 6px 4px; font-size: .85rem; color: var(--text2); border-bottom: 1px dashed var(--border); border-radius: 6px; }
+.ulog-row:last-of-type { border-bottom: 0; }
+.ulog-row.click { cursor: pointer; } .ulog-row.click:hover { background: var(--raised2); }
+.ulog-row > .dot { align-self: center; }
+.ulog-row time { color: var(--text3); font-size: .78rem; white-space: nowrap; }
+@media (max-width: 760px) { .ulog { padding-left: 16px; } }

@@ -1,12 +1,14 @@
 import asyncio
 import logging
 import platform
+from datetime import timedelta
 from uuid import UUID
 
+import activity
 import bedrock
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
@@ -28,7 +30,7 @@ from auth import get_current_user, hash_password, require_admin, verify_password
 from config import settings
 from crypto import encrypt
 from database import get_db
-from models import AppConfig, Repo, User
+from models import AppConfig, AuditLog, Repo, Submission, User, UserActivity
 from schemas import (
     AppConfigResponse,
     AppConfigUpdateRequest,
@@ -57,6 +59,7 @@ async def change_password(
     if not await asyncio.to_thread(verify_password, body.current_password, current_user.hashed_password):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
     current_user.hashed_password = await asyncio.to_thread(hash_password, body.new_password)
+    activity.record(db, current_user.username, "password_changed")
     await db.commit()
 
 
@@ -67,15 +70,81 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    result = await db.execute(select(User).order_by(User.created_at))
-    return result.scalars().all()
+    users = (await db.execute(select(User).order_by(User.created_at))).scalars().all()
+    count = func.count()
+    triaged = dict((await db.execute(
+        select(AuditLog.analyst, count).where(AuditLog.action.in_(_DISPOSITIONS)).group_by(AuditLog.analyst)
+    )).all())
+    signoffs = dict((await db.execute(
+        select(AuditLog.analyst, count).where(AuditLog.action == "sign_off").group_by(AuditLog.analyst)
+    )).all())
+    repos = dict((await db.execute(select(Repo.added_by, count).group_by(Repo.added_by))).all())
+    return [
+        UserListResponse.model_validate(u).model_copy(update={
+            "findings_triaged": triaged.get(u.username, 0),
+            "signoffs": signoffs.get(u.username, 0),
+            "repos_added": repos.get(u.username, 0),
+        })
+        for u in users
+    ]
+
+
+_DISPOSITIONS = ("false_positive", "confirmed", "escalated")
+_GROUP_WITHIN = timedelta(seconds=5)   # one bulk decision writes many rows at once
+
+
+@router.get("/users/{user_id}/activity")
+async def user_activity(
+    user_id: UUID,
+    limit: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """One user's history, newest first: activity log plus their triage and sign-offs.
+
+    Decisions made together on the same run (e.g. bulk triage) are folded into one entry.
+    """
+    target = await db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    rows = (await db.execute(
+        select(UserActivity).where(UserActivity.username == target.username)
+        .order_by(UserActivity.created_at.desc()).limit(limit)
+    )).scalars().all()
+    items = [{"at": r.created_at, "action": r.action, "detail": r.detail} for r in rows]
+
+    audit = (await db.execute(
+        select(AuditLog, Submission.repo_full_name, Submission.commit_sha)
+        .outerjoin(Submission, Submission.id == AuditLog.submission_id)
+        .where(AuditLog.analyst == target.username)
+        .order_by(AuditLog.created_at.desc()).limit(limit * 10)
+    )).all()
+    folded: list[dict] = []
+    for log, repo, sha in audit:
+        prev = folded[-1] if folded else None
+        if (prev and log.action in _DISPOSITIONS and prev["action"] == log.action
+                and prev["submission_id"] == str(log.submission_id)
+                and prev["_first"] - log.created_at <= _GROUP_WITHIN):
+            prev["count"] += 1
+            prev["_first"] = log.created_at
+            continue
+        folded.append({
+            "at": log.created_at, "_first": log.created_at, "action": log.action, "count": 1,
+            "submission_id": str(log.submission_id) if repo else None,
+            "repo": repo, "commit": sha[:7] if sha else None,
+            "detail": log.note,
+        })
+    for f in folded:
+        f.pop("_first")
+    merged = sorted(items + folded, key=lambda i: i["at"], reverse=True)[:limit]
+    return {"items": merged, "more": len(rows) == limit or len(audit) == limit * 10}
 
 
 @router.post("/users", response_model=UserListResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     body: CreateUserRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     existing = await db.execute(select(User).where(User.username == body.username))
     if existing.scalar_one_or_none():
@@ -86,6 +155,7 @@ async def create_user(
         role=body.role.value,
     )
     db.add(user)
+    activity.record(db, admin.username, "user_created", f"{body.username} ({body.role.value})")
     await db.commit()
     await db.refresh(user)
     return user
@@ -103,6 +173,7 @@ async def update_user_role(
     target = await db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    activity.record(db, current_user.username, "user_role_changed", f"{target.username}: {target.role} → {body.role.value}")
     target.role = body.role.value
     await db.commit()
     await db.refresh(target)
@@ -120,6 +191,7 @@ async def delete_user(
     target = await db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    activity.record(db, current_user.username, "user_deleted", target.username)
     await db.delete(target)
     await db.commit()
 
@@ -402,6 +474,8 @@ async def set_bedrock_retention(
     where = f"project {cfg.bedrock_project_id}" if body.scope == "project" else "the whole account"
     logger.info("%s set Bedrock data retention to %s for %s in %s",
                 current_user.username, body.mode, where, cfg.bedrock_region)
+    activity.record(db, current_user.username, "retention_changed", f"{body.mode} for {where} in {cfg.bedrock_region}")
+    await db.commit()
     return await bedrock_retention(db=db, _=current_user)
 
 
@@ -520,6 +594,15 @@ async def update_config(
         else:
             db.add(AppConfig(key=BEDROCK_API_KEY, value=encrypt(bedrock_key), updated_by=current_user.username))
 
+    # The page sends every field; log only the ones whose value actually changes.
+    def differs(key, value):
+        old = getattr(current, key, None)
+        return (",".join(old) if isinstance(old, list) else str(old)) != str(value)
+    changed = sorted({k for k, v in updates.items() if differs(k, v)}
+                     | {k for k, v in (("API key", api_key), ("SentinelOne token", s1_token),
+                                       ("Bedrock API key", bedrock_key)) if v is not None})
+    if changed:
+        activity.record(db, current_user.username, "settings_changed", ", ".join(changed))
     for key, value in updates.items():
         existing = await db.get(AppConfig, key)
         if existing:

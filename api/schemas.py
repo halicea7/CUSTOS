@@ -148,6 +148,12 @@ class UserListResponse(BaseModel):
     username: str
     role: str
     created_at: datetime
+    last_login_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    # Filled in by GET /settings/users.
+    findings_triaged: int = 0
+    signoffs: int = 0
+    repos_added: int = 0
 
     model_config = {"from_attributes": True}
 

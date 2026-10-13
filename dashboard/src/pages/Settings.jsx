@@ -11,7 +11,8 @@ import { listRepos } from "../api/repos.js";
 import { listMembers } from "../api/groups.js";
 import { useGroups } from "../api/queries.js";
 import { Btn } from "../components/atoms.jsx";
-import { ArmedButton } from "../components/queue/Board.jsx";
+import { ArmedButton, ago } from "../components/queue/Board.jsx";
+import UserActivity from "../components/settings/UserActivity.jsx";
 import { useToast } from "../components/Toast.jsx";
 import { useTour } from "../components/tour/Tour.jsx";
 import {
@@ -126,6 +127,7 @@ function UsersTab({ currentUser }) {
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState("");
   const [savingRole, setSavingRole] = useState(null);
+  const [expanded, setExpanded] = useState(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ["users"] });
 
   const setRole = async (u, role) => {
@@ -166,47 +168,77 @@ function UsersTab({ currentUser }) {
 
   return (
     <div className="sgrid">
-      <section className="panel" data-tour="users">
-        <div className="panel-h"><h2>User accounts</h2><span className="aside">{users.length} user{users.length !== 1 ? "s" : ""}</span></div>
+      <section className="panel" data-tour="users" style={{ gridColumn: "1 / -1" }}>
+        <div className="panel-h">
+          <h2>User accounts</h2>
+          <span className="aside">{users.length} user{users.length !== 1 ? "s" : ""} · click a row for activity</span>
+        </div>
         {error ? <div className="panel-b"><div className="result bad">{errorMessage(error, "Couldn't load users")}</div></div>
           : isPending ? <div className="empty">Loading…</div> : (
-            <table className="tbl">
-              <thead><tr><th>User</th><th>Role</th><th className="hide-sm">Groups</th><th className="hide-sm">Created</th><th /></tr></thead>
+            <div style={{ overflowX: "auto" }}>
+            <table className="tbl users-tbl">
+              <thead><tr>
+                <th>User</th><th>Role</th><th className="hide-sm">Groups</th>
+                <th>Last sign-in</th><th className="hide-sm">Last active</th>
+                <th className="hide-sm" title="Findings triaged · runs signed off · repositories added">Activity</th>
+                <th className="hide-sm">Created</th><th />
+              </tr></thead>
               <tbody>
                 {users.map((u) => {
                   const isSelf = u.username === currentUser;
+                  const open = expanded === u.id;
+                  const stop = (e) => e.stopPropagation();
                   return (
-                    <tr key={u.id}>
-                      <td>
-                        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                          <div className="avatar" style={{ width: 26, height: 26, fontSize: ".7rem" }}>{u.username[0].toUpperCase()}</div>
-                          <span className="mono" style={{ color: "var(--text)" }}>{u.username}</span>
-                          {isSelf && <span className="tag">you</span>}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="seg" title={isSelf ? "You can't change your own role" : undefined}>
-                          {["analyst", "admin"].map((r) => (
-                            <button key={r} className={u.role === r ? "on" : ""} disabled={isSelf || savingRole === u.id}
-                              onClick={() => setRole(u, r)}>{r === "admin" ? "Admin" : "Analyst"}</button>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="hide-sm">
-                        {(groupsOf.get(u.username) || []).map((g) => <span key={g} className="gtag" style={{ marginRight: 4 }}>{g}</span>)}
-                        {!(groupsOf.get(u.username) || []).length && <span className="muted">—</span>}
-                      </td>
-                      <td className="hide-sm" style={{ whiteSpace: "nowrap" }}>
-                        {new Date(u.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-                      </td>
-                      <td style={{ textAlign: "right" }}>
-                        {!isSelf && <ArmedButton onConfirm={() => handleDelete(u)} />}
-                      </td>
-                    </tr>
+                    <React.Fragment key={u.id}>
+                      <tr className={`click ${open ? "open" : ""}`} onClick={() => setExpanded(open ? null : u.id)}
+                        aria-expanded={open}>
+                        <td>
+                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                            <span className="chev" style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .2s" }}>›</span>
+                            <div className="avatar" style={{ width: 26, height: 26, fontSize: ".7rem" }}>{u.username[0].toUpperCase()}</div>
+                            <span className="mono" style={{ color: "var(--text)" }}>{u.username}</span>
+                            {isSelf && <span className="tag">you</span>}
+                          </div>
+                        </td>
+                        <td onClick={stop}>
+                          <div className="seg" title={isSelf ? "You can't change your own role" : undefined}>
+                            {["analyst", "admin"].map((r) => (
+                              <button key={r} className={u.role === r ? "on" : ""} disabled={isSelf || savingRole === u.id}
+                                onClick={() => setRole(u, r)}>{r === "admin" ? "Admin" : "Analyst"}</button>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="hide-sm">
+                          {(groupsOf.get(u.username) || []).map((g) => <span key={g} className="gtag" style={{ marginRight: 4 }}>{g}</span>)}
+                          {!(groupsOf.get(u.username) || []).length && <span className="muted">—</span>}
+                        </td>
+                        <td style={{ whiteSpace: "nowrap" }} title={u.last_login_at ? new Date(u.last_login_at).toLocaleString() : undefined}>
+                          {u.last_login_at ? ago(u.last_login_at) : <span className="muted">never</span>}
+                        </td>
+                        <td className="hide-sm" style={{ whiteSpace: "nowrap" }} title={u.last_seen_at ? new Date(u.last_seen_at).toLocaleString() : undefined}>
+                          {u.last_seen_at ? <><span className="dot" style={{ background: Date.now() - new Date(u.last_seen_at) < 5 * 60000 ? "var(--ok)" : "var(--border2)", marginRight: 6 }} />{ago(u.last_seen_at)}</> : <span className="muted">—</span>}
+                        </td>
+                        <td className="hide-sm" style={{ whiteSpace: "nowrap" }}>
+                          <span title="Findings triaged">{u.findings_triaged} triaged</span>
+                          <span className="muted"> · </span><span title="Runs signed off">{u.signoffs} signed off</span>
+                          <span className="muted"> · </span><span title="Repositories added">{u.repos_added} repo{u.repos_added !== 1 ? "s" : ""}</span>
+                        </td>
+                        <td className="hide-sm" style={{ whiteSpace: "nowrap" }}>
+                          {new Date(u.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </td>
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap", width: 1 }} onClick={stop}>
+                          {!isSelf && <ArmedButton onConfirm={() => handleDelete(u)} />}
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr className="users-log"><td colSpan={8}><UserActivity user={u} /></td></tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
             </table>
+            </div>
           )}
       </section>
 

@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import activity
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +50,9 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
         verify_password, body.password, user.hashed_password if user else _DUMMY_HASH
     )
     if not user or not password_ok:
+        if user:  # a wrong password for a real account is worth seeing on the Users page
+            activity.record(db, user.username, "login_failed")
+            await db.commit()
         pipe = redis.pipeline()
         for key in (rl_key, account_key):
             pipe.incr(key)
@@ -60,6 +64,9 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
         )
 
     await redis.delete(rl_key)
+    user.last_login_at = user.last_seen_at = datetime.now(UTC)
+    activity.record(db, user.username, "login")
+    await db.commit()
     cfg = await load_app_config(db)
     token = create_access_token(
         {"sub": user.username},

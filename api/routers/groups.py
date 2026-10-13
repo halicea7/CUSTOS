@@ -1,5 +1,6 @@
 from uuid import UUID
 
+import activity
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +78,7 @@ async def create_group(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Group name already exists")
     group = Group(name=body.name, description=body.description, created_by=current_user.username)
     db.add(group)
+    activity.record(db, current_user.username, "group_created", body.name)
     await db.commit()
     await db.refresh(group)
     return await _group_response(db, group)
@@ -87,7 +89,7 @@ async def update_group(
     group_id: UUID,
     body: GroupUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     group = await db.get(Group, group_id)
     if not group:
@@ -96,6 +98,8 @@ async def update_group(
         existing = await db.execute(select(Group).where(Group.name == body.name, Group.id != group_id))
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Group name already exists")
+        if body.name != group.name:
+            activity.record(db, admin.username, "group_renamed", f"{group.name} → {body.name}")
         group.name = body.name
     if body.description is not None:
         group.description = body.description
@@ -108,11 +112,12 @@ async def update_group(
 async def delete_group(
     group_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     group = await db.get(Group, group_id)
     if not group:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    activity.record(db, admin.username, "group_deleted", group.name)
     await db.delete(group)
     await db.commit()
 
@@ -153,6 +158,7 @@ async def add_member(
     existing = await db.get(GroupMember, (group_id, body.username))
     if not existing:
         db.add(GroupMember(group_id=group_id, username=body.username, added_by=current_user.username))
+        activity.record(db, current_user.username, "member_added", f"{body.username} → {group.name}")
         await db.commit()
 
 
@@ -161,7 +167,7 @@ async def remove_member(
     group_id: UUID,
     username: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     group = await db.get(Group, group_id)
     if not group:
@@ -169,5 +175,6 @@ async def remove_member(
     mem = await db.get(GroupMember, (group_id, username))
     if not mem:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
+    activity.record(db, admin.username, "member_removed", f"{username} ← {group.name}")
     await db.delete(mem)
     await db.commit()

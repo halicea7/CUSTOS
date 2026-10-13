@@ -33,6 +33,9 @@ class User(Base):
     created_at: Mapped[datetime] = _created_at()
     # Set when the welcome tour is finished or skipped; cleared to replay it.
     tour_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last authenticated request, updated at most once a minute.
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Submission(Base):
@@ -232,4 +235,18 @@ class AuditLog(Base):
     analyst: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class UserActivity(Base):
+    """What a user did outside finding triage (which audit_log records):
+    sign-ins, repository changes, admin actions. Kept when the user is deleted."""
+
+    __tablename__ = "user_activity"
+    __table_args__ = (Index("ix_user_activity_username_created", "username", "created_at"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()

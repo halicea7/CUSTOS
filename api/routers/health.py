@@ -5,6 +5,7 @@ import time
 from datetime import UTC, datetime
 from uuid import UUID
 
+import activity
 import bedrock
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -255,6 +256,7 @@ async def trigger_scan(
         started_at=datetime.now(UTC),
     )
     db.add(scan)
+    activity.record(db, user.username, "self_check")
     await db.commit()
     await db.refresh(scan)
 

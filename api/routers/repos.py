@@ -1,6 +1,7 @@
 import re
 from uuid import UUID
 
+import activity
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete as sql_delete
@@ -144,6 +145,7 @@ async def add_repo(
             continue
         db.add(RepoGroup(repo_id=repo.id, group_id=gid))
 
+    activity.record(db, current_user.username, "repo_added", name)
     await db.commit()
     await db.refresh(repo)
     return await _to_response(db, repo)
@@ -165,7 +167,12 @@ async def update_repo(
     if body.webhook_secret is not None:
         repo.webhook_secret_enc = encrypt(body.webhook_secret)
     if body.enabled is not None:
+        if body.enabled != repo.enabled:
+            activity.record(db, current_user.username, "repo_enabled" if body.enabled else "repo_disabled",
+                            repo.repo_full_name)
         repo.enabled = body.enabled
+    if body.github_token is not None:
+        activity.record(db, current_user.username, "repo_token_replaced", repo.repo_full_name)
 
     await db.commit()
     await db.refresh(repo)
@@ -187,7 +194,7 @@ async def check_updates(
     if not repo.enabled:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository is disabled")
     try:
-        return await check_repo_for_updates(
+        result = await check_repo_for_updates(
             db, request.app.state.redis, request.app.state.arq_pool, repo
         )
     except httpx.HTTPStatusError as exc:
@@ -197,6 +204,12 @@ async def check_updates(
         raise HTTPException(status_code=502, detail=f"GitHub returned {code}: {hint}") from None
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach GitHub ({type(exc).__name__})") from None
+    queued = len(result.get("queued") or [])
+    activity.record(db, current_user.username, "repo_checked",
+                    f"{repo.repo_full_name}: {queued} scan{'s' if queued != 1 else ''} queued" if queued
+                    else f"{repo.repo_full_name}: up to date")
+    await db.commit()
+    return result
 
 
 @router.delete("/{repo_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -206,6 +219,7 @@ async def delete_repo(
     current_user: User = Depends(get_current_user),
 ):
     repo = _require_owner(await db.get(Repo, repo_id), current_user)
+    activity.record(db, current_user.username, "repo_removed", repo.repo_full_name)
     await db.delete(repo)
     await db.commit()
 
@@ -223,7 +237,9 @@ async def add_repo_to_group(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     existing = await db.get(RepoGroup, (repo_id, group_id))
     if not existing:
+        repo = await db.get(Repo, repo_id)
         db.add(RepoGroup(repo_id=repo_id, group_id=group_id))
+        activity.record(db, current_user.username, "repo_shared", f"{repo.repo_full_name} → {grp.name}")
         await db.commit()
 
 
@@ -234,10 +250,14 @@ async def remove_repo_from_group(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _require_owner(await db.get(Repo, repo_id), current_user)
-    await db.execute(
+    repo = _require_owner(await db.get(Repo, repo_id), current_user)
+    removed = await db.execute(
         sql_delete(RepoGroup).where(RepoGroup.repo_id == repo_id, RepoGroup.group_id == group_id)
     )
+    if removed.rowcount:
+        grp = await db.get(Group, group_id)
+        activity.record(db, current_user.username, "repo_unshared",
+                        f"{repo.repo_full_name} → {grp.name if grp else 'a deleted group'}")
     await db.commit()
 
 

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import activity
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -55,6 +56,7 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise credentials_exception from None
+    await activity.touch(db, user)
     return user
 
 
