@@ -51,3 +51,33 @@ def test_batch_files_packs_greedily():
     assert [[p for p, _ in b] for b in _batch_files(files, 100)] == [["a", "b"], ["c"]]
     # An oversized file still gets its own batch rather than being dropped.
     assert len(_batch_files([("big", "x" * 500)], 100)) == 1
+
+
+def test_raw_newlines_inside_strings_are_accepted():
+    from worker.analysis.llm import _parse_llm_response
+
+    text = '{"findings": [{"title": "Hardcoded creds", "severity": "high", "description": "line one\nline two"}]}'
+    [f] = _parse_llm_response(text)
+    assert f.description == "line one\nline two"
+
+
+def test_one_malformed_finding_does_not_lose_the_others():
+    from worker.analysis.llm import _parse_llm_response
+
+    text = ('{"findings": [\n'
+            '  {"title": "Good one", "severity": "high"},\n'
+            '  {"title": "Broken "quote" here", "severity": "low"},\n'
+            '  {"title": "Also good", "severity": "medium", "description": "has {braces} and [brackets]"}\n'
+            ']}')
+    titles = [f.title for f in _parse_llm_response(text)]
+    assert titles == ["Good one", "Also good"]
+
+
+def test_hopeless_json_still_raises_invalid_json():
+    import pytest
+
+    from worker.analysis.llm import InvalidJson, LlmError, _parse_llm_response
+
+    with pytest.raises(InvalidJson):
+        _parse_llm_response('{"findings": [ {"title": "cut off')
+    assert issubclass(InvalidJson, LlmError)

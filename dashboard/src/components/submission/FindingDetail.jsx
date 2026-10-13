@@ -1,6 +1,7 @@
 // Finding pieces shared by the run page's drawer and the /findings/:id page.
 import React from "react";
 import CodeViewer from "../CodeViewer.jsx";
+import Markdown from "../Markdown.jsx";
 import { useFindingAudit } from "../../api/queries.js";
 import { sevVar } from "../queue/Board.jsx";
 
@@ -74,9 +75,9 @@ export function FindingBody({ finding: f }) {
         <CodeViewer code={f.code_snippet} language={lang} lineStart={f.line_start}
           lineEnd={f.line_end} filePath={f.file_path} />
       )}
-      {f.description && <div><h3>Description</h3><p>{f.description}</p></div>}
-      {f.llm_reasoning && <div><h3>LLM analysis</h3><p>{f.llm_reasoning}</p></div>}
-      {f.remediation && <div><h3>Recommended fix</h3><p>{f.remediation}</p></div>}
+      {f.description && <div><h3>Description</h3><Markdown text={f.description} /></div>}
+      {f.llm_reasoning && <div><h3>LLM analysis</h3><Markdown text={f.llm_reasoning} /></div>}
+      {f.remediation && <div><h3>Recommended fix</h3><Markdown text={f.remediation} /></div>}
       {!f.code_snippet && !f.description && !f.llm_reasoning && !f.remediation && (
         <p className="muted">The tool reported no further detail for this finding.</p>
       )}

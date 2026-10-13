@@ -4,6 +4,7 @@ import { errorMessage } from "../api/errors.js";
 import { ago, sevVar } from "../components/queue/Board.jsx";
 import { SEV_LABEL, SevPill, findingLoc, sourceLabel } from "../components/submission/FindingDetail.jsx";
 import { useToast } from "../components/Toast.jsx";
+import Markdown from "../components/Markdown.jsx";
 
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 const CATEGORIES = [["sast", "SAST"], ["secrets", "Secrets"], ["dependencies", "Dependencies"], ["config", "Config"], ["llm", "LLM"]];
@@ -121,9 +122,9 @@ function FindingRow({ f }) {
       </div>
       {open && (
         <div className="db" style={{ paddingTop: 0, borderTop: 0 }}>
-          {f.description && <div><h3>Description</h3><p>{f.description}</p></div>}
-          {f.llm_reasoning && <div><h3>LLM analysis</h3><p>{f.llm_reasoning}</p></div>}
-          {f.remediation && <div><h3>Recommended fix</h3><p className="mono" style={{ fontSize: ".84rem" }}>{f.remediation}</p></div>}
+          {f.description && <div><h3>Description</h3><Markdown text={f.description} /></div>}
+          {f.llm_reasoning && <div><h3>LLM analysis</h3><Markdown text={f.llm_reasoning} /></div>}
+          {f.remediation && <div><h3>Recommended fix</h3><Markdown text={f.remediation} /></div>}
         </div>
       )}
     </>

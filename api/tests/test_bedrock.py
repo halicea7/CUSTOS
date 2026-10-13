@@ -259,3 +259,20 @@ async def test_messages_cut_off_and_errors_are_explained():
 
 def test_messages_url_per_endpoint():
     assert bedrock.messages_url("us-east-1", "runtime") == "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic/v1/messages"
+
+
+async def test_invalid_json_batch_is_retried_once(monkeypatch):
+    from worker.analysis import llm
+
+    calls = []
+
+    async def flaky(client, provider, files, ctx):
+        calls.append(1)
+        if len(calls) == 1:
+            raise llm.InvalidJson("Model returned invalid JSON")
+        return llm.LlmResult(findings=[], prompt_tokens=5)
+
+    monkeypatch.setattr(llm, "_call_batch", flaky)
+    monkeypatch.setattr(llm, "_select_files", lambda *a, **k: [("a.py", "x = 1")])
+    result = await llm.call_llm("/tmp", [], _bedrock("anthropic.claude-haiku-4-5"))
+    assert len(calls) == 2 and not result.errors
