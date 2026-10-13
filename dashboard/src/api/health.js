@@ -19,3 +19,8 @@ export async function triggerScan() {
   const res = await api.post("/health/scan");
   return res.data;
 }
+
+export async function getServices() {
+  const res = await api.get("/health/services");
+  return res.data;
+}

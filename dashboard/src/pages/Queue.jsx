@@ -1,14 +1,14 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { useTheme, useAuth } from "../App.jsx";
-import { Btn } from "../components/atoms.jsx";
+import { useAuth } from "../App.jsx";
 import {
-  ActivityFeed, AttentionList, Panel, RepoTable, RunTable, SummaryStrip, ago, groupByRepo, refOf,
+  ActivityFeed, AttentionList, RepoTable, RunTable, SummaryStrip, groupByRepo, refOf, since,
 } from "../components/queue/Board.jsx";
 import {
   useActiveLlmJobs, useDeleteSubmission, useGroups, useQueueOverview, useSubmissions,
 } from "../api/queries.js";
 import { errorMessage } from "../api/errors.js";
+import { useToast } from "../components/Toast.jsx";
 
 const LOAD_LIMIT = 500;   // API maximum; the board groups and filters these client-side
 const PAGE_SIZE  = 60;    // rows shown at a time in "All runs"
@@ -20,79 +20,43 @@ const STATUS_CHIPS = [
   { key: "error",        label: "Error" },
   { key: null,           label: "All" },
 ];
-const matches = (chip, status) => !chip.key || (chip.match ? chip.match(status) : chip.key === status);
-
-// Breakpoints the inline styles can't express.
-const CSS = `
-.q-strip { display:grid; grid-template-columns:repeat(4, minmax(150px,1fr)) minmax(300px,1.6fr); gap:12px; margin-bottom:22px; }
-.q-cols { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:20px; align-items:start; }
-.q-rail { display:flex; flex-direction:column; gap:20px; position:sticky; top:20px; }
-.q-hist { display:grid; grid-template-columns:90px 90px 170px minmax(80px,1fr) 80px 120px; gap:12px; align-items:center; padding:7px 0; font-size:12.5px; }
-@media (max-width:1180px) {
-  .q-cols { grid-template-columns:1fr; } .q-rail { position:static; }
-  .q-strip { grid-template-columns:repeat(2,1fr); } .q-wide { grid-column:1/-1; }
-}
-@media (max-width:760px) {
-  .q-hide-sm { display:none; }
-  .q-hist { grid-template-columns:80px 1fr 90px; } .q-hist > :nth-child(3), .q-hist > :nth-child(4) { display:none; }
-}`;
-
-function Chip({ theme: t, on, onClick, children, count }) {
-  return (
-    <button onClick={onClick} style={{
-      border: `1px solid ${on ? t.c.accent : t.c.border}`, background: on ? t.c.accentBg : "transparent",
-      color: on ? t.c.text : t.c.text2, borderRadius: 999, padding: "3px 10px", fontSize: 12,
-      fontFamily: t.fontUi, cursor: "pointer", whiteSpace: "nowrap",
-    }}>
-      {children}{count != null && <span style={{ color: t.c.text3, marginLeft: 5 }}>{count}</span>}
-    </button>
-  );
-}
-
-function Segmented({ theme: t, value, onChange, options }) {
-  return (
-    <div style={{ display: "flex", background: t.c.raised2, borderRadius: 8, padding: 3, gap: 2 }}>
-      {options.map((o) => {
-        const on = value === o.key;
-        return (
-          <button key={o.key} onClick={() => onChange(o.key)} style={{
-            border: 0, borderRadius: 6, padding: "4px 10px", fontSize: 12.5, cursor: "pointer",
-            fontFamily: t.fontUi, background: on ? t.c.surface : "transparent",
-            color: on ? t.c.text : t.c.text2, fontWeight: on ? 600 : 400, boxShadow: on ? t.c.shadow : "none",
-          }}>{o.label}</button>
-        );
-      })}
-    </div>
-  );
-}
+const matches = (chip, status) => !chip?.key || (chip.match ? chip.match(status) : chip.key === status);
 
 function readView() {
   try { return localStorage.getItem("custos_queue_view") === "runs" ? "runs" : "repos"; } catch { return "repos"; }
 }
 
 export default function Queue() {
-  const { theme: t } = useTheme();
-  const navigate     = useNavigate();
-  const { user }     = useAuth();
-  const deleteRun    = useDeleteSubmission();
+  const navigate  = useNavigate();
+  const { user }  = useAuth();
+  const toast     = useToast();
+  const deleteRun = useDeleteSubmission();
 
   const [view,    setView]    = useState(readView);
   const [chipKey, setChipKey] = useState(null);
   const [groupId, setGroupId] = useState(null);
   const [query,   setQuery]   = useState("");
   const [shown,   setShown]   = useState(PAGE_SIZE);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const { data, isFetching, isPending, error: queryError, refetch } = useSubmissions(null, groupId, LOAD_LIMIT);
-  const { data: overview } = useQueueOverview(groupId);
+  const { data, isPending, error: queryError, refetch } = useSubmissions(null, groupId, LOAD_LIMIT);
+  const { data: overview, refetch: refetchOverview } = useQueueOverview(groupId);
   const { data: groups = [] } = useGroups();
   const { data: activeJobs = new Set() } = useActiveLlmJobs();
   const error = queryError ? errorMessage(queryError, "Failed to load submissions") : null;
 
   // Admins only; the API enforces it too.
-  const onDelete = user?.role === "admin" ? (s) => deleteRun.mutateAsync(s.id) : undefined;
-  const onOpen   = (s) => navigate(`/submissions/${s.id}`);
+  const onDelete = user?.role === "admin" ? async (s) => {
+    try {
+      await deleteRun.mutateAsync(s.id);
+      toast(`Deleted ${s.repo_full_name.split("/").pop()} ${s.commit_sha.slice(0, 7)}`);
+    } catch (e) {
+      toast(errorMessage(e, "Delete failed"), { bad: true });
+    }
+  } : undefined;
+  const onOpen = (s) => navigate(`/submissions/${s.id}`);
 
-  const subs = useMemo(() => data?.submissions || [], [data]);
+  const subs  = useMemo(() => data?.submissions || [], [data]);
   const repos = useMemo(() => groupByRepo(subs), [subs]);
 
   const q = query.trim().toLowerCase();
@@ -116,101 +80,102 @@ export default function Queue() {
     setView(v); setShown(PAGE_SIZE);
     try { localStorage.setItem("custos_queue_view", v); } catch { /* storage unavailable */ }
   };
+  const pickChip = (k) => { setChipKey((cur) => (cur === k ? null : k)); setShown(PAGE_SIZE); };
+  const refresh = async () => {
+    setRefreshing(true);
+    try { await Promise.all([refetch(), refetchOverview()]); } finally { setRefreshing(false); }
+  };
+  const rows = view === "repos" ? repoRows : runRows;
 
   return (
-    <div style={{ padding: "26px 32px 48px", maxWidth: 1640, margin: "0 auto" }}>
-      <style>{CSS}</style>
-
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16,
-        marginBottom: 20, flexWrap: "wrap" }}>
+    <div className="page glow">
+      <div className="top">
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 600, color: t.c.text, fontFamily: t.fontDisplay,
-            letterSpacing: "-0.02em" }}>Review queue</h1>
-          <div style={{ fontSize: 13, color: t.c.text2, marginTop: 3 }}>
+          <h1>Review <span className="g">queue</span></h1>
+          <div className="subt">
             {isPending ? "Loading…" : (
               <>
-                <b style={{ color: t.c.text, fontWeight: 600 }}>
-                  {waiting.length ? `${waiting.length} run${waiting.length !== 1 ? "s" : ""} need review` : "Nothing waiting for review"}
-                </b>
-                {waiting.length > 0 && ` · oldest waiting ${ago(oldest).replace(" ago", "")}`}
+                <b>{waiting.length ? `${waiting.length} run${waiting.length !== 1 ? "s" : ""} need review` : "Nothing waiting for review"}</b>
+                {waiting.length > 0 && ` · oldest waiting ${since(oldest)}`}
                 {scanningNow > 0 && ` · ${scanningNow} scanning now`}
               </>
             )}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input value={query} onChange={(e) => { setQuery(e.target.value); setShown(PAGE_SIZE); }}
+        <div className="tools">
+          <input className="input" value={query} onChange={(e) => { setQuery(e.target.value); setShown(PAGE_SIZE); }}
             placeholder="Search repo, branch, commit…" aria-label="Search the queue"
-            style={{ background: t.c.surface, border: `1px solid ${t.c.border}`, borderRadius: 9,
-              padding: "7px 11px", color: t.c.text, fontFamily: t.fontUi, fontSize: 13, width: 260, outline: "none" }} />
-          <Btn theme={t} onClick={() => refetch()} size="sm" disabled={isFetching}>
-            {isFetching ? "Refreshing…" : "↻ Refresh"}
-          </Btn>
+            style={{ width: "clamp(220px, 18vw, 380px)" }} />
+          <button className="btn" onClick={refresh} disabled={refreshing}>
+            {refreshing ? <><span className="spin" /> Refreshing</> : "↻ Refresh"}
+          </button>
+          <button className="btn primary" onClick={() => navigate("/repos?add=1")}>+ Add repository</button>
         </div>
       </div>
 
-      {error && (
-        <div style={{ padding: "12px 16px", marginBottom: 16, background: t.sev.critical.bg,
-          border: `1px solid ${t.sev.critical.fg}33`, borderRadius: t.radius, color: t.sev.critical.fg, fontSize: 13 }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="banner bad">{error}</div>}
 
-      <SummaryStrip theme={t} subs={subs} repos={repos} />
+      <SummaryStrip subs={subs} repos={repos} onChip={pickChip} />
 
-      <div className="q-cols">
-        <Panel theme={t}
-          title={<Segmented theme={t} value={view} onChange={setViewPersist}
-            options={[{ key: "repos", label: "By repository" }, { key: "runs", label: "All runs" }]} />}
-          right={
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {STATUS_CHIPS.map((c) => (
-                  <Chip key={String(c.key)} theme={t} on={chipKey === c.key}
-                    onClick={() => { setChipKey(c.key); setShown(PAGE_SIZE); }}
-                    count={c.key ? countFor(c) : null}>{c.label}</Chip>
+      <div className="cols q">
+        <section className="panel">
+          <div className="panel-h">
+            <div className="seg">
+              {[["repos", "By repository"], ["runs", "All runs"]].map(([k, l]) => (
+                <button key={k} className={view === k ? "on" : ""} onClick={() => setViewPersist(k)}>{l}</button>
+              ))}
+            </div>
+            <div className="chips">
+              {STATUS_CHIPS.map((c) => (
+                <button key={String(c.key)} className={`chip ${chipKey === c.key ? "on" : ""}`}
+                  onClick={() => { setChipKey(c.key); setShown(PAGE_SIZE); }}>
+                  {c.label}{c.key && <span className="n">{countFor(c)}</span>}
+                </button>
+              ))}
+            </div>
+            {groups.length > 0 && (
+              <div className="chips">
+                {[{ id: null, name: "All groups" }, ...groups].map((g) => (
+                  <button key={String(g.id)} className={`chip ${groupId === g.id ? "on" : ""}`}
+                    onClick={() => { setGroupId(g.id); setShown(PAGE_SIZE); }}>{g.name}</button>
                 ))}
               </div>
-              {groups.length > 0 && (
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {[{ id: null, name: "All groups" }, ...groups].map((g) => (
-                    <Chip key={String(g.id)} theme={t} on={groupId === g.id}
-                      onClick={() => { setGroupId(g.id); setShown(PAGE_SIZE); }}>{g.name}</Chip>
-                  ))}
-                </div>
+            )}
+          </div>
+
+          {isPending ? (
+            <div className="empty">Loading…</div>
+          ) : rows.length === 0 ? (
+            <div className="empty">
+              {subs.length ? "Nothing matches these filters." : (
+                <>No scans yet. <button className="link" style={{ color: "var(--accent)" }}
+                  onClick={() => navigate("/repos?add=1")}>Add a repository</button> to get started.</>
               )}
             </div>
-          }>
-          {isPending ? (
-            <div style={{ padding: 40, textAlign: "center", color: t.c.text3, fontSize: 13 }}>Loading…</div>
-          ) : (view === "repos" ? repoRows : runRows).length === 0 ? (
-            <div style={{ padding: "48px 24px", textAlign: "center", color: t.c.text3, fontSize: 13 }}>
-              {subs.length ? "Nothing matches these filters." : "No scans yet. Add a repository to get started."}
-            </div>
           ) : view === "repos" ? (
-            <RepoTable theme={t} repos={repoRows} onOpen={onOpen} onDelete={onDelete} activeJobs={activeJobs} />
+            <RepoTable repos={repoRows} onOpen={onOpen} onDelete={onDelete} activeJobs={activeJobs} />
           ) : (
             <>
-              <RunTable theme={t} subs={runRows.slice(0, shown)} onOpen={onOpen} onDelete={onDelete} activeJobs={activeJobs} />
+              <RunTable subs={runRows.slice(0, shown)} onOpen={onOpen} onDelete={onDelete} activeJobs={activeJobs} />
               {runRows.length > shown && (
                 <div style={{ display: "flex", justifyContent: "center", padding: 14 }}>
-                  <Btn theme={t} size="sm" onClick={() => setShown((v) => v + PAGE_SIZE)}>
+                  <button className="btn sm" onClick={() => setShown((v) => v + PAGE_SIZE)}>
                     Show more ({runRows.length - shown} remaining)
-                  </Btn>
+                  </button>
                 </div>
               )}
             </>
           )}
           {data && data.total > subs.length && (
-            <div style={{ padding: "10px 16px", fontSize: 12, color: t.c.text3, borderTop: `1px solid ${t.c.border}` }}>
+            <div className="muted" style={{ padding: "10px 16px", fontSize: ".8rem", borderTop: "1px solid var(--border)" }}>
               Showing the most relevant {subs.length} of {data.total} runs.
             </div>
           )}
-        </Panel>
+        </section>
 
-        <div className="q-rail">
-          <AttentionList theme={t} subs={subs} onOpen={onOpen} />
-          <ActivityFeed theme={t} events={overview?.activity || []} onOpen={onOpen} />
+        <div className="rail">
+          <AttentionList subs={subs} onOpen={onOpen} />
+          <ActivityFeed events={overview?.activity || []} onOpen={onOpen} />
         </div>
       </div>
     </div>

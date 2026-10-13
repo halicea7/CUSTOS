@@ -1,143 +1,67 @@
-import React, { useEffect, useState } from "react";
-import { Btn } from "../atoms.jsx";
-import { useLlmRuns, useLlmStatus, useRerunLlm } from "../../api/queries.js";
-import { errorMessage } from "../../api/errors.js";
+// LLM re-run progress (above the findings) and run history (side column).
+import React, { useState } from "react";
+import { useLlmRuns } from "../../api/queries.js";
 import { fmtDuration, fmtTokens } from "./report.js";
 
-function LlmRunHistory({ theme, submissionId }) {
-  const [open, setOpen] = useState(false);
-  const { data: runs = null, isError } = useLlmRuns(submissionId, open);
-  const t = theme;
+export const LLM_ACTIVE = new Set(["queued", "running"]);
 
-  const statusColor = s => s === "complete" ? t.status.signed_off[t.mode === "light" ? "light" : "dark"]
-    : s === "failed" ? t.sev.critical.fg : t.c.accent;
-
+export function LlmProgress({ status }) {
+  if (!LLM_ACTIVE.has(status?.status)) return null;
+  const queued = status.status === "queued";
+  const pct = Math.round((status.progress || 0) * 100);
+  const remaining = !queued && status.estimated > 0 ? Math.max(0, Math.round(status.estimated - status.elapsed)) : null;
   return (
-    <div style={{ marginTop: 10 }}>
-      <button onClick={() => setOpen(o => !o)} style={{ background: "none", border: "none", padding: 0,
-        color: t.c.text3, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-        fontFamily: t.fontMono, letterSpacing: "0.06em" }}>
-        <span style={{ fontSize: 9 }}>{open ? "▼" : "▶"}</span>
-        LLM DETAILS
+    <div className="panel panel-b" style={{ marginBottom: "var(--gap)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8, fontSize: ".86rem" }}>
+        <span><span className="spin" /> {queued ? "LLM re-run queued, waiting for a worker" : "LLM re-run in progress"}</span>
+        <span className="mono muted">{queued ? "" : `${pct}%${remaining !== null ? ` · ~${remaining}s left` : ""}`}</span>
+      </div>
+      <div className="track"><span style={{ width: queued ? "6%" : `${pct}%`, background: "var(--grad)" }} /></div>
+      <div className="muted" style={{ fontSize: ".8rem", marginTop: 8 }}>
+        Re-clones the same commit. Only LLM findings are replaced; dismissals carry forward.
+      </div>
+    </div>
+  );
+}
+
+const RUN_COLOR = { complete: "var(--ok)", failed: "var(--crit)" };
+
+export function LlmRuns({ submissionId }) {
+  const [open, setOpen] = useState(false);
+  const { data: runs, isError } = useLlmRuns(submissionId, open);
+  return (
+    <section className="panel panel-b">
+      <button className="link" style={{ fontWeight: 600, color: "var(--text)", display: "flex", gap: 8, alignItems: "center" }}
+        onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className="chev" style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .2s" }}>›</span>
+        LLM runs
       </button>
       {open && (
-        <div style={{ marginTop: 10, border: `1px solid ${t.c.border}`, borderRadius: t.radius, overflow: "hidden" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 70px 70px 70px 70px 80px",
-            padding: "6px 12px", background: t.c.raised, borderBottom: `1px solid ${t.c.border}`, gap: 8 }}>
-            {["TRIGGER","MODEL","STATUS","DUR.","FINDS","TOK IN","TOK OUT"].map(h => (
-              <span key={h} style={{ fontSize: 9, color: t.c.text3, letterSpacing: "0.08em", fontWeight: 600 }}>{h}</span>
-            ))}
-          </div>
-          {isError && <div style={{ padding: 12, fontSize: 11, color: t.sev.critical.fg }}>Failed to load runs.</div>}
-          {runs === null && !isError && <div style={{ padding: 12, fontSize: 11, color: t.c.text3 }}>Loading…</div>}
-          {runs?.length === 0 && <div style={{ padding: 12, fontSize: 11, color: t.c.text3 }}>No runs recorded yet.</div>}
-          {runs?.map((r, i) => (
-            <div key={r.id} style={{ display: "grid", gridTemplateColumns: "80px 1fr 70px 70px 70px 70px 80px",
-              padding: "8px 12px", gap: 8, alignItems: "center",
-              borderBottom: i < runs.length - 1 ? `1px solid ${t.c.border}` : "none",
-              background: i % 2 === 0 ? t.c.surface : t.c.raised }}>
-              <span style={{ fontSize: 10, fontWeight: 600, fontFamily: t.fontMono,
-                color: r.triggered_by === "rerun" ? t.c.accent : t.c.text3 }}>
-                {r.triggered_by === "rerun" ? "RE-RUN" : "INITIAL"}
-              </span>
-              <span style={{ fontSize: 11, color: t.c.text2, fontFamily: t.fontMono,
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.model}</span>
-              <span style={{ fontSize: 10, fontWeight: 600, color: statusColor(r.status), fontFamily: t.fontMono }}>
-                {r.status === "complete" ? "DONE" : r.status === "failed" ? "FAILED" : "RUNNING"}
-              </span>
-              <span style={{ fontSize: 11, color: t.c.text2, fontFamily: t.fontMono }}>{fmtDuration(r.duration_seconds)}</span>
-              <span style={{ fontSize: 11, color: t.c.text2, fontFamily: t.fontMono }}>{r.findings_count ?? "—"}</span>
-              <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>{fmtTokens(r.prompt_tokens)}</span>
-              <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>{fmtTokens(r.completion_tokens)}</span>
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+          {isError && <div className="muted">Couldn&rsquo;t load the runs.</div>}
+          {!runs && !isError && <div className="muted">Loading…</div>}
+          {runs?.length === 0 && <div className="muted">No LLM runs recorded.</div>}
+          {runs?.map((r) => (
+            <div key={r.id} style={{ fontSize: ".82rem", borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span className="dot" style={{ background: RUN_COLOR[r.status] || "var(--run)" }} />
+                <b style={{ color: "var(--text)" }}>{r.triggered_by === "rerun" ? "Re-run" : "Initial"}</b>
+                <span className="mono dim" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                  {r.model}
+                </span>
+              </div>
+              <div className="muted" style={{ marginTop: 3 }}>
+                {r.status === "complete" ? "done" : r.status} · {fmtDuration(r.duration_seconds)}
+                {" "}· {r.findings_count ?? "—"} findings · {fmtTokens(r.prompt_tokens)} in / {fmtTokens(r.completion_tokens)} out
+              </div>
               {r.error && (
-                <span style={{ gridColumn: "1 / -1", fontSize: 11, color: r.status === "failed" ? t.sev.critical.fg : t.c.text3,
-                  fontFamily: t.fontMono, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{r.error}</span>
+                <div className="mono" style={{ marginTop: 4, color: r.status === "failed" ? "var(--crit)" : "var(--text3)",
+                  whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: ".76rem" }}>{r.error}</div>
               )}
             </div>
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-export default function LlmRerunPanel({ theme, submissionId, onComplete }) {
-  const { data: status, refetch } = useLlmStatus(submissionId);
-  const rerun = useRerunLlm(submissionId);
-  const [prevStatus, setPrevStatus] = useState(null);
-  const t = theme;
-
-  // Fire onComplete once when a run we watched transitions to complete/failed.
-  useEffect(() => {
-    const now = status?.status;
-    if ((prevStatus === "running" || prevStatus === "queued") && (now === "complete" || now === "failed")) {
-      onComplete?.();
-    }
-    setPrevStatus(now ?? null);
-  }, [status?.status]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleRerun = () => rerun.mutate(undefined, { onSuccess: () => refetch() });
-  const error = rerun.error
-    ? errorMessage(rerun.error, "Failed to start re-run")
-    : status?.status === "failed" ? "LLM re-run failed — see the run details below." : null;
-
-  const isActive = status?.status === "running" || status?.status === "queued";
-  const pct = Math.round((status?.progress || 0) * 100);
-  const remaining = status?.status === "running" && status.estimated > 0
-    ? Math.max(0, Math.round(status.estimated - status.elapsed)) : null;
-
-  return (
-    <div style={{ border: `1px solid ${t.c.border}`, borderRadius: t.radiusLg,
-      overflow: "hidden", background: t.c.surface, marginBottom: 18 }}>
-      <div style={{ padding: "10px 16px", borderBottom: `1px solid ${t.c.border}`,
-        background: t.c.raised, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: t.c.text2 }}>LLM ANALYSIS</span>
-        {status?.status === "complete" && (
-          <span style={{ fontSize: 10, color: t.status.signed_off[t.mode === "light" ? "light" : "dark"], fontWeight: 600 }}>✓ COMPLETE</span>
-        )}
-      </div>
-      <div style={{ padding: "14px 16px" }}>
-        {isActive ? (
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <span style={{ fontSize: 11, color: t.c.text2 }}>
-                {status.status === "queued" ? "Queued…" : "Running…"}
-              </span>
-              <span style={{ fontSize: 11, color: t.c.text3, fontFamily: t.fontMono }}>
-                {status.status === "running"
-                  ? `${pct}%${remaining !== null ? ` · ~${remaining}s remaining` : ""}`
-                  : "waiting for worker"}
-              </span>
-            </div>
-            <div style={{ height: 4, background: t.c.border, borderRadius: 999, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: status.status === "queued" ? "6%" : `${pct}%`,
-                background: t.c.accent, borderRadius: 999, transition: "width 1.8s ease-out",
-                animation: status.status === "queued" ? "shimmer 1.4s ease-in-out infinite" : "none" }} />
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <Btn theme={t} variant="primary" size="sm" onClick={handleRerun} disabled={rerun.isPending}>
-              {rerun.isPending ? "Starting…" : "↺ Re-run LLM"}
-            </Btn>
-            <span style={{ fontSize: 11, color: t.c.text3 }}>
-              Re-clones at the same SHA · only LLM findings are replaced
-            </span>
-          </div>
-        )}
-        {status?.status === "complete" && (
-          <div style={{ marginTop: 10, fontSize: 12,
-            color: t.status.signed_off[t.mode === "light" ? "light" : "dark"] }}>
-            ✓ Findings updated — scroll down to review new LLM results
-          </div>
-        )}
-        {error && (
-          <div style={{ marginTop: 8, padding: "8px 12px", background: `${t.sev.critical.fg}14`,
-            border: `1px solid ${t.sev.critical.fg}33`, borderRadius: t.radius,
-            color: t.sev.critical.fg, fontSize: 12 }}>{error}</div>
-        )}
-        <LlmRunHistory theme={t} submissionId={submissionId} />
-      </div>
-    </div>
+    </section>
   );
 }

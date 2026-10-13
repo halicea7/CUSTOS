@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { SEV_ORDER, STATUS_META } from "../theme.js";
 
 export { SEV_ORDER };
@@ -83,40 +83,16 @@ export function DispositionTag({ theme, disposition, size = "sm" }) {
   );
 }
 
-export function Btn({ theme, children, variant = "ghost", onClick, active, style, full, size = "md", disabled }) {
-  const [hover, setHover] = useState(false);
-  const pad = size === "sm" ? "5px 11px" : size === "lg" ? "10px 18px" : "8px 14px";
-  const fs  = size === "sm" ? 11 : size === "lg" ? 14 : 12.5;
-  let bg, color, border;
-  if (variant === "primary") {
-    bg = theme.c.accent; color = theme.c.accentText; border = theme.c.accent;
-  } else if (variant === "danger") {
-    bg = hover ? theme.sev.critical.bg : "transparent";
-    color = theme.sev.critical.fg; border = `${theme.sev.critical.fg}55`;
-  } else if (variant === "success") {
-    const g = theme.status.signed_off[theme.mode === "light" ? "light" : "dark"];
-    bg = hover ? `${g}1c` : "transparent"; color = g; border = `${g}55`;
-  } else if (variant === "quiet") {
-    bg = "transparent"; color = hover ? theme.c.text : theme.c.text2; border = "transparent";
-  } else {
-    bg     = active ? theme.c.accentBg : hover ? theme.c.raised2 : theme.c.raised;
-    color  = active ? theme.c.accent   : theme.c.text2;
-    border = active ? theme.c.accent   : theme.c.border;
-  }
+// Styling lives in styles.css (.btn); *theme* is accepted for older call sites.
+// eslint-disable-next-line no-unused-vars
+export function Btn({ theme, children, variant = "ghost", onClick, active, style, full, size = "md",
+  disabled, title, type = "button", className = "" }) {
+  const cls = ["btn", variant !== "ghost" && variant, size !== "md" && size, full && "full",
+    active && "active", className].filter(Boolean).join(" ");
   return (
-    <button onClick={onClick} disabled={disabled}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      style={{
-        padding: pad, fontSize: fs, fontWeight: variant === "primary" ? 600 : 500,
-        fontFamily: theme.fontUi, color, background: bg,
-        border: `1px solid ${border}`, borderRadius: theme.radius,
-        cursor: disabled ? "not-allowed" : "pointer", whiteSpace: "nowrap",
-        transition: "all 0.14s ease", width: full ? "100%" : "auto",
-        display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7,
-        opacity: disabled ? 0.5 : 1,
-        boxShadow: variant === "primary" && hover && !disabled ? `0 4px 14px ${theme.c.accent}44` : "none",
-        ...style,
-      }}>{children}</button>
+    <button type={type} className={cls} onClick={onClick} disabled={disabled} title={title} style={style}>
+      {children}
+    </button>
   );
 }
 

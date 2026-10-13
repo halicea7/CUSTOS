@@ -2,21 +2,27 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getActiveLlmJobs, getLlmRuns, getLlmStatus, getSubmission, getSubmissionFindings,
-  listSubmissions, rerunLlm, signOff, deleteSubmission, getQueueOverview,
+  listSubmissions, rerunLlm, signOff, deleteSubmission, getQueueOverview, getComparison,
 } from "./submissions.js";
-import { getHealthStatus, getScanFindings, listScans, triggerScan } from "./health.js";
+import { getFindingAudit, setDispositions } from "./findings.js";
+import { getHealthStatus, getScanFindings, getServices, listScans, triggerScan } from "./health.js";
 import { listGroups } from "./groups.js";
+import { listRepos } from "./repos.js";
 
 export const keys = {
   submissions: (filter, groupId, limit) => ["submissions", { filter, groupId, limit }],
   submission: (id) => ["submission", id],
   findings: (id) => ["submission", id, "findings"],
+  comparison: (id) => ["submission", id, "compare"],
+  audit: (findingId) => ["finding", findingId, "audit"],
   llmRuns: (id) => ["submission", id, "llm-runs"],
   llmStatus: (id) => ["submission", id, "llm-status"],
   llmActive: ["llm-active"],
   overview: (groupId) => ["submissions", "overview", { groupId }],
   groups: ["groups"],
+  repos: ["repos"],
   healthStatus: ["health", "status"],
+  services: ["health", "services"],
   scans: ["health", "scans"],
   scanFindings: (id) => ["health", "scans", id, "findings"],
 };
@@ -57,6 +63,10 @@ export function useActiveLlmJobs() {
   });
 }
 
+export function useRepos() {
+  return useQuery({ queryKey: keys.repos, queryFn: listRepos, staleTime: 15000 });
+}
+
 export function useGroups() {
   return useQuery({ queryKey: keys.groups, queryFn: listGroups, staleTime: 60000 });
 }
@@ -74,6 +84,38 @@ export function useSubmissionFindings(id, status) {
     queryKey: keys.findings(id),
     queryFn: () => getSubmissionFindings(id),
     enabled: !IN_FLIGHT.has(status),
+  });
+}
+
+/** What changed since the previous finished scan of the same repo. */
+export function useComparison(id, status) {
+  return useQuery({
+    queryKey: keys.comparison(id),
+    queryFn: () => getComparison(id),
+    enabled: !IN_FLIGHT.has(status),
+    staleTime: 60000,
+  });
+}
+
+export function useFindingAudit(findingId) {
+  return useQuery({ queryKey: keys.audit(findingId), queryFn: () => getFindingAudit(findingId), enabled: !!findingId });
+}
+
+/** Give one or more findings of a submission the same disposition. */
+export function useDispose(submissionId) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids, disposition, note }) => setDispositions(ids, disposition, note),
+    onSuccess: (updated) => {
+      const byId = new Map(updated.map((f) => [f.id, f]));
+      qc.setQueryData(keys.findings(submissionId), (old) => old?.map((f) => byId.get(f.id) || f));
+      updated.forEach((f) => {
+        qc.setQueryData(["finding", f.id], f);
+        qc.invalidateQueries({ queryKey: keys.audit(f.id) });
+      });
+      qc.invalidateQueries({ queryKey: keys.submission(submissionId) });
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+    },
   });
 }
 
@@ -127,6 +169,8 @@ export function useInvalidateSubmission(id) {
   const qc = useQueryClient();
   return () => {
     qc.invalidateQueries({ queryKey: keys.submission(id) });
+    qc.invalidateQueries({ queryKey: keys.findings(id) });
+    qc.invalidateQueries({ queryKey: keys.comparison(id) });
     qc.invalidateQueries({ queryKey: ["submissions"] });
   };
 }
@@ -137,6 +181,11 @@ export function useHealthStatus(polling) {
     queryFn: getHealthStatus,
     refetchInterval: polling ? 2000 : false,
   });
+}
+
+/** API, database, Redis, worker, LLM and SentinelOne (admins only). */
+export function useHealthServices() {
+  return useQuery({ queryKey: keys.services, queryFn: getServices, refetchInterval: 30000 });
 }
 
 export function useScans(polling) {

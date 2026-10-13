@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useId, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 
 // Field gives its control an id and label/error wiring through context, so
 // every input inside a Field is labelled for screen readers automatically.
@@ -13,22 +13,22 @@ const useFieldProps = () => {
   };
 };
 
-export function PageHeader({ theme, title, subtitle, right }) {
+export function PageHeader({ theme, title, subtitle, right }) { // eslint-disable-line no-unused-vars
   return (
-    <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between",
-      gap: 20, marginBottom: 24, flexWrap: "wrap" }}>
+    <div className="top">
       <div>
-        <h1 style={{ fontSize: 24, fontWeight: 600, color: theme.c.text,
-          fontFamily: theme.fontDisplay, letterSpacing: "-0.025em" }}>{title}</h1>
-        {subtitle && <div style={{ fontSize: 13, color: theme.c.text3, marginTop: 5 }}>{subtitle}</div>}
+        <h1>{title}</h1>
+        {subtitle && <div className="subt">{subtitle}</div>}
       </div>
-      {right}
+      {right && <div className="tools">{right}</div>}
     </div>
   );
 }
 
-export function PageWrap({ max = 1080, children }) {
-  return <div style={{ padding: "28px 34px", maxWidth: max, margin: "0 auto" }}>{children}</div>;
+// Pages fill the window (fluid sizing in styles.css); *max* caps forms that
+// would otherwise stretch uncomfortably wide.
+export function PageWrap({ max, children }) {
+  return <div className="page glow" style={max ? { maxWidth: max } : undefined}>{children}</div>;
 }
 
 export function TextInput({ theme, value, onChange, type = "text", placeholder, mono,
@@ -82,45 +82,28 @@ export function Toggle({ theme, value, onChange, label }) {
   );
 }
 
-export function Tabs({ theme, tabs, active, onChange }) {
+export function Tabs({ theme, tabs, active, onChange }) { // eslint-disable-line no-unused-vars
   return (
-    <div style={{ display: "flex", gap: 4, marginBottom: 26,
-      borderBottom: `1px solid ${theme.c.border}` }}>
-      {tabs.map((t) => {
-        const on = active === t.key;
-        return (
-          <button key={t.key} onClick={() => onChange(t.key)} style={{
-            padding: "9px 16px", background: "none", border: "none",
-            borderBottom: `2px solid ${on ? theme.c.accent : "transparent"}`,
-            marginBottom: -1, color: on ? theme.c.accent : theme.c.text2,
-            fontSize: 13, fontWeight: on ? 600 : 500, cursor: "pointer",
-            fontFamily: theme.fontUi, transition: "color 0.14s",
-          }}>{t.label}</button>
-        );
-      })}
+    <div className="tabs" role="tablist">
+      {tabs.map((t) => (
+        <button key={t.key} role="tab" aria-selected={active === t.key} className={active === t.key ? "on" : ""}
+          onClick={() => onChange(t.key)}>{t.label}</button>
+      ))}
     </div>
   );
 }
 
-export function SectionCard({ theme, title, subtitle, right, children, pad = true }) {
+export function SectionCard({ theme, title, subtitle, right, children, pad = true }) { // eslint-disable-line no-unused-vars
   return (
-    <div style={{ border: `1px solid ${theme.c.border}`, borderRadius: theme.radiusLg,
-      overflow: "hidden", marginBottom: 18, background: theme.c.surface,
-      boxShadow: theme.c.shadow }}>
+    <section className="panel" style={{ marginBottom: "var(--gap)" }}>
       {title && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          gap: 12, padding: "13px 18px", borderBottom: `1px solid ${theme.c.border}`,
-          background: theme.c.raised }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: theme.c.text,
-              fontFamily: theme.fontDisplay }}>{title}</span>
-            {subtitle && <span style={{ fontSize: 12, color: theme.c.text3 }}>{subtitle}</span>}
-          </div>
+        <div className="panel-h">
+          <h2>{title}{subtitle && <span className="aside" style={{ fontWeight: 400 }}>{subtitle}</span>}</h2>
           {right}
         </div>
       )}
-      <div style={{ padding: pad ? "18px" : 0 }}>{children}</div>
-    </div>
+      <div className={pad ? "panel-b" : undefined}>{children}</div>
+    </section>
   );
 }
 
@@ -215,26 +198,25 @@ export function Feedback({ theme, msg, type }) {
   );
 }
 
+// eslint-disable-next-line no-unused-vars
 export function Modal({ theme, title, subtitle, onClose, children, width = 480 }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200,
-      background: "rgba(8,10,16,0.55)", backdropFilter: "blur(3px)",
-      display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width: "100%", maxWidth: width, background: theme.c.surface,
-        border: `1px solid ${theme.c.border}`, borderRadius: theme.radiusLg,
-        boxShadow: theme.c.shadowHi, overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between",
-          gap: 12, padding: "18px 20px", borderBottom: `1px solid ${theme.c.border}` }}>
+    <div className="modal-wrap" onClick={onClose}>
+      <div className="modal-card" role="dialog" aria-modal="true" aria-label={title}
+        onClick={(e) => e.stopPropagation()} style={{ maxWidth: width }}>
+        <div className="mh">
           <div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: theme.c.text,
-              fontFamily: theme.fontDisplay }}>{title}</div>
-            {subtitle && <div style={{ fontSize: 12.5, color: theme.c.text3, marginTop: 3 }}>{subtitle}</div>}
+            <div className="mt">{title}</div>
+            {subtitle && <div className="muted" style={{ fontSize: ".84rem", marginTop: 3 }}>{subtitle}</div>}
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none",
-            color: theme.c.text3, cursor: "pointer", fontSize: 20, lineHeight: 1, padding: 0 }}>×</button>
+          <button className="link" onClick={onClose} aria-label="Close" style={{ fontSize: "1.3rem", lineHeight: 1 }}>×</button>
         </div>
-        <div style={{ padding: 20 }}>{children}</div>
+        <div className="mb">{children}</div>
       </div>
     </div>
   );

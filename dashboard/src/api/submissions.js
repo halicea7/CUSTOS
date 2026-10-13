@@ -52,3 +52,8 @@ export async function getQueueOverview(groupId) {
   const res = await api.get("/submissions/overview", { params: groupId ? { group_id: groupId } : {} });
   return res.data;
 }
+
+export async function getComparison(id) {
+  const res = await api.get(`/submissions/${id}/compare`);
+  return res.data;
+}

@@ -11,6 +11,8 @@ import Login from "./pages/Login.jsx";
 import Queue from "./pages/Queue.jsx";
 import { Modal } from "./components/ui.jsx";
 import { Btn } from "./components/atoms.jsx";
+import { ToastProvider } from "./components/Toast.jsx";
+import CommandPalette from "./components/CommandPalette.jsx";
 
 // Less-visited pages load on demand to keep the initial bundle small.
 const Submission = lazy(() => import("./pages/Submission.jsx"));
@@ -193,119 +195,90 @@ function activeSection(pathname) {
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function ModeToggle({ theme, mode, setMode }) {
-  return (
-    <div style={{ display: "flex", gap: 3, padding: 3, borderRadius: 999,
-      background: theme.c.raised2, border: `1px solid ${theme.c.border}` }}>
-      {[{ k: "light", icon: "sun" }, { k: "dark", icon: "moon" }].map((o) => {
-        const on = mode === o.k;
-        return (
-          <button key={o.k} onClick={() => setMode(o.k)} title={`${o.k} mode`} style={{
-            flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-            gap: 5, padding: "5px 10px", borderRadius: 999, cursor: "pointer",
-            border: "none", background: on ? theme.c.surface : "transparent",
-            color: on ? theme.c.accent : theme.c.text3,
-            boxShadow: on ? theme.c.shadow : "none", transition: "all 0.14s",
-            fontSize: 11, fontWeight: 600, fontFamily: theme.fontUi,
-          }}>
-            <Icon name={o.icon} size={13} color={on ? theme.c.accent : theme.c.text3} />
-            <span style={{ textTransform: "capitalize" }}>{o.k}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function SideRail({ theme, mode, setMode }) {
+function SideRail({ mode, setMode, onSearch }) {
   const { user, logout } = useAuth();
   const { data: overview } = useQueueOverview(null);
   const needsReview = overview?.status_counts?.needs_review || 0;
   const navigate = useNavigate();
   const location = useLocation();
   const section = activeSection(location.pathname);
+  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
   const { guard } = useUnsavedGuard();
   const handleLogout = () => guard(() => { logout(); navigate("/login"); });
 
   return (
-    <aside style={{
-      width: 220, flexShrink: 0, borderRight: `1px solid ${theme.c.border}`,
-      background: theme.c.surface, display: "flex", flexDirection: "column",
-      padding: "20px 14px", position: "sticky", top: 0, height: "100vh",
-    }}>
-      {/* Logo */}
-      <div style={{ padding: "0 8px 22px", display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ width: 30, height: 30, borderRadius: 9, background: theme.c.accent,
-          display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Icon name="shield" size={17} color={theme.c.accentText} />
-        </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
-          <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em",
-            color: theme.c.text, fontFamily: theme.fontDisplay }}>CUSTOS</span>
-          <span style={{ fontSize: 10, color: theme.c.text3, fontFamily: theme.fontMono }}>v1.1</span>
-        </div>
-      </div>
+    <aside className="sidebar">
+      <button className="brand" onClick={() => guard(() => navigate("/"))}>
+        <span className="logo"><Icon name="shield" size={16} color="#fff" /></span>
+        CUSTOS <small>v1.1</small>
+      </button>
+      <button className="kbar" onClick={onSearch}>
+        ⌕ Search… <span className="kbd">{mac ? "⌘K" : "Ctrl K"}</span>
+      </button>
 
-      {/* Nav */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        {NAV.filter((n) => !n.admin || user?.role === "admin").map((n) => {
-          const on = section === n.id;
-          return (
-            <button key={n.id} onClick={() => guard(() => navigate(n.path))} style={{
-              display: "flex", alignItems: "center", gap: 11, padding: "9px 11px",
-              borderRadius: theme.radius, cursor: "pointer", border: "none", textAlign: "left",
-              background: on ? theme.c.accentBg : "transparent",
-              color: on ? theme.c.accent : theme.c.text2,
-              fontSize: 13.5, fontWeight: on ? 600 : 500, fontFamily: theme.fontUi,
-              transition: "all 0.14s",
-            }}
-              onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = theme.c.raised; }}
-              onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}>
-              <Icon name={n.icon} size={17} color={on ? theme.c.accent : theme.c.text3} />
-              {n.label}
-              {n.id === "queue" && needsReview > 0 && (
-                <span title={`${needsReview} run${needsReview !== 1 ? "s" : ""} need review`} style={{
-                  marginLeft: "auto", fontSize: 11, fontWeight: 600, borderRadius: 999, padding: "0 7px",
-                  background: on ? theme.c.accent : theme.c.raised2, color: on ? theme.c.accentText : theme.c.text2,
-                }}>{needsReview}</span>
-              )}
+      <nav style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        {NAV.filter((n) => !n.admin || user?.role === "admin").map((n) => (
+          <button key={n.id} className={`navlink ${section === n.id ? "on" : ""}`}
+            aria-current={section === n.id ? "page" : undefined}
+            onClick={() => guard(() => navigate(n.path))}>
+            <Icon name={n.icon} size={17} />
+            {n.label}
+            {n.id === "queue" && needsReview > 0 && (
+              <span className="count" title={`${needsReview} run${needsReview !== 1 ? "s" : ""} need review`}>
+                {needsReview}
+              </span>
+            )}
+          </button>
+        ))}
+      </nav>
+
+      <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="seg" style={{ display: "flex" }}>
+          {[{ k: "light", icon: "sun" }, { k: "dark", icon: "moon" }].map((o) => (
+            <button key={o.k} className={mode === o.k ? "on" : ""} style={{ flex: 1 }}
+              onClick={() => setMode(o.k)} aria-pressed={mode === o.k}>
+              <Icon name={o.icon} size={13} /><span style={{ textTransform: "capitalize" }}>{o.k}</span>
             </button>
-          );
-        })}
-      </div>
-
-      {/* Bottom */}
-      <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
-        <ModeToggle theme={theme} mode={mode} setMode={setMode} />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 8px",
-          borderTop: `1px solid ${theme.c.border}` }}>
-          {/* Avatar initials */}
-          <div style={{ width: 32, height: 32, borderRadius: 999, background: theme.c.accentBg,
-            color: theme.c.accent, display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 13, fontWeight: 700, fontFamily: theme.fontDisplay, flexShrink: 0 }}>
-            {(user?.username || "?")[0].toUpperCase()}
-          </div>
+          ))}
+        </div>
+        <div className="me">
+          <div className="avatar">{(user?.username || "?")[0].toUpperCase()}</div>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 12.5, color: theme.c.text, fontWeight: 600,
-              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {user?.username}
-            </div>
-            <div style={{ fontSize: 11, color: theme.c.text3, textTransform: "capitalize" }}>
-              {user?.role}
-            </div>
+            <div style={{ fontSize: ".9rem", fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap",
+              overflow: "hidden", textOverflow: "ellipsis" }}>{user?.username}</div>
+            <div className="muted" style={{ fontSize: ".78rem", textTransform: "capitalize" }}>{user?.role}</div>
           </div>
-          <button onClick={handleLogout} title="Log out" style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: theme.c.text3, padding: 4, display: "flex",
-          }}
-            onMouseEnter={(e) => e.currentTarget.style.color = theme.c.text}
-            onMouseLeave={(e) => e.currentTarget.style.color = theme.c.text3}>
+          <button className="link" onClick={handleLogout} title="Log out" aria-label="Log out"
+            style={{ display: "flex", padding: 4 }}>
             <Icon name="logout" size={17} />
           </button>
         </div>
       </div>
     </aside>
+  );
+}
+
+function Shell({ theme, mode, setMode, children }) {
+  const [search, setSearch] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setSearch((v) => !v); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <div style={{ display: "flex", minHeight: "100vh", background: theme.c.bg }}>
+      <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden>
+        <defs><linearGradient id="custos-ring" x1="0" x2="1">
+          <stop offset="0" stopColor="#7c5cff" /><stop offset="1" stopColor="#c084fc" />
+        </linearGradient></defs>
+      </svg>
+      <SideRail mode={mode} setMode={setMode} onSearch={() => setSearch(true)} />
+      <main style={{ flex: 1, minWidth: 0 }}>{children}</main>
+      <CommandPalette open={search} onClose={() => setSearch(false)} />
+    </div>
   );
 }
 
@@ -322,9 +295,7 @@ function AppShell() {
           <Route path="/*" element={
             <RequireAuth>
               <UnsavedChangesProvider theme={theme}>
-              <div style={{ display: "flex", minHeight: "100vh", background: theme.c.bg }}>
-                <SideRail theme={theme} mode={mode} setMode={setMode} />
-                <main style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+              <Shell theme={theme} mode={mode} setMode={setMode}>
                   <Suspense fallback={<Splash />}>
                   <Routes>
                     <Route path="/"                 element={<Queue />} />
@@ -336,8 +307,7 @@ function AppShell() {
                     <Route path="/settings"         element={<Settings />} />
                   </Routes>
                   </Suspense>
-                </main>
-              </div>
+              </Shell>
               </UnsavedChangesProvider>
             </RequireAuth>
           } />
@@ -350,7 +320,9 @@ function AppShell() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AppShell />
+      <ToastProvider>
+        <AppShell />
+      </ToastProvider>
     </ThemeProvider>
   );
 }

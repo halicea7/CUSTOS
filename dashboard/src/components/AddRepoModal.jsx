@@ -1,7 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { addRepo, validateToken } from "../api/repos.js";
-import { listGroups } from "../api/groups.js";
+import { useGroups } from "../api/queries.js";
 import { errorMessage } from "../api/errors.js";
+import { useTheme } from "../App.jsx";
+import { Modal } from "./ui.jsx";
+import { useToast } from "./Toast.jsx";
 
 function generateSecret() {
   const arr = new Uint8Array(24);
@@ -11,80 +14,28 @@ function generateSecret() {
 
 const WEBHOOK_URL = `${window.location.protocol}//${window.location.hostname}${window.location.port ? `:${window.location.port}` : ""}/api/webhook/github`;
 
-const S = {
-  overlay: {
-    position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    zIndex: 1000, backdropFilter: "blur(4px)",
-  },
-  modal: {
-    background: "var(--bg-2)", border: "1px solid var(--border-2)",
-    borderRadius: "var(--radius)", width: "520px", maxWidth: "calc(100vw - 32px)",
-    maxHeight: "90vh", overflow: "auto",
-  },
-  header: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "16px 20px", borderBottom: "1px solid var(--border)",
-  },
-  body: { padding: "20px" },
-  footer: {
-    display: "flex", justifyContent: "flex-end", gap: "8px",
-    padding: "16px 20px", borderTop: "1px solid var(--border)",
-  },
-  label: { display: "block", fontSize: "11px", color: "var(--text-2)", letterSpacing: "0.06em", marginBottom: "6px" },
-  input: {
-    width: "100%", background: "var(--bg)", border: "1px solid var(--border)",
-    borderRadius: "var(--radius)", padding: "8px 10px", color: "var(--text)",
-    fontSize: "13px", fontFamily: "var(--mono)", outline: "none", boxSizing: "border-box",
-  },
-  row: { marginBottom: "14px" },
-  btn: (variant = "default") => ({
-    padding: "7px 16px", borderRadius: "var(--radius)", cursor: "pointer",
-    fontSize: "11px", letterSpacing: "0.06em", fontFamily: "var(--mono)",
-    border: variant === "primary" ? "none" : "1px solid var(--border)",
-    background: variant === "primary" ? "var(--accent)" : "transparent",
-    color: variant === "primary" ? "#000" : "var(--text-2)",
-    fontWeight: variant === "primary" ? 700 : 400,
-    opacity: 1,
-  }),
-  hint: { fontSize: "10px", color: "var(--text-3)", marginTop: "4px" },
-  code: {
-    display: "flex", alignItems: "center", gap: "8px",
-    background: "var(--bg)", border: "1px solid var(--border)",
-    borderRadius: "var(--radius)", padding: "8px 10px",
-    fontFamily: "var(--mono)", fontSize: "12px", color: "var(--accent)",
-    wordBreak: "break-all",
-  },
-  stepper: { display: "flex", gap: "6px", alignItems: "center", marginBottom: "20px" },
-};
+function expiryText(ts) {
+  if (!ts) return "no expiry date reported";
+  const days = Math.ceil((new Date(ts) - Date.now()) / 86400000);
+  const date = new Date(ts).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return days <= 0 ? `expired ${date}` : `expires in ${days} day${days !== 1 ? "s" : ""} (${date})`;
+}
 
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
   };
-  return (
-    <button onClick={copy} style={{ ...S.btn(), padding: "3px 8px", flexShrink: 0, fontSize: "10px" }}>
-      {copied ? "COPIED" : "COPY"}
-    </button>
-  );
+  return <button className="btn sm" onClick={copy}>{copied ? "Copied" : "Copy"}</button>;
 }
 
-function Stepper({ step }) {
+function Steps({ step }) {
   return (
-    <div style={S.stepper}>
-      {[1, 2, 3].map(n => (
-        <React.Fragment key={n}>
-          <div style={{
-            width: "22px", height: "22px", borderRadius: "50%",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: "11px", fontFamily: "var(--mono)", fontWeight: 700,
-            background: n <= step ? "var(--accent)" : "var(--bg)",
-            color: n <= step ? "#000" : "var(--text-3)",
-            border: n <= step ? "none" : "1px solid var(--border)",
-            flexShrink: 0,
-          }}>{n < step ? "✓" : n}</div>
-          {n < 3 && <div style={{ flex: 1, height: "1px", background: n < step ? "var(--accent)" : "var(--border)" }} />}
+    <div className="steps" aria-label={`Step ${step} of 3`}>
+      {[1, 2, 3].map(k => (
+        <React.Fragment key={k}>
+          <i className={k <= step ? "on" : ""}>{k < step ? "✓" : k}</i>
+          {k < 3 && <b className={k < step ? "on" : ""} />}
         </React.Fragment>
       ))}
     </div>
@@ -92,21 +43,19 @@ function Stepper({ step }) {
 }
 
 export default function AddRepoModal({ onClose, onAdded }) {
+  const { theme } = useTheme();
+  const toast = useToast();
+  const { data: groups = [] } = useGroups();
   const [step, setStep] = useState(1);
   const [repoName, setRepoName] = useState("");
   const [token, setToken] = useState("");
   const [secret, setSecret] = useState(() => generateSecret());
   const [showToken, setShowToken] = useState(false);
-  const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState([]);
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    listGroups().then(setGroups).catch(() => {});
-  }, []);
 
   const handleValidate = async () => {
     setValidating(true);
@@ -134,6 +83,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
         group_ids: selectedGroups,
       });
       setStep(3);
+      toast(`Added ${repo.repo_full_name}`);
       onAdded?.(repo);
     } catch (e) {
       setError(errorMessage(e, "Failed to add repository."));
@@ -143,194 +93,127 @@ export default function AddRepoModal({ onClose, onAdded }) {
   };
 
   const toggleGroup = (id) => {
-    setSelectedGroups(prev =>
-      prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]
-    );
+    setSelectedGroups(prev => prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]);
   };
+  const canVerify = repoName.trim() && token && !validating;
 
   return (
-    <div style={S.overlay} onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={S.modal}>
-        <div style={S.header}>
-          <span style={{ fontSize: "13px", fontWeight: 700, letterSpacing: "0.06em", color: "var(--text)" }}>
-            ADD REPOSITORY
-          </span>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: "18px", lineHeight: 1 }}>×</button>
-        </div>
+    <Modal theme={theme} title="Add repository" onClose={onClose} width={540}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <Steps step={step} />
 
-        <div style={S.body}>
-          <Stepper step={step} />
-
-          {step === 1 && (
-            <>
-              <p style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "16px", marginTop: 0 }}>
-                Enter the repository details. Custos will verify your token has access before saving.
-              </p>
-
-              <div style={S.row}>
-                <label style={S.label}>REPOSITORY</label>
-                <input
-                  style={S.input}
-                  placeholder="owner/repo"
-                  value={repoName}
-                  onChange={e => setRepoName(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && repoName && token && handleValidate()}
-                  autoFocus
-                />
-                <p style={S.hint}>Full name or URL — e.g. acme-uni/webapp</p>
-              </div>
-
-              <div style={S.row}>
-                <label style={S.label}>GITHUB TOKEN</label>
-                <div style={{ display: "flex", gap: "6px" }}>
-                  <input
-                    style={{ ...S.input, flex: 1 }}
-                    type={showToken ? "text" : "password"}
-                    placeholder="ghp_..."
-                    value={token}
-                    onChange={e => setToken(e.target.value)}
-                  />
-                  <button onClick={() => setShowToken(v => !v)} style={{ ...S.btn(), flexShrink: 0, fontSize: "10px" }}>
-                    {showToken ? "HIDE" : "SHOW"}
-                  </button>
-                </div>
-                <p style={S.hint}>Classic token: select <strong style={{color:"var(--text-2)"}}>repo</strong> (full). Fine-grained: Contents (read) + Pull requests (read), plus Checks (read/write) to post results on GitHub</p>
-              </div>
-
-              <div style={S.row}>
-                <label style={S.label}>WEBHOOK SECRET</label>
-                <div style={{ display: "flex", gap: "6px" }}>
-                  <input
-                    style={{ ...S.input, flex: 1 }}
-                    value={secret}
-                    onChange={e => setSecret(e.target.value)}
-                  />
-                  <button onClick={() => setSecret(generateSecret())} style={{ ...S.btn(), flexShrink: 0, fontSize: "10px" }}>
-                    REGEN
-                  </button>
-                </div>
-                <p style={S.hint}>You&apos;ll paste this into GitHub in the next step</p>
-              </div>
-
-              {groups.length > 0 && (
-                <div style={S.row}>
-                  <label style={S.label}>ASSIGN TO GROUPS (optional)</label>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                    {groups.map(g => (
-                      <button
-                        key={g.id}
-                        onClick={() => toggleGroup(g.id)}
-                        style={{
-                          padding: "4px 10px", borderRadius: "var(--radius)", cursor: "pointer",
-                          fontSize: "11px", fontFamily: "var(--mono)",
-                          border: selectedGroups.includes(g.id) ? "1px solid var(--accent)" : "1px solid var(--border)",
-                          background: selectedGroups.includes(g.id) ? "rgba(255,160,0,0.1)" : "transparent",
-                          color: selectedGroups.includes(g.id) ? "var(--accent)" : "var(--text-2)",
-                        }}
-                      >
-                        {g.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {validateResult && !validateResult.ok && (
-                <p style={{ color: "var(--red, #f87171)", fontSize: "12px", marginTop: 0 }}>
-                  {validateResult.error}
-                </p>
-              )}
-              {error && <p style={{ color: "var(--red, #f87171)", fontSize: "12px", marginTop: 0 }}>{error}</p>}
-            </>
-          )}
-
-          {step === 2 && (
-            <>
-              <p style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "12px", marginTop: 0 }}>
-                Token verified ✓
-              </p>
-              <p style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "16px", marginTop: 0, lineHeight: 1.6 }}>
-                Custos checks the repository for new commits on a schedule (Settings), and
-                you can press <span style={{ color: "var(--text)" }}>Check for updates</span> on
-                the Repositories page at any time. Neither needs GitHub to reach this server.
-              </p>
-
-              <details>
-                <summary style={{ cursor: "pointer", fontSize: "12px", color: "var(--text-2)", marginBottom: "12px" }}>
-                  Optional: webhook for instant scans (only if GitHub can reach this server)
-                </summary>
-
-              <div style={S.row}>
-                <label style={S.label}>PAYLOAD URL</label>
-                <div style={S.code}>
-                  <span style={{ flex: 1 }}>{WEBHOOK_URL}</span>
-                  <CopyButton text={WEBHOOK_URL} />
-                </div>
-              </div>
-
-              <div style={S.row}>
-                <label style={S.label}>SECRET</label>
-                <div style={S.code}>
-                  <span style={{ flex: 1 }}>{secret}</span>
-                  <CopyButton text={secret} />
-                </div>
-              </div>
-
-              <div style={{ ...S.row, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px" }}>
-                <p style={{ margin: "0 0 8px", fontSize: "11px", color: "var(--text-2)", letterSpacing: "0.04em" }}>IN GITHUB → SETTINGS → WEBHOOKS → ADD WEBHOOK:</p>
-                <ol style={{ margin: 0, paddingLeft: "18px", fontSize: "12px", color: "var(--text-2)", lineHeight: "1.8" }}>
-                  <li>Paste the Payload URL above</li>
-                  <li>Set Content type to <span style={{ color: "var(--text)", fontFamily: "var(--mono)" }}>application/json</span></li>
-                  <li>Paste the Secret above</li>
-                  <li>Select events: <span style={{ color: "var(--text)" }}>Pushes</span> and <span style={{ color: "var(--text)" }}>Pull requests</span></li>
-                  <li>Click <span style={{ color: "var(--text)" }}>Add webhook</span></li>
-                </ol>
-              </div>
-              </details>
-
-              {error && <p style={{ color: "var(--red, #f87171)", fontSize: "12px" }}>{error}</p>}
-            </>
-          )}
-
-          {step === 3 && (
-            <div style={{ textAlign: "center", padding: "20px 0" }}>
-              <div style={{ fontSize: "32px", marginBottom: "12px" }}>✓</div>
-              <p style={{ fontSize: "14px", color: "var(--text)", marginBottom: "6px" }}>
-                {repoName} connected
-              </p>
-              <p style={{ fontSize: "12px", color: "var(--text-3)" }}>
-                Press Check for updates to scan it now; otherwise Custos picks it up on its next scheduled check.
-              </p>
+        {step === 1 && (
+          <>
+            <div className="dim" style={{ fontSize: ".88rem" }}>
+              Custos checks that the token can read the repository before saving it.
             </div>
-          )}
-        </div>
+            <div className="field">
+              <label htmlFor="nr-name">Repository</label>
+              <input id="nr-name" className="input mono" placeholder="owner/repo" value={repoName} autoFocus
+                onChange={e => setRepoName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && canVerify && handleValidate()} />
+              <div className="hint">Full name or URL, e.g. acme-uni/webapp</div>
+            </div>
+            <div className="field">
+              <label htmlFor="nr-token">GitHub token</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input id="nr-token" className="input mono" type={showToken ? "text" : "password"} placeholder="ghp_…"
+                  value={token} onChange={e => setToken(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && canVerify && handleValidate()} />
+                <button className="btn sm" onClick={() => setShowToken(v => !v)}>{showToken ? "Hide" : "Show"}</button>
+              </div>
+              <div className="hint">
+                Classic token: select <b>repo</b> (full). Fine-grained: Contents (read) and Pull requests (read),
+                plus Checks (read/write) to post results on GitHub.
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor="nr-secret">Webhook secret</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input id="nr-secret" className="input mono" value={secret} onChange={e => setSecret(e.target.value)} />
+                <button className="btn sm" onClick={() => setSecret(generateSecret())}>Regenerate</button>
+              </div>
+              <div className="hint">Only needed if you set up the optional webhook in the next step.</div>
+            </div>
+            {groups.length > 0 && (
+              <div className="field">
+                <label>Share with groups (optional)</label>
+                <div className="chips">
+                  {groups.map(g => (
+                    <button key={g.id} className={`chip ${selectedGroups.includes(g.id) ? "on" : ""}`}
+                      aria-pressed={selectedGroups.includes(g.id)} onClick={() => toggleGroup(g.id)}>{g.name}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {validateResult && !validateResult.ok && <div className="result bad">{validateResult.error}</div>}
+          </>
+        )}
 
-        <div style={S.footer}>
+        {step === 2 && (
+          <>
+            <div className="result ok">
+              ✓ Token can read {validateResult?.repo_name || repoName} · {expiryText(validateResult?.token_expires_at)}
+            </div>
+            <div className="dim" style={{ fontSize: ".88rem", lineHeight: 1.6 }}>
+              Custos checks the repository for new commits on a schedule (Settings), and you can press
+              {" "}<b>Check for updates</b> on the Repositories page at any time. Neither needs GitHub to reach this server.
+            </div>
+            <details>
+              <summary className="dim" style={{ cursor: "pointer", fontSize: ".86rem" }}>
+                Optional: webhook for instant scans (only if GitHub can reach this server)
+              </summary>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
+                <div className="field">
+                  <label>Payload URL</label>
+                  <div className="copy-row"><span>{WEBHOOK_URL}</span><CopyButton text={WEBHOOK_URL} /></div>
+                </div>
+                <div className="field">
+                  <label>Secret</label>
+                  <div className="copy-row"><span>{secret}</span><CopyButton text={secret} /></div>
+                </div>
+                <div className="banner note" style={{ margin: 0 }}>
+                  In GitHub → Settings → Webhooks → Add webhook: paste the payload URL, set the content type to
+                  {" "}<span className="mono">application/json</span>, paste the secret, pick <b>Pushes</b> and
+                  {" "}<b>Pull requests</b>, then click <b>Add webhook</b>.
+                </div>
+              </div>
+            </details>
+          </>
+        )}
+
+        {step === 3 && (
+          <div style={{ textAlign: "center", padding: "12px 0" }}>
+            <div style={{ fontSize: "2rem", color: "var(--ok)" }}>✓</div>
+            <div style={{ fontWeight: 600, color: "var(--text)", margin: "6px 0" }}>{repoName.trim()} connected</div>
+            <div className="muted" style={{ fontSize: ".86rem" }}>
+              Press Check for updates to scan it now; otherwise Custos picks it up on its next scheduled check.
+            </div>
+          </div>
+        )}
+
+        {error && <div className="result bad">{error}</div>}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           {step === 1 && (
             <>
-              <button onClick={onClose} style={S.btn()}>CANCEL</button>
-              <button
-                onClick={handleValidate}
-                disabled={!repoName.trim() || !token || validating}
-                style={{ ...S.btn("primary"), opacity: (!repoName.trim() || !token || validating) ? 0.5 : 1 }}
-              >
-                {validating ? "VERIFYING..." : "VERIFY ACCESS →"}
+              <button className="btn" onClick={onClose}>Cancel</button>
+              <button className="btn primary" onClick={handleValidate} disabled={!canVerify}>
+                {validating ? <><span className="spin" /> Verifying</> : "Verify access →"}
               </button>
             </>
           )}
           {step === 2 && (
             <>
-              <button onClick={() => setStep(1)} style={S.btn()}>← BACK</button>
-              <button onClick={handleSave} disabled={saving} style={{ ...S.btn("primary"), opacity: saving ? 0.5 : 1 }}>
-                {saving ? "SAVING..." : "SAVE REPOSITORY →"}
+              <button className="btn" onClick={() => setStep(1)}>← Back</button>
+              <button className="btn primary" onClick={handleSave} disabled={saving}>
+                {saving ? <><span className="spin" /> Saving</> : "Save repository"}
               </button>
             </>
           )}
-          {step === 3 && (
-            <button onClick={onClose} style={S.btn("primary")}>DONE</button>
-          )}
+          {step === 3 && <button className="btn primary" onClick={onClose}>Done</button>}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

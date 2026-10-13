@@ -1,761 +1,303 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useHealthStatus, useScanFindings, useScans, useTriggerScan } from "../api/queries.js";
-import { useAuth, useTheme } from "../App.jsx";
+import { useHealthServices, useHealthStatus, useScanFindings, useScans, useTriggerScan } from "../api/queries.js";
 import { errorMessage } from "../api/errors.js";
-
-// ── constants ────────────────────────────────────────────────────────────────
-
-const SEV_COLOR = {
-  critical: { fg: "#f85149", bg: "rgba(248,81,73,0.08)", border: "#f85149" },
-  high:     { fg: "#e3650a", bg: "rgba(227,101,10,0.08)", border: "#e3650a" },
-  medium:   { fg: "#d29922", bg: "rgba(210,153,34,0.08)", border: "#d29922" },
-  low:      { fg: "#388bfd", bg: "rgba(56,139,253,0.08)", border: "#388bfd" },
-  info:     { fg: "#484f58", bg: "rgba(72,79,88,0.08)",   border: "#484f58" },
-};
-
-const HEALTH_STYLE = {
-  urgent:  { color: "#f85149", label: "URGENT",  dot: "#f85149" },
-  warning: { color: "#e3650a", label: "WARNING", dot: "#e3650a" },
-  healthy: { color: "#3fb950", label: "HEALTHY", dot: "#3fb950" },
-};
-
-const CAT_LABEL = {
-  sast:         "SAST",
-  secrets:      "SECRETS",
-  dependencies: "DEPENDENCIES",
-  config:       "CONFIG",
-  llm:          "LLM",
-};
+import { ago, sevVar } from "../components/queue/Board.jsx";
+import { SEV_LABEL, SevPill, findingLoc, sourceLabel } from "../components/submission/FindingDetail.jsx";
+import { useToast } from "../components/Toast.jsx";
 
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
-const CATEGORY_ORDER = ["sast", "secrets", "dependencies", "config", "llm"];
+const CATEGORIES = [["sast", "SAST"], ["secrets", "Secrets"], ["dependencies", "Dependencies"], ["config", "Config"], ["llm", "LLM"]];
+const HEALTH = { healthy: ["Healthy", "ok"], warning: ["Warning", "high"], urgent: ["Urgent", "crit"] };
+const SVC_COLOR = { ok: "var(--ok)", warn: "var(--high)", down: "var(--crit)", off: "var(--text3)" };
+const STAGE_ICON = {
+  done: <span style={{ color: "var(--ok)" }}>✓</span>,
+  failed: <span style={{ color: "var(--crit)" }}>✕</span>,
+  running: <span className="spin" style={{ color: "var(--accent)" }} />,
+  skipped: <span className="muted">–</span>,
+  pending: <span className="muted">○</span>,
+};
+const STAGE_WORD = { done: "done", failed: "failed", running: "running…", skipped: "skipped", pending: "waiting" };
+const total = (c) => Object.values(c || {}).reduce((a, v) => a + v, 0);
+const plural = (k, w) => `${k} ${w}${k !== 1 ? "s" : ""}`;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+function duration(scan) {
+  if (!scan.started_at || !scan.finished_at) return null;
+  const s = Math.round((new Date(scan.finished_at) - new Date(scan.started_at)) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
-function relativeTime(isoStr) {
-  if (!isoStr) return "—";
-  const diff = (Date.now() - new Date(isoStr).getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
+function HealthBadge({ health }) {
+  const [label, k] = HEALTH[health] || ["No data", "info"];
+  return <span className="badge" style={{ color: `var(--${k})`, background: `var(--${k}-bg)` }}>{label.toUpperCase()}</span>;
 }
 
-function fmtDuration(scan) {
-  if (!scan.started_at || !scan.finished_at) return "—";
-  const s = (new Date(scan.finished_at) - new Date(scan.started_at)) / 1000;
-  if (s < 60) return `${Math.round(s)}s`;
-  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
-}
-
-function fmtElapsed(s) {
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${m}:${String(sec).padStart(2, "0")}`;
-}
-
-function totalFindings(counts) {
-  if (!counts) return 0;
-  return Object.values(counts).reduce((s, v) => s + v, 0);
-}
-
-// ── ScanProgressBar ───────────────────────────────────────────────────────────
-
-function ScanProgressBar() {
+function Services() {
+  const { data, error, isPending, dataUpdatedAt } = useHealthServices();
   return (
-    <div style={{
-      position: "relative", height: "2px",
-      background: "var(--border)", borderRadius: "2px",
-      overflow: "hidden", marginBottom: "20px",
-    }}>
-      <div style={{
-        position: "absolute", top: 0, left: 0,
-        width: "40%", height: "100%",
-        background: "linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%)",
-        animation: "scanSweep 1.8s ease-in-out infinite",
-        borderRadius: "2px",
-      }} />
-    </div>
-  );
-}
-
-// ── ScanStagesPanel ───────────────────────────────────────────────────────────
-
-function StageIcon({ state }) {
-  if (state === "done") {
-    return (
-      <span style={{ color: "#3fb950", fontSize: "12px", width: 16, textAlign: "center", flexShrink: 0 }}>✓</span>
-    );
-  }
-  if (state === "running") {
-    return (
-      <span style={{
-        display: "inline-block", width: 8, height: 8,
-        borderRadius: "50%", background: "var(--accent)", flexShrink: 0,
-        margin: "0 4px",
-        animation: "stagePulse 1s ease-in-out infinite",
-        boxShadow: "0 0 6px var(--accent)",
-      }} />
-    );
-  }
-  if (state === "failed") {
-    return (
-      <span style={{ color: "#f85149", fontSize: "12px", width: 16, textAlign: "center", flexShrink: 0 }}>✗</span>
-    );
-  }
-  if (state === "skipped") {
-    return (
-      <span style={{ color: "var(--text-3)", fontSize: "12px", width: 16, textAlign: "center", flexShrink: 0 }}>–</span>
-    );
-  }
-  // pending
-  return (
-    <span style={{
-      display: "inline-block", width: 8, height: 8, borderRadius: "50%",
-      border: "1px solid var(--border-2)", flexShrink: 0, margin: "0 4px",
-    }} />
-  );
-}
-
-function ScanStagesPanel({ elapsed, stages }) {
-  return (
-    <div style={{
-      background: "var(--bg-2)",
-      border: "1px solid rgba(240,165,0,0.25)",
-      borderRadius: "var(--radius-lg)",
-      overflow: "hidden",
-      marginBottom: "24px",
-    }}>
-      {/* Header */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "12px 20px",
-        borderBottom: "1px solid var(--border)",
-        background: "rgba(240,165,0,0.04)",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <span style={{
-            width: 7, height: 7, borderRadius: "50%",
-            background: "var(--accent)",
-            animation: "stagePulse 1s ease-in-out infinite",
-            boxShadow: "0 0 8px var(--accent)",
-          }} />
-          <span style={{ color: "var(--accent)", fontSize: "11px", letterSpacing: "0.1em", fontWeight: 600 }}>
-            SCANNING IN PROGRESS
-          </span>
-        </div>
-        <span style={{
-          color: "var(--text-2)", fontSize: "13px", fontWeight: 700,
-          fontFamily: "var(--mono)", letterSpacing: "0.05em",
-        }}>
-          ⏱ {fmtElapsed(elapsed)}
+    <section className="panel" style={{ marginBottom: "var(--gap)" }}>
+      <div className="panel-h">
+        <h2>Services</h2>
+        <span className="muted" style={{ fontSize: ".8rem" }}>
+          {dataUpdatedAt ? `checked ${ago(dataUpdatedAt)} · every 30s` : ""}
         </span>
       </div>
+      <div className="panel-b">
+        {error ? <div className="result bad">{errorMessage(error, "Couldn't check the services")}</div>
+          : isPending ? <div className="muted">Checking…</div> : (
+            <div className="svc">
+              {data.services.map((s) => (
+                <div key={s.name} className={s.state}>
+                  <span className={`dot ${s.state === "down" ? "pulse" : ""}`} style={{ background: SVC_COLOR[s.state] }} />
+                  <span style={{ minWidth: 0 }}><b>{s.name}</b><small>{s.detail}</small></span>
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
+    </section>
+  );
+}
 
-      {/* Stages: real states reported by the worker */}
-      <div role="list" aria-label="Scan stages" style={{ padding: "12px 20px", display: "flex", flexDirection: "column" }}>
-        {!stages && (
-          <div style={{ padding: "8px 0", color: "var(--text-3)", fontSize: "12px" }}>
+function Stages({ stages, running, elapsed, latest }) {
+  return (
+    <section className="panel" style={{ marginBottom: "var(--gap)" }}>
+      <div className="panel-h">
+        <h2>Self-check</h2>
+        <span className="muted" style={{ fontSize: ".85rem" }}>
+          {running ? <span style={{ color: "var(--accent)" }}>running · {clock(elapsed)}</span>
+            : latest ? `last run ${ago(latest.started_at)}${duration(latest) ? ` · took ${duration(latest)}` : ""}` : "never run"}
+        </span>
+      </div>
+      <div className="panel-b">
+        {stages ? (
+          <div className="stages" role="list" aria-label="Scan stages">
+            {stages.map((s) => (
+              <div key={s.id} role="listitem" className={`stage ${s.state}`} title={s.detail || s.tool}
+                aria-label={`${s.label}: ${s.state}`}>
+                <div className="nm">{STAGE_ICON[s.state] || STAGE_ICON.pending}{s.label}</div>
+                <div className="st">{s.detail || STAGE_WORD[s.state] || s.state}</div>
+                <div className="prog"><span style={{ width: s.state === "pending" ? 0 : "100%" }} /></div>
+              </div>
+            ))}
+          </div>
+        ) : running ? (
+          <div className="muted">
             Waiting for the worker to start the scan…
             {elapsed >= 30 && (
-              <div style={{ marginTop: "6px", color: "var(--yellow)" }}>
-                No worker has picked this scan up yet. Check that the Custos worker is
-                running and up to date; scans no worker runs are marked failed after an hour.
+              <div style={{ marginTop: 6, color: "var(--high)" }}>
+                No worker has picked this scan up yet. Check that the Custos worker is running and up to date;
+                scans no worker runs are marked failed after an hour.
               </div>
             )}
           </div>
+        ) : (
+          <div className="muted" style={{ fontSize: ".88rem" }}>
+            Custos scans its own code with the same tools it runs on your repositories.
+            {latest && " Per-stage details are kept for three hours after a run."}
+          </div>
         )}
-        {(stages || []).map((stage, i) => {
-          const state = stage.state;
-          return (
-            <div key={stage.id} role="listitem" title={stage.detail || undefined}
-              aria-label={`${stage.label}: ${state}`} style={{
-              display: "flex", alignItems: "center", gap: "10px",
-              padding: "8px 0",
-              borderBottom: i < stages.length - 1 ? "1px solid var(--border)" : "none",
-              opacity: state === "pending" || state === "skipped" ? 0.4 : 1,
-              transition: "opacity 0.4s ease",
-            }}>
-              <StageIcon state={state} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                  marginBottom: state === "running" ? "5px" : 0 }}>
-                  <span style={{
-                    color: state === "failed" ? "#f85149" : state === "running" ? "var(--text)"
-                      : state === "done" ? "var(--text-2)" : "var(--text-3)",
-                    fontSize: "12px", transition: "color 0.3s",
-                  }}>
-                    {stage.label}
-                    {state === "failed" && stage.detail && (
-                      <span style={{ marginLeft: 8, color: "var(--text-3)", fontSize: "11px" }}>
-                        {stage.detail.length > 90 ? `${stage.detail.slice(0, 90)}…` : stage.detail}
-                      </span>
-                    )}
-                  </span>
-                  <span style={{ color: "var(--text-3)", fontSize: "10px", flexShrink: 0, marginLeft: "12px" }}>
-                    {stage.tool}
-                  </span>
-                </div>
-                {/* Running: indeterminate bar (no made-up percentage) */}
-                {state === "running" && (
-                  <div style={{ position: "relative", height: "3px", background: "var(--bg-4)",
-                    borderRadius: "2px", overflow: "hidden" }}>
-                    <div style={{
-                      position: "absolute", top: 0, left: 0, width: "30%", height: "100%",
-                      background: "linear-gradient(90deg, transparent, var(--accent), transparent)",
-                      animation: "scanSweep 2.2s ease-in-out infinite", borderRadius: "2px",
-                    }} />
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
       </div>
-    </div>
+    </section>
   );
 }
-
-// ── DonutChart ───────────────────────────────────────────────────────────────
-
-function DonutChart({ counts }) {
-  const total = totalFindings(counts);
-  const r = 15.9155;
-
-  if (!total) {
-    return (
-      <svg viewBox="0 0 36 36" style={{ width: "100%", maxWidth: 160 }}>
-        <circle cx="18" cy="18" r={r} fill="none" stroke="var(--border)" strokeWidth="3.5" />
-        <circle cx="18" cy="18" r="11.5" fill="var(--bg-2)" />
-        <text x="18" y="16" textAnchor="middle" fill="var(--text-3)" fontSize="3.5" fontFamily="JetBrains Mono">NO</text>
-        <text x="18" y="21" textAnchor="middle" fill="var(--text-3)" fontSize="3.5" fontFamily="JetBrains Mono">DATA</text>
-      </svg>
-    );
-  }
-
-  let accumulated = 0;
-  const segments = SEV_ORDER.map((sev) => {
-    const count = counts?.[sev] || 0;
-    const pct = (count / total) * 100;
-    const seg = { sev, pct, offset: 25 - accumulated, color: SEV_COLOR[sev].fg };
-    accumulated += pct;
-    return seg;
-  }).filter((s) => s.pct > 0);
-
-  return (
-    <svg viewBox="0 0 36 36" style={{ width: "100%", maxWidth: 160 }}>
-      {segments.map(({ sev, pct, offset, color }) => (
-        <circle
-          key={sev}
-          cx="18" cy="18" r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth="3.5"
-          strokeDasharray={`${pct} ${100 - pct}`}
-          strokeDashoffset={offset}
-          style={{ transition: "stroke-dasharray 0.6s ease" }}
-        />
-      ))}
-      <circle cx="18" cy="18" r="11.5" fill="var(--bg-2)" />
-      <text x="18" y="16.5" textAnchor="middle" fill="var(--text)" fontSize="5" fontFamily="JetBrains Mono" fontWeight="700">
-        {total}
-      </text>
-      <text x="18" y="21.5" textAnchor="middle" fill="var(--text-3)" fontSize="2.8" fontFamily="JetBrains Mono" letterSpacing="0.3">
-        TOTAL
-      </text>
-    </svg>
-  );
-}
-
-// ── CategoryBar ──────────────────────────────────────────────────────────────
-
-function CategoryBar({ label, count, max, color }) {
-  const pct = max > 0 ? Math.max((count / max) * 100, count > 0 ? 4 : 0) : 0;
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "5px 0" }}>
-      <span style={{ width: 90, color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.08em", flexShrink: 0 }}>
-        {label}
-      </span>
-      <div style={{ flex: 1, height: "4px", background: "var(--bg-4)", borderRadius: "2px", overflow: "hidden" }}>
-        <div style={{
-          width: `${pct}%`, height: "100%",
-          background: color, borderRadius: "2px",
-          transition: "width 0.6s ease",
-        }} />
-      </div>
-      <span style={{ width: 24, textAlign: "right", color: count > 0 ? "var(--text)" : "var(--text-3)", fontSize: "11px", flexShrink: 0 }}>
-        {count}
-      </span>
-    </div>
-  );
-}
-
-// ── SevBadge ─────────────────────────────────────────────────────────────────
-
-function SevBadge({ severity }) {
-  const c = SEV_COLOR[severity] || SEV_COLOR.info;
-  return (
-    <span style={{
-      display: "inline-block", padding: "1px 6px",
-      borderRadius: "var(--radius)",
-      background: c.bg, color: c.fg, border: `1px solid ${c.border}`,
-      fontSize: "10px", letterSpacing: "0.08em", fontWeight: 600, whiteSpace: "nowrap",
-    }}>
-      {severity.toUpperCase()}
-    </span>
-  );
-}
-
-// ── HealthBadge ───────────────────────────────────────────────────────────────
-
-function HealthBadge({ health, size = "normal" }) {
-  const s = HEALTH_STYLE[health] || { color: "var(--text-3)", label: "—", dot: "var(--text-3)" };
-  const big = size === "large";
-  return (
-    <span style={{
-      display: "inline-flex", alignItems: "center", gap: big ? "8px" : "5px",
-      color: s.color, fontSize: big ? "22px" : "11px",
-      fontWeight: 700, letterSpacing: big ? "-0.01em" : "0.1em",
-    }}>
-      <span style={{
-        width: big ? 10 : 7, height: big ? 10 : 7,
-        borderRadius: "50%", background: s.dot, flexShrink: 0,
-        boxShadow: `0 0 ${big ? 8 : 5}px ${s.dot}`,
-      }} />
-      {s.label}
-    </span>
-  );
-}
-
-// ── FindingRow ────────────────────────────────────────────────────────────────
 
 function FindingRow({ f }) {
   const [open, setOpen] = useState(false);
+  const hasMore = f.description || f.remediation || f.llm_reasoning;
   return (
-    <div style={{
-      borderBottom: "1px solid var(--border)",
-      borderLeft: `3px solid ${SEV_COLOR[f.severity]?.fg || "var(--border-2)"}`,
-    }}>
-      <div
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          display: "grid",
-          gridTemplateColumns: "90px 1fr 80px 120px",
-          gap: "12px", padding: "10px 16px",
-          cursor: "pointer", transition: "background 0.1s", alignItems: "center",
-        }}
-        onMouseEnter={(e) => e.currentTarget.style.background = "var(--bg-3)"}
-        onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
-      >
-        <SevBadge severity={f.severity} />
-        <span style={{ color: "var(--text)", fontSize: "12px" }}>{f.title}</span>
-        <span style={{
-          color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.06em",
-          textAlign: "center", padding: "1px 5px",
-          border: "1px solid var(--border)", borderRadius: "var(--radius)",
-        }}>
-          {CAT_LABEL[f.category] || f.category}
-        </span>
-        <span style={{ color: "var(--text-3)", fontSize: "10px", fontFamily: "var(--mono)" }}>
-          {f.file_path ? `${f.file_path}${f.line_start ? `:${f.line_start}` : ""}` : "—"}
-        </span>
+    <>
+      <div className="frow nocheck" style={{ "--sev": `var(--${sevVar(f.severity)})`, cursor: hasMore ? "pointer" : "default" }}
+        onClick={() => hasMore && setOpen((v) => !v)} aria-expanded={hasMore ? open : undefined}>
+        <SevPill sev={f.severity} />
+        <div style={{ minWidth: 0 }}>
+          <div className="ttl" title={f.title}>{f.title}</div>
+          <div className="fsub">
+            {f.file_path && <span className="path">{findingLoc(f)}</span>}
+            {f.cwe && <span>{f.cwe}</span>}
+          </div>
+        </div>
+        <span className="src">{sourceLabel(f.source)}</span>
       </div>
       {open && (
-        <div style={{ padding: "0 16px 14px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
-          {f.description && (
-            <p style={{ color: "var(--text-2)", fontSize: "12px", lineHeight: 1.7, margin: 0 }}>
-              {f.description}
-            </p>
-          )}
-          {f.remediation && (
-            <div style={{
-              background: "rgba(63,185,80,0.05)", border: "1px solid rgba(63,185,80,0.2)",
-              borderRadius: "var(--radius)", padding: "10px 12px",
-            }}>
-              <div style={{ color: "var(--green)", fontSize: "10px", letterSpacing: "0.08em", marginBottom: "5px" }}>REMEDIATION</div>
-              <pre style={{ color: "var(--text-2)", fontSize: "11px", whiteSpace: "pre-wrap", margin: 0, fontFamily: "var(--mono)", lineHeight: 1.6 }}>
-                {f.remediation}
-              </pre>
-            </div>
-          )}
-          {f.llm_reasoning && (
-            <div style={{
-              background: "var(--bg-4)", border: "1px solid var(--border)",
-              borderRadius: "var(--radius)", padding: "10px 12px",
-            }}>
-              <div style={{ color: "var(--accent)", fontSize: "10px", letterSpacing: "0.08em", marginBottom: "5px" }}>LLM REASONING</div>
-              <p style={{ color: "var(--text-2)", fontSize: "11px", lineHeight: 1.7, margin: 0 }}>{f.llm_reasoning}</p>
-            </div>
-          )}
+        <div className="db" style={{ paddingTop: 0, borderTop: 0 }}>
+          {f.description && <div><h3>Description</h3><p>{f.description}</p></div>}
+          {f.llm_reasoning && <div><h3>LLM analysis</h3><p>{f.llm_reasoning}</p></div>}
+          {f.remediation && <div><h3>Recommended fix</h3><p className="mono" style={{ fontSize: ".84rem" }}>{f.remediation}</p></div>}
         </div>
       )}
+    </>
+  );
+}
+
+function Donut({ counts }) {
+  const tot = total(counts);
+  const C = 2 * Math.PI * 48;
+  let off = 0;
+  return (
+    <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+      <svg className="donut" viewBox="0 0 120 120" aria-hidden="true">
+        <circle cx="60" cy="60" r="48" stroke="var(--raised2)" />
+        {SEV_ORDER.map((s) => {
+          const seg = tot ? ((counts[s] || 0) / tot) * C : 0;
+          const el = seg ? <circle key={s} cx="60" cy="60" r="48" stroke={`var(--${sevVar(s)})`}
+            strokeDasharray={`${seg} ${C - seg}`} strokeDashoffset={-off} /> : null;
+          off += seg;
+          return el;
+        })}
+      </svg>
+      <div className="bars" style={{ flex: 1 }}>
+        {SEV_ORDER.map((s) => (
+          <div key={s} className="bar-row" style={{ gridTemplateColumns: "4.2rem 1fr" }}>
+            <span>{SEV_LABEL[s]}</span>
+            <span className="mono" style={{ color: counts[s] ? `var(--${sevVar(s)})` : "var(--text3)" }}>{counts[s] || 0}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-// ── ScanHistoryRow ────────────────────────────────────────────────────────────
-
-function ScanHistoryRow({ scan, isSelected, onSelect }) {
-  const total = totalFindings(scan.finding_counts);
-  const cell = { padding: "8px 16px", fontSize: "11px" };
-  return (
-    <tr
-      onClick={() => onSelect(scan)}
-      style={{
-        cursor: "pointer",
-        background: isSelected ? "var(--bg-3)" : "transparent",
-        transition: "background 0.1s",
-      }}
-      onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-3)"; }}
-      onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
-    >
-      <td style={{ ...cell, color: "var(--text-2)", whiteSpace: "nowrap" }}>{relativeTime(scan.started_at)}</td>
-      <td style={cell}>
-        {scan.status === "running" ? (
-          <span style={{ color: "var(--accent)", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "5px" }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", animation: "stagePulse 1s ease-in-out infinite", display: "inline-block" }} />
-            RUNNING
-          </span>
-        ) : scan.status === "failed" ? (
-          <span style={{ color: "var(--red)", fontSize: "11px" }}>FAILED</span>
-        ) : scan.overall_health ? (
-          <HealthBadge health={scan.overall_health} />
-        ) : <span style={{ color: "var(--text-3)", fontSize: "11px" }}>—</span>}
-      </td>
-      <td style={{ ...cell, color: total > 0 ? "var(--text)" : "var(--text-3)", textAlign: "right" }}>
-        {scan.status === "complete" ? total : "—"}
-      </td>
-      <td style={{ ...cell, color: "var(--text-3)", whiteSpace: "nowrap" }}>{scan.status === "complete" ? fmtDuration(scan) : "—"}</td>
-      <td style={{ ...cell, color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.06em" }}>
-        {scan.triggered_by === "manual"
-          ? `manual${scan.triggered_by_user ? ` (${scan.triggered_by_user})` : ""}`
-          : "scheduled"}
-      </td>
-    </tr>
-  );
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
-
 export default function Health() {
-  const { user }  = useAuth();
-  const { theme } = useTheme();
-  const isAdmin   = user?.role === "admin";
-
+  const toast = useToast();
   const [selectedId, setSelectedId] = useState(null);
-  const [catFilter, setCatFilter] = useState("all");
+  const [cat, setCat] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [justTriggered, setJustTriggered] = useState(false);
-  const triggerTimeRef = useRef(null);
+  const triggeredAt = useRef(null);
 
-  // Poll only while a scan is running (or right after triggering, until the
-  // backend reports running=true).
+  // Poll only while a scan is running (or right after starting one, until the API says so).
   const [polling, setPolling] = useState(false);
-  const statusQuery = useHealthStatus(polling);
-  const scansQuery = useScans(polling);
-  const status = statusQuery.data ?? null;
-  const scans = scansQuery.data ?? [];
-  const loading = statusQuery.isPending || scansQuery.isPending;
-  const isScanning = Boolean(status?.running) || justTriggered;
-
-  useEffect(() => { setPolling(isScanning); }, [isScanning]);
+  const { data: status } = useHealthStatus(polling);
+  const { data: scans = [], isPending } = useScans(polling);
+  const running = Boolean(status?.running) || justTriggered;
+  useEffect(() => { setPolling(running); }, [running]);
   useEffect(() => { if (status?.running) setJustTriggered(false); }, [status?.running]);
 
-  // Default selection: the latest completed scan.
-  const selectedScan =
-    scans.find((x) => x.id === selectedId) || scans.find((x) => x.status === "complete") || null;
-  const { data: findings = [] } = useScanFindings(selectedScan);
-
-  const trigger = useTriggerScan();
-  const triggering = trigger.isPending;
-  const scanningErr = trigger.error ? errorMessage(trigger.error, "Failed to start scan") : null;
-
-  // Elapsed timer — ticks every second while scanning
-  const runningScan = status?.running_scan_id
-    ? scans.find((s) => s.id === status.running_scan_id)
-    : null;
-
+  // Say when a scan we watched finishes.
+  const wasRunning = useRef(false);
   useEffect(() => {
-    if (!isScanning) {
-      setElapsed(0);
-      triggerTimeRef.current = null;
-      return;
+    if (wasRunning.current && status && !status.running) {
+      const s = status.latest_scan;
+      toast(s ? `Self-check finished: ${plural(total(s.finding_counts), "finding")}` : "Self-check finished");
+      setSelectedId(null);
     }
-    // Use the DB started_at if available; fall back to when the button was clicked
-    const startedAt = runningScan?.started_at
-      ? new Date(runningScan.started_at).getTime()
-      : (triggerTimeRef.current || Date.now());
-    const tick = () => setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    wasRunning.current = Boolean(status?.running);
+  }, [status?.running]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selected = scans.find((x) => x.id === selectedId) || scans.find((x) => x.status === "complete") || null;
+  const { data: findings = [] } = useScanFindings(selected);
+  const trigger = useTriggerScan();
+
+  const startedAt = status?.running_started_at;
+  useEffect(() => {
+    if (!running) { setElapsed(0); triggeredAt.current = null; return undefined; }
+    const from = startedAt ? new Date(startedAt).getTime() : (triggeredAt.current || Date.now());
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - from) / 1000)));
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [isScanning, runningScan?.started_at]);
+  }, [running, startedAt]);
 
-  const handleTrigger = () => {
-    if (!isAdmin || triggering || isScanning) return;
-    // Record click time so elapsed timer starts immediately, before first poll
-    triggerTimeRef.current = Date.now();
+  const start = () => {
+    if (trigger.isPending || running) return;
+    triggeredAt.current = Date.now();
     setJustTriggered(true);
     trigger.mutate(undefined, {
-      onError: () => { setJustTriggered(false); triggerTimeRef.current = null; },
+      onError: (e) => {
+        setJustTriggered(false); triggeredAt.current = null;
+        toast(errorMessage(e, "Couldn't start the self-check"), { bad: true });
+      },
     });
   };
 
-  const handleSelectScan = (scan) => {
-    setSelectedId(scan.id);
-    setCatFilter("all");
-  };
-
-  const scanCounts = selectedScan?.finding_counts || {};
-  const catCounts = findings.reduce((acc, f) => { acc[f.category] = (acc[f.category] || 0) + 1; return acc; }, {});
-  const maxCat = Math.max(...Object.values(catCounts), 1);
-  const filtered = catFilter === "all" ? findings : findings.filter((f) => f.category === catFilter);
-  const latestScan = status?.latest_scan;
-  const healthStyle = HEALTH_STYLE[latestScan?.overall_health] || { color: "var(--text-3)", label: "NO DATA", dot: "var(--text-3)" };
-
-  const thStyle = {
-    padding: "8px 20px", fontSize: "11px", letterSpacing: "0.06em",
-    color: "var(--text-3)", fontWeight: 600, textTransform: "uppercase",
-    borderBottom: "1px solid var(--border)", textAlign: "left",
-  };
-
-  const t = theme;
+  const latest = status?.latest_scan;
+  const stages = running ? status?.running_stages : status?.latest_stages;
+  const counts = selected?.finding_counts || {};
+  const catCounts = findings.reduce((a, f) => ({ ...a, [f.category]: (a[f.category] || 0) + 1 }), {});
+  const shown = (cat ? findings.filter((f) => f.category === cat) : findings)
+    .slice().sort((a, b) => SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity));
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 34px" }}>
-
-      {/* ── Top shimmer bar (only while scanning) ── */}
-      {isScanning && <ScanProgressBar />}
-
-      {/* ── Header ── */}
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between",
-        gap: 20, marginBottom: 24, flexWrap: "wrap" }}>
+    <div className="page glow">
+      <div className="top">
         <div>
-          <h1 style={{ fontSize: 24, fontWeight: 600, color: t.c.text,
-            fontFamily: t.fontDisplay, letterSpacing: "-0.025em", margin: 0 }}>
-            System health
-          </h1>
-          <div style={{ fontSize: 13, color: t.c.text3, marginTop: 5 }}>
-            {latestScan
-              ? <>Last scan: <span style={{ color: t.c.text2 }}>{relativeTime(latestScan.started_at)}</span></>
-              : "No scans have been run yet"}
-          </div>
+          <h1>Health</h1>
+          <div className="subt">Custos scans its own code and checks its services</div>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-          {isAdmin && (
-            <button onClick={handleTrigger} disabled={triggering || isScanning} style={{
-              padding: "8px 16px", background: (triggering || isScanning) ? t.c.raised : t.c.accentBg,
-              border: `1px solid ${(triggering || isScanning) ? t.c.border : t.c.accent}`,
-              color: (triggering || isScanning) ? t.c.text3 : t.c.accent,
-              borderRadius: t.radius, cursor: (triggering || isScanning) ? "not-allowed" : "pointer",
-              fontSize: 12.5, fontWeight: 500, fontFamily: t.fontUi, transition: "all 0.15s",
-            }}>
-              {triggering ? "Starting…" : isScanning ? "Running…" : "↻ Scan now"}
-            </button>
-          )}
-          {scanningErr && <span style={{ fontSize: 11, color: t.sev.critical.fg }}>{scanningErr}</span>}
+        <div className="tools">
+          <button className="btn primary" onClick={start} disabled={trigger.isPending || running}>
+            {running ? <><span className="spin" /> Scanning</> : "▶ Run self-check"}
+          </button>
         </div>
       </div>
 
-      {/* ── Scan stages panel (while running) ── */}
-      {isScanning && <ScanStagesPanel elapsed={elapsed} stages={status?.running_stages} />}
+      <Services />
+      <Stages stages={stages} running={running} elapsed={elapsed} latest={latest} />
 
-      {selectedScan?.error && (
-        <div style={{ marginBottom: 16, padding: "10px 14px", borderRadius: t.radius,
-          background: `${t.sev.critical.fg}10`, border: `1px solid ${t.sev.critical.fg}33`,
-          color: selectedScan.status === "failed" ? t.sev.critical.fg : t.c.text2, fontSize: 12,
-          whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-          {selectedScan.status === "failed" ? "Scan failed: " : ""}{selectedScan.error}
+      {selected?.error && (
+        <div className={`banner ${selected.status === "failed" ? "bad" : "note"}`}>
+          <b>{selected.status === "failed" ? "Self-check failed: " : "Note: "}</b>{selected.error}
         </div>
       )}
 
-      {/* ── Status banner (last completed scan) ── */}
-      {latestScan && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 20,
-          padding: "16px 24px",
-          background: `${healthStyle.dot}08`,
-          border: `1px solid ${healthStyle.dot}33`,
-          borderRadius: "var(--radius-lg)",
-          marginBottom: "24px", flexWrap: "wrap",
-        }}>
-          <HealthBadge health={latestScan.overall_health} size="large" />
-          <div style={{ width: 1, height: 32, background: "var(--border)", flexShrink: 0 }} />
-          <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
-            {SEV_ORDER.map((sev) => {
-              const count = latestScan.finding_counts?.[sev] || 0;
-              const c = SEV_COLOR[sev];
-              return (
-                <div key={sev} style={{ textAlign: "center", minWidth: 36 }}>
-                  <div style={{ color: count > 0 ? c.fg : "var(--text-3)", fontSize: "22px",
-                    fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>{count}</div>
-                  <div style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.08em",
-                    marginTop: 4, textTransform: "uppercase" }}>{sev.slice(0, 4).toUpperCase()}</div>
-                </div>
-              );
-            })}
-            <div style={{ textAlign: "center", minWidth: 36 }}>
-              <div style={{ color: (latestScan.config_issue_count || 0) > 0 ? "var(--orange)" : "var(--text-3)",
-                fontSize: "22px", fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>
-                {latestScan.config_issue_count || 0}
-              </div>
-              <div style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.08em", marginTop: 4 }}>
-                CONFIG
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {!latestScan && !loading && !isScanning && (
-        <div style={{
-          padding: "40px", textAlign: "center",
-          border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)",
-          color: "var(--text-3)", fontSize: "12px", letterSpacing: "0.08em",
-          marginBottom: "24px",
-        }}>
-          {isAdmin
-            ? "No scans yet — click ↻ SCAN NOW to run the first self-assessment."
-            : "No scans have been run yet. Ask an admin to trigger a scan."}
-        </div>
-      )}
-
-      {/* ── Charts row ── */}
-      {selectedScan?.status === "complete" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 16, marginBottom: 24 }}>
-          {/* Donut — By severity */}
-          <div style={{ background: "var(--bg-2)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius-lg)", padding: "20px 24px" }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 16 }}>
-              By severity
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-              <div style={{ width: 140, flexShrink: 0 }}>
-                <DonutChart counts={scanCounts} />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {SEV_ORDER.map((sev) => {
-                  const count = scanCounts[sev] || 0;
-                  if (!count) return null;
-                  return (
-                    <div key={sev} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-                      <span style={{ width: 9, height: 9, borderRadius: "50%",
-                        background: SEV_COLOR[sev].fg, flexShrink: 0 }} />
-                      <span style={{ color: "var(--text-2)", textTransform: "capitalize", flex: 1 }}>
-                        {sev.charAt(0).toUpperCase() + sev.slice(1)}
-                      </span>
-                      <span style={{ color: "var(--text)", fontWeight: 600 }}>{count}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          {/* Category bars — By category */}
-          <div style={{ background: "var(--bg-2)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius-lg)", padding: "20px 28px" }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 16 }}>
-              By category
-            </div>
-            {CATEGORY_ORDER.map((cat) => {
-              const count = catCounts[cat] || 0;
-              const color = cat === "config" ? "#e3650a" : cat === "secrets" ? "#f85149"
-                : cat === "llm" ? "#bc8cff" : cat === "dependencies" ? "#d29922" : "#388bfd";
-              return <CategoryBar key={cat} label={CAT_LABEL[cat]} count={count} max={maxCat} color={color} />;
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* ── Scan history ── */}
-      <div style={{
-        background: "var(--bg-2)", border: "1px solid var(--border)",
-        borderRadius: "var(--radius-lg)", marginBottom: "24px", overflow: "hidden",
-      }}>
-        <div style={{
-          padding: "14px 20px", borderBottom: "1px solid var(--border)",
-          display: "flex", alignItems: "center", gap: 10,
-        }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Scan history</span>
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>{scans.length} scan{scans.length !== 1 ? "s" : ""}</span>
-        </div>
-        {scans.length === 0 ? (
-          <div style={{ padding: "24px", color: "var(--text-3)", fontSize: "12px", textAlign: "center" }}>No scans yet</div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                {["TIME", "HEALTH", "FINDINGS", "DURATION", "TRIGGERED BY"].map((h) => (
-                  <th key={h} style={{ ...thStyle, textAlign: h === "FINDINGS" ? "right" : "left" }}>{h}</th>
+      <div className="cols">
+        <section className="panel">
+          <div className="panel-h">
+            <h2>{selected && selected.id !== latest?.id ? `Findings · ${ago(selected.started_at)}` : "Latest findings"}</h2>
+            {selected?.overall_health && <HealthBadge health={selected.overall_health} />}
+            {findings.length > 0 && (
+              <div className="chips" style={{ marginLeft: "auto" }}>
+                <button className={`chip ${!cat ? "on" : ""}`} onClick={() => setCat(null)}>All</button>
+                {CATEGORIES.filter(([k]) => catCounts[k]).map(([k, l]) => (
+                  <button key={k} className={`chip ${cat === k ? "on" : ""}`} onClick={() => setCat(k)}>
+                    {l}<span className="n">{catCounts[k]}</span>
+                  </button>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {scans.map((scan) => (
-                <ScanHistoryRow
-                  key={scan.id}
-                  scan={scan}
-                  isSelected={selectedScan?.id === scan.id}
-                  onSelect={handleSelectScan}
-                />
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* ── Findings ── */}
-      {selectedScan?.status === "complete" && (
-        <div style={{
-          background: "var(--bg-2)", border: "1px solid var(--border)",
-          borderRadius: "var(--radius-lg)", overflow: "hidden",
-        }}>
-          <div style={{
-            padding: "12px 16px", borderBottom: "1px solid var(--border)",
-            display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
-          }}>
-            <span style={{ color: "var(--text-3)", fontSize: "10px", letterSpacing: "0.1em" }}>
-              FINDINGS — {relativeTime(selectedScan.started_at)}
-            </span>
-            <div style={{ display: "flex", gap: "6px", marginLeft: "auto" }}>
-              {["all", ...CATEGORY_ORDER].map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setCatFilter(cat)}
-                  style={{
-                    padding: "3px 9px",
-                    background: catFilter === cat ? "var(--accent-dim)" : "transparent",
-                    border: `1px solid ${catFilter === cat ? "var(--accent)" : "var(--border)"}`,
-                    color: catFilter === cat ? "var(--accent)" : "var(--text-3)",
-                    borderRadius: "var(--radius)", cursor: "pointer",
-                    fontSize: "10px", letterSpacing: "0.06em",
-                    fontFamily: "var(--mono)", transition: "all 0.1s",
-                  }}
-                >
-                  {cat === "all" ? "ALL" : CAT_LABEL[cat]}
-                </button>
-              ))}
-            </div>
+              </div>
+            )}
           </div>
-          {filtered.length === 0 ? (
-            <div style={{ padding: "24px", color: "var(--text-3)", fontSize: "12px", textAlign: "center" }}>No findings in this category</div>
-          ) : (
-            filtered.map((f) => <FindingRow key={f.id} f={f} />)
-          )}
-        </div>
-      )}
+          {isPending ? <div className="empty">Loading…</div>
+            : !selected ? <div className="empty">No self-checks yet. Run one to see how Custos itself is doing.</div>
+              : selected.status !== "complete" ? <div className="empty">This self-check didn&rsquo;t finish, so it has no findings.</div>
+                : shown.length === 0 ? <div className="empty">{findings.length ? "Nothing in this category." : "No findings: Custos looks clean."}</div>
+                  : <div className="flist">{shown.map((f) => <FindingRow key={f.id} f={f} />)}</div>}
+        </section>
 
-      <style>{`
-        @keyframes scanSweep {
-          0%   { transform: translateX(-200%); }
-          100% { transform: translateX(400%); }
-        }
-        @keyframes stagePulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50%       { opacity: 0.5; transform: scale(0.85); }
-        }
-      `}</style>
+        <div className="side">
+          {selected?.status === "complete" && (
+            <section className="panel panel-b">
+              <div className="panel-t">By severity</div>
+              <Donut counts={counts} />
+              {selected.config_issue_count > 0 && (
+                <div className="muted" style={{ fontSize: ".82rem", marginTop: 10 }}>
+                  including {plural(selected.config_issue_count, "configuration issue")}
+                </div>
+              )}
+            </section>
+          )}
+          <section className="panel">
+            <div className="panel-h"><h2>History</h2><span className="aside">{plural(scans.length, "run")}</span></div>
+            {scans.length === 0 && <div className="empty">No runs yet.</div>}
+            {scans.map((s) => (
+              <div key={s.id} className="ev" role="button" tabIndex={0}
+                style={{ gridTemplateColumns: "auto 1fr auto", background: selected?.id === s.id ? "var(--raised)" : undefined }}
+                onClick={() => { setSelectedId(s.id); setCat(null); }}
+                onKeyDown={(e) => e.key === "Enter" && setSelectedId(s.id)}
+                title={duration(s) ? `Took ${duration(s)}` : undefined}>
+                {s.status === "running" ? <span className="badge" style={{ color: "var(--accent)", background: "var(--accent-bg)" }}>RUNNING</span>
+                  : s.status === "failed" ? <span className="badge" style={{ color: "var(--crit)", background: "var(--crit-bg)" }}>FAILED</span>
+                    : <HealthBadge health={s.overall_health} />}
+                <span>
+                  {s.status === "complete" ? plural(total(s.finding_counts), "finding") : s.status}
+                  {" · "}{s.triggered_by === "manual" ? s.triggered_by_user || "manual" : "scheduled"}
+                </span>
+                <time>{ago(s.started_at)}</time>
+              </div>
+            ))}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

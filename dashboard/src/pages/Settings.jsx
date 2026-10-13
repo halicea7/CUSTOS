@@ -1,11 +1,17 @@
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth, useTheme, useUnsavedGuard } from "../App.jsx";
 import {
   getUsers, createUser, updateUserRole, deleteUser,
   changePassword, getConfig, updateConfig, testOllama, testResponses, testS1,
 } from "../api/settings.js";
 import { listRepos } from "../api/repos.js";
-import { Btn, Avatar, RoleBadge } from "../components/atoms.jsx";
+import { listMembers } from "../api/groups.js";
+import { useGroups } from "../api/queries.js";
+import { Btn } from "../components/atoms.jsx";
+import { ArmedButton } from "../components/queue/Board.jsx";
+import { useToast } from "../components/Toast.jsx";
 import {
   ChoiceCards, Feedback, Field, Modal, ModelPicker, PageHeader, ThinkBadge, PageWrap, SectionCard, SelectInput, Slider, Tabs, TextInput, Toggle,
 } from "../components/ui.jsx";
@@ -13,215 +19,222 @@ import { errorMessage } from "../api/errors.js";
 
 // ── Account ───────────────────────────────────────────────────────────────────
 
-function AccountTab({ theme, username }) {
+const STRENGTH = [["At least 8 characters", "var(--crit)"], ["Weak", "var(--crit)"], ["Fair", "var(--high)"],
+  ["Good", "var(--med)"], ["Strong", "var(--ok)"]];
+const strength = (v) => (v.length < 8 ? 0
+  : Math.min(4, 1 + (v.length >= 12) + (/[A-Z]/.test(v) && /[a-z]/.test(v)) + (/[^A-Za-z0-9]/.test(v) || /\d/.test(v))));
+
+function AccountTab({ user, onLogout }) {
+  const toast = useToast();
   const [form,    setForm]    = useState({ current_password: "", new_password: "", confirm: "" });
   const [loading, setLoading] = useState(false);
-  const [fb,      setFb]      = useState(null);
-  const t = theme;
+  const [err,     setErr]     = useState("");
+  const score = strength(form.new_password);
+  const mismatch = form.confirm && form.confirm !== form.new_password;
 
   const handle = async (e) => {
     e?.preventDefault();
-    if (form.new_password !== form.confirm) return setFb({ msg: "New passwords do not match", type: "error" });
-    if (form.new_password.length < 8) return setFb({ msg: "Password must be at least 8 characters", type: "error" });
-    setLoading(true); setFb(null);
+    if (form.new_password !== form.confirm) return setErr("New passwords do not match");
+    if (form.new_password.length < 8) return setErr("Password must be at least 8 characters");
+    setLoading(true); setErr("");
     try {
       await changePassword({ current_password: form.current_password, new_password: form.new_password });
-      setFb({ msg: "Password changed successfully", type: "success" });
+      toast("Password updated");
       setForm({ current_password: "", new_password: "", confirm: "" });
     } catch (e) {
-      setFb({ msg: errorMessage(e, "Failed to change password"), type: "error" });
+      setErr(errorMessage(e, "Failed to change password"));
     } finally { setLoading(false); }
   };
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   return (
-    <SectionCard theme={t} title="Change password">
-      <div style={{ maxWidth: 400 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-          <Avatar theme={t} name={username} size={36} />
-          <div>
-            <div style={{ fontSize: 13.5, color: t.c.text, fontWeight: 600 }}>{username}</div>
-            <div style={{ fontSize: 12, color: t.c.text3 }}>Signed in</div>
+    <div className="sgrid">
+      <section className="panel">
+        <div className="panel-h"><h2>Change password</h2></div>
+        <form className="panel-b" onSubmit={handle} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <input type="text" autoComplete="username" value={user?.username || ""} readOnly hidden />
+          <div className="field">
+            <label htmlFor="pw-cur">Current password</label>
+            <input id="pw-cur" className="input" type="password" autoComplete="current-password"
+              value={form.current_password} onChange={set("current_password")} />
           </div>
+          <div className="field">
+            <label htmlFor="pw-new">New password</label>
+            <input id="pw-new" className="input" type="password" autoComplete="new-password"
+              value={form.new_password} onChange={set("new_password")} />
+            <div className="meter" aria-hidden="true">
+              <span style={{ width: `${form.new_password ? Math.max(score, 0.4) * 25 : 0}%`, background: STRENGTH[score][1] }} />
+            </div>
+            <div className="hint" aria-live="polite">{form.new_password ? STRENGTH[score][0] : STRENGTH[0][0]}</div>
+          </div>
+          <div className="field">
+            <label htmlFor="pw-confirm">Confirm new password</label>
+            <input id="pw-confirm" className="input" type="password" autoComplete="new-password"
+              value={form.confirm} onChange={set("confirm")} />
+            {mismatch && <div className="hint" style={{ color: "var(--crit)" }}>Doesn&rsquo;t match the new password</div>}
+          </div>
+          {err && <div className="result bad">{err}</div>}
+          <div>
+            <button type="submit" className="btn primary"
+              disabled={loading || !form.current_password || !form.new_password || !form.confirm}>
+              {loading ? <><span className="spin" /> Saving</> : "Update password"}
+            </button>
+          </div>
+        </form>
+      </section>
+      <section className="panel">
+        <div className="panel-h"><h2>This session</h2></div>
+        <div className="panel-b" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <div className="avatar">{(user?.username || "?")[0].toUpperCase()}</div>
+            <div className="dim">Signed in as <b style={{ color: "var(--text)" }}>{user?.username}</b> ({user?.role})</div>
+          </div>
+          <div><button className="btn danger" onClick={onLogout}>Sign out</button></div>
         </div>
-        <Field theme={t} label="Current password">
-          <TextInput theme={t} type="password" value={form.current_password}
-            onChange={e => setForm(f => ({ ...f, current_password: e.target.value }))} />
-        </Field>
-        <Field theme={t} label="New password">
-          <TextInput theme={t} type="password" value={form.new_password}
-            onChange={e => setForm(f => ({ ...f, new_password: e.target.value }))} />
-        </Field>
-        <Field theme={t} label="Confirm new password">
-          <TextInput theme={t} type="password" value={form.confirm}
-            onChange={e => setForm(f => ({ ...f, confirm: e.target.value }))}
-            onKeyDown={e => e.key === "Enter" && handle()} />
-        </Field>
-        <Btn theme={t} variant="primary" onClick={handle} disabled={loading}>
-          {loading ? "Saving…" : "Update password"}
-        </Btn>
-        <Feedback theme={t} {...(fb || {})} />
-      </div>
-    </SectionCard>
+      </section>
+    </div>
   );
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
-const ROLES = ["analyst", "admin"];
+function UsersTab({ currentUser }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const { data: users = [], isPending, error } = useQuery({ queryKey: ["users"], queryFn: getUsers });
+  const { data: groups = [] } = useGroups();
+  // username → the groups they're in, for the Groups column.
+  const { data: groupsOf = new Map() } = useQuery({
+    queryKey: ["groups", "all-members", groups.map((g) => g.id).join(",")],
+    enabled: groups.length > 0,
+    queryFn: async () => {
+      const map = new Map();
+      await Promise.all(groups.map(async (g) => {
+        const members = await listMembers(g.id).catch(() => []);
+        members.forEach((m) => map.set(m.username, [...(map.get(m.username) || []), g.name]));
+      }));
+      return map;
+    },
+  });
+  const [newUser, setNewUser] = useState({ username: "", password: "", role: "analyst" });
+  const [creating, setCreating] = useState(false);
+  const [createErr, setCreateErr] = useState("");
+  const [savingRole, setSavingRole] = useState(null);
+  const refresh = () => qc.invalidateQueries({ queryKey: ["users"] });
 
-function UsersTab({ theme, currentUser }) {
-  const [users,       setUsers]       = useState([]);
-  const [loading,     setLoading]     = useState(true);
-  const [fb,          setFb]          = useState(null);
-  const [creating,    setCreating]    = useState(false);
-  const [newUser,     setNewUser]     = useState({ username: "", password: "", role: "analyst" });
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
-  const [pendingRoles,  setPendingRoles]  = useState({});
-  const [savingRole,    setSavingRole]    = useState(null);
-  const t = theme;
-
-  useEffect(() => {
-    getUsers().then(setUsers).catch(() => {}).finally(() => setLoading(false));
-  }, []);
-
-  const cycleRole = (u) => {
-    if (u.username === currentUser) return;
-    const cur = pendingRoles[u.id] ?? u.role;
-    const next = ROLES[(ROLES.indexOf(cur) + 1) % ROLES.length];
-    setPendingRoles(p => ({ ...p, [u.id]: next }));
-  };
-
-  const cancelRole = (id) => setPendingRoles(p => { const n = { ...p }; delete n[id]; return n; });
-
-  const saveRole = async (u) => {
-    const newRole = pendingRoles[u.id]; if (!newRole) return;
-    setSavingRole(u.id); setFb(null);
+  const setRole = async (u, role) => {
+    if (role === u.role) return;
+    setSavingRole(u.id);
     try {
-      const updated = await updateUserRole(u.id, newRole);
-      setUsers(prev => prev.map(x => x.id === updated.id ? updated : x));
-      cancelRole(u.id);
-      setFb({ msg: `${u.username} is now ${updated.role}`, type: "success" });
+      const updated = await updateUserRole(u.id, role);
+      toast(`${u.username} is now ${updated.role === "admin" ? "an admin" : "an analyst"}`);
+      refresh();
     } catch (e) {
-      setFb({ msg: errorMessage(e, "Failed to update role"), type: "error" });
+      toast(errorMessage(e, "Failed to update role"), { bad: true });
     } finally { setSavingRole(null); }
   };
 
   const handleCreate = async (e) => {
-    e?.preventDefault(); setFb(null);
+    e?.preventDefault(); setCreateErr("");
+    setCreating(true);
     try {
       const u = await createUser(newUser);
-      setUsers(prev => [...prev, u]);
       setNewUser({ username: "", password: "", role: "analyst" });
-      setCreating(false);
-      setFb({ msg: `User '${u.username}' created`, type: "success" });
+      toast(`Created ${u.username}`);
+      refresh();
     } catch (e) {
-      setFb({ msg: errorMessage(e, "Failed to create user"), type: "error" });
-    }
+      setCreateErr(errorMessage(e, "Failed to create user"));
+    } finally { setCreating(false); }
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (u) => {
     try {
-      await deleteUser(id);
-      setUsers(prev => prev.filter(u => u.id !== id));
-      setDeleteConfirm(null);
-      setFb({ msg: "User deleted", type: "success" });
+      await deleteUser(u.id);
+      toast(`Deleted ${u.username}`);
+      refresh();
+      qc.invalidateQueries({ queryKey: ["groups"] });
     } catch (e) {
-      setFb({ msg: errorMessage(e, "Failed to delete user"), type: "error" });
+      toast(errorMessage(e, "Failed to delete user"), { bad: true });
     }
   };
 
   return (
-    <>
-      <SectionCard theme={t} title="User accounts" pad={false}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 150px 130px 110px", gap: 12,
-          padding: "10px 18px", borderBottom: `1px solid ${t.c.border}`, background: t.c.raised }}>
-          {["User", "Role", "Created", ""].map((h, i) => (
-            <span key={i} style={{ fontSize: 11, fontWeight: 600, color: t.c.text3,
-              letterSpacing: "0.04em", textTransform: "uppercase",
-              textAlign: i === 3 ? "right" : "left" }}>{h}</span>
-          ))}
-        </div>
-        {loading ? (
-          <div style={{ padding: "20px 18px", color: t.c.text3, fontSize: 13 }}>Loading…</div>
-        ) : users.map((u, i) => {
-          const isSelf    = u.username === currentUser;
-          const pending   = pendingRoles[u.id];
-          const dispRole  = pending ?? u.role;
-          const isDirty   = !!pending;
-          return (
-            <div key={u.id} style={{ display: "grid", gridTemplateColumns: "1fr 150px 130px 110px",
-              gap: 12, alignItems: "center", padding: "12px 18px",
-              borderBottom: i === users.length - 1 ? "none" : `1px solid ${t.c.border}` }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <Avatar theme={t} name={u.username} size={28} />
-                <span style={{ fontSize: 13, color: t.c.text, fontFamily: t.fontMono }}>{u.username}</span>
-                {isSelf && (
-                  <span style={{ fontSize: 10.5, color: t.c.text3, padding: "1px 6px",
-                    border: `1px solid ${t.c.border}`, borderRadius: 4 }}>you</span>
-                )}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <RoleBadge theme={t} role={dispRole} clickable={!isSelf} onClick={() => cycleRole(u)} />
-                {isDirty && <span style={{ fontSize: 10.5, color: t.c.text3, fontStyle: "italic" }}>was {u.role}</span>}
-              </div>
-              <span style={{ fontSize: 12, color: t.c.text3 }}>
-                {new Date(u.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-              </span>
-              <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                {isDirty ? (
-                  <>
-                    <Btn theme={t} variant="primary" size="sm" disabled={savingRole === u.id}
-                      onClick={() => saveRole(u)}>{savingRole === u.id ? "…" : "Save"}</Btn>
-                    <Btn theme={t} size="sm" onClick={() => cancelRole(u.id)}>Cancel</Btn>
-                  </>
-                ) : !isSelf && (
-                  deleteConfirm === u.id ? (
-                    <>
-                      <Btn theme={t} variant="danger" size="sm" onClick={() => handleDelete(u.id)}>Confirm</Btn>
-                      <Btn theme={t} size="sm" onClick={() => setDeleteConfirm(null)}>Cancel</Btn>
-                    </>
-                  ) : (
-                    <Btn theme={t} variant="quiet" size="sm" onClick={() => setDeleteConfirm(u.id)}>Delete</Btn>
-                  )
-                )}
-              </div>
-            </div>
-          );
-        })}
-        <Feedback theme={t} {...(fb || {})} />
-      </SectionCard>
+    <div className="sgrid">
+      <section className="panel">
+        <div className="panel-h"><h2>User accounts</h2><span className="aside">{users.length} user{users.length !== 1 ? "s" : ""}</span></div>
+        {error ? <div className="panel-b"><div className="result bad">{errorMessage(error, "Couldn't load users")}</div></div>
+          : isPending ? <div className="empty">Loading…</div> : (
+            <table className="tbl">
+              <thead><tr><th>User</th><th>Role</th><th className="hide-sm">Groups</th><th className="hide-sm">Created</th><th /></tr></thead>
+              <tbody>
+                {users.map((u) => {
+                  const isSelf = u.username === currentUser;
+                  return (
+                    <tr key={u.id}>
+                      <td>
+                        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                          <div className="avatar" style={{ width: 26, height: 26, fontSize: ".7rem" }}>{u.username[0].toUpperCase()}</div>
+                          <span className="mono" style={{ color: "var(--text)" }}>{u.username}</span>
+                          {isSelf && <span className="tag">you</span>}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="seg" title={isSelf ? "You can't change your own role" : undefined}>
+                          {["analyst", "admin"].map((r) => (
+                            <button key={r} className={u.role === r ? "on" : ""} disabled={isSelf || savingRole === u.id}
+                              onClick={() => setRole(u, r)}>{r === "admin" ? "Admin" : "Analyst"}</button>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="hide-sm">
+                        {(groupsOf.get(u.username) || []).map((g) => <span key={g} className="gtag" style={{ marginRight: 4 }}>{g}</span>)}
+                        {!(groupsOf.get(u.username) || []).length && <span className="muted">—</span>}
+                      </td>
+                      <td className="hide-sm" style={{ whiteSpace: "nowrap" }}>
+                        {new Date(u.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        {!isSelf && <ArmedButton onConfirm={() => handleDelete(u)} />}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+      </section>
 
-      <SectionCard theme={t} title="Create user">
-        {!creating ? (
-          <Btn theme={t} variant="success" onClick={() => setCreating(true)}>+ New user</Btn>
-        ) : (
-          <div style={{ maxWidth: 400 }}>
-            <Field theme={t} label="Username">
-              <TextInput theme={t} value={newUser.username} mono
-                onChange={e => setNewUser(f => ({ ...f, username: e.target.value }))}
-                placeholder="username" />
-            </Field>
-            <Field theme={t} label="Password">
-              <TextInput theme={t} type="password" value={newUser.password}
-                onChange={e => setNewUser(f => ({ ...f, password: e.target.value }))}
-                placeholder="min 8 characters" />
-            </Field>
-            <Field theme={t} label="Role">
-              <SelectInput theme={t} value={newUser.role}
-                onChange={e => setNewUser(f => ({ ...f, role: e.target.value }))}
-                options={[{ value: "analyst", label: "Analyst" }, { value: "admin", label: "Admin" }]} />
-            </Field>
-            <div style={{ display: "flex", gap: 8 }}>
-              <Btn theme={t} variant="primary" onClick={handleCreate}>Create</Btn>
-              <Btn theme={t} onClick={() => { setCreating(false); setNewUser({ username: "", password: "", role: "analyst" }); }}>
-                Cancel
-              </Btn>
+      <section className="panel">
+        <div className="panel-h"><h2>Create user</h2></div>
+        <form className="panel-b" onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="row-form">
+            <div className="field" style={{ flex: "1 1 180px" }}>
+              <label htmlFor="nu-name">Username</label>
+              <input id="nu-name" className="input mono" autoComplete="off" value={newUser.username}
+                onChange={(e) => setNewUser((f) => ({ ...f, username: e.target.value }))} />
+            </div>
+            <div className="field" style={{ flex: "0 1 160px" }}>
+              <label htmlFor="nu-role">Role</label>
+              <select id="nu-role" className="input" value={newUser.role}
+                onChange={(e) => setNewUser((f) => ({ ...f, role: e.target.value }))}>
+                <option value="analyst">Analyst</option><option value="admin">Admin</option>
+              </select>
             </div>
           </div>
-        )}
-        <Feedback theme={t} {...(fb || {})} />
-      </SectionCard>
-    </>
+          <div className="field">
+            <label htmlFor="nu-pw">Password</label>
+            <input id="nu-pw" className="input" type="password" autoComplete="new-password" placeholder="min 8 characters"
+              value={newUser.password} onChange={(e) => setNewUser((f) => ({ ...f, password: e.target.value }))} />
+          </div>
+          {createErr && <div className="result bad">{createErr}</div>}
+          <div>
+            <button type="submit" className="btn primary" disabled={creating || !newUser.username.trim() || newUser.password.length < 8}>
+              {creating ? <><span className="spin" /> Creating</> : "Create user"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -585,9 +598,10 @@ function AnalysisTab({ theme }) {
 
   return (
     <>
-      <p style={{ fontSize: 12.5, color: t.c.text3, margin: "-8px 0 16px" }}>
+      <p className="muted" style={{ fontSize: ".86rem", margin: "0 0 var(--gap)" }}>
         Changes apply to the next analysis job. Worker settings apply after the worker restarts.
       </p>
+      <div className="sgrid">
 
       <SectionCard theme={t} title="AI review" right={<StatusPill theme={t}
         status={draft.llm_provider !== cfg?.llm_provider
@@ -968,20 +982,12 @@ function AnalysisTab({ theme }) {
         </div>
       </SectionCard>
 
-      {(dirty || fb) && <div style={{ height: 72 }} /> /* room so the bar never covers the last field */}
+      </div>
+
       {(dirty || fb) && (
-        // Fixed, not sticky: <main> is an overflow container but the window is
-        // what scrolls, so sticky never engages. Offset by the 220px side rail
-        // and centred on the 840px page column.
-        <div style={{ position: "fixed", left: 220, right: 0, bottom: 16, zIndex: 50,
-          display: "flex", justifyContent: "center", padding: "0 34px", pointerEvents: "none" }}>
-        <div style={{ width: "100%", maxWidth: 772, pointerEvents: "auto", display: "flex", alignItems: "center",
-          gap: 12, padding: "11px 14px 11px 18px", background: t.c.surface,
-          border: `1px solid ${t.c.border2}`, borderRadius: t.radiusLg, boxShadow: t.c.shadowHi }}>
-          <span role="status" style={{ fontSize: 12.5,
-            color: fb?.type === "error" || errorCount ? t.sev.critical.fg
-              : fb?.type === "success" ? t.status.signed_off[t.mode === "light" ? "light" : "dark"]
-              : t.c.text2 }}>
+        <div className="savebar">
+          <span role="status" style={{
+            color: fb?.type === "error" || errorCount ? "var(--crit)" : fb?.type === "success" ? "var(--ok)" : "var(--text2)" }}>
             {fb?.type === "error" ? fb.msg
               : errorCount ? `Fix ${errorCount} field${errorCount > 1 ? "s" : ""} before saving`
               : fb?.type === "success" && !dirty ? "✓ Saved"
@@ -989,24 +995,27 @@ function AnalysisTab({ theme }) {
           </span>
           {dirty && (
             <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-              <Btn theme={t} variant="quiet" onClick={handleDiscard} disabled={saving}>Discard</Btn>
+              <Btn theme={t} onClick={handleDiscard} disabled={saving}>Discard</Btn>
               <Btn theme={t} variant="primary" onClick={handleSave} disabled={saving || errorCount > 0}>
                 {saving ? "Saving…" : "Save changes"}
               </Btn>
             </div>
           )}
         </div>
-        </div>
       )}
     </>
   );
 }
 
+const TAB_ALIAS = { analysis: "config" };
+
 export default function Settings() {
-  const { user }  = useAuth();
+  const { user, logout } = useAuth();
   const { theme } = useTheme();
   const isAdmin   = user?.role === "admin";
   const t         = theme;
+  const [params, setParams] = useSearchParams();
+  const { guard } = useUnsavedGuard();
 
   const tabs = [
     { key: "account", label: "Account" },
@@ -1015,16 +1024,18 @@ export default function Settings() {
       { key: "config", label: "Analysis" },
     ] : []),
   ];
-  const [tab, setTab] = useState("account");
-  const { guard } = useUnsavedGuard();
+  // ?tab= deep-links (the command palette uses it); unknown or not-allowed tabs fall back to Account.
+  const want = TAB_ALIAS[params.get("tab")] || params.get("tab");
+  const tab = tabs.some((x) => x.key === want) ? want : "account";
+  const setTab = (k) => setParams(k === "account" ? {} : { tab: k }, { replace: true });
 
   return (
-    <PageWrap theme={t} max={840}>
+    <PageWrap theme={t}>
       <PageHeader theme={t} title="Settings"
-        subtitle={isAdmin ? "Account, users, and analysis engine" : "Manage your account"} />
+        subtitle={isAdmin ? "Your account, people, and the analysis engine" : "Manage your account"} />
       <Tabs theme={t} tabs={tabs} active={tab} onChange={(k) => k !== tab && guard(() => setTab(k))} />
-      {tab === "account" && <AccountTab  theme={t} username={user?.username} />}
-      {tab === "users"   && isAdmin && <UsersTab    theme={t} currentUser={user?.username} />}
+      {tab === "account" && <AccountTab user={user} onLogout={logout} />}
+      {tab === "users"   && isAdmin && <UsersTab currentUser={user?.username} />}
       {tab === "config"  && isAdmin && <AnalysisTab theme={t} />}
     </PageWrap>
   );

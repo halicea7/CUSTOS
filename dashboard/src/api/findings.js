@@ -17,3 +17,12 @@ export async function getFindingAudit(id) {
   const res = await api.get(`/findings/${id}/audit`);
   return res.data;
 }
+
+export async function setDispositions(ids, disposition, note) {
+  const res = await api.post("/findings/bulk-disposition", {
+    finding_ids: ids,
+    disposition,
+    note: note || null,
+  });
+  return res.data;
+}

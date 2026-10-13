@@ -60,7 +60,7 @@ export default function CodeViewer({ code, language, lineStart, lineEnd, filePat
 
   if (!code) return null;
 
-  const lines = highlighted.split("\n");
+  const lines = highlighted.replace(/\n$/, "").split("\n");
   const startNum = typeof lineStart === "number" ? lineStart : 1;
 
   const isLight = t.mode === "light";

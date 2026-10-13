@@ -124,6 +124,21 @@ async def test_health_status_serves_running_stages(client, db):
     assert body["running"] is True and body["running_stages"] == stages
 
 
+async def test_health_status_serves_last_finished_scans_stages(client, db):
+    from main import app
+
+    await make_user(db, "root", role="admin")
+    scan = SelfScan(status="complete", triggered_by="manual")
+    db.add(scan)
+    await db.commit()
+    stages = [{"id": "llm", "label": "LLM review", "tool": "llm", "state": "failed", "detail": "unreachable"}]
+    await app.state.redis.set(scan_stages_key(scan.id), json.dumps(stages))
+
+    body = (await client.get("/health/status", headers=auth_headers("root"))).json()
+    assert body["running"] is False and body["running_stages"] is None
+    assert body["latest_stages"] == stages
+
+
 def test_worker_and_api_use_custos_queue():
     """ARQ's default queue is shared by every ARQ app on the Redis: use our own."""
     from redis_util import ARQ_QUEUE

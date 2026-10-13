@@ -18,7 +18,7 @@ export const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 
 export const STATUS_META = {
   pending:    { label: "Pending",    dark: "#8a93a1", light: "#8a93a1" },
-  analyzing:  { label: "Analyzing",  dark: "#6ea3e6", light: "#2f6fc4" },
+  analyzing:  { label: "Scanning",   dark: "#9b7bff", light: "#6d4aff" },
   needs_review: { label: "Needs review", dark: "#d9b45a", light: "#9a6c12" },
   signed_off: { label: "Signed off", dark: "#5cbf7a", light: "#22874a" },
   error:      { label: "Error",      dark: "#f0716a", light: "#c8372d" },
@@ -36,25 +36,33 @@ export const CAT_COLORS = {
 };
 
 const light = {
-  bg: "#f4f5f7", surface: "#ffffff", raised: "#f8f9fb", raised2: "#eef0f3",
-  border: "#e3e6eb", border2: "#d3d8df",
-  text: "#1a1d24", text2: "#4f5866", text3: "#8a93a1",
-  accent: "#5048e0", accentBg: "rgba(80,72,224,0.09)", accentText: "#ffffff", link: "#5048e0",
-  shadow: "0 1px 2px rgba(20,24,40,0.05)", shadowHi: "0 14px 34px rgba(20,24,40,0.12)",
+  bg: "#f5f5f8", surface: "#ffffff", raised: "#f9f9fb", raised2: "#efeef4",
+  border: "#e4e3ea", border2: "#d4d2dd",
+  text: "#1c1828", text2: "#544d68", text3: "#8c85a1",
+  accent: "#6d4aff", accentBg: "rgba(109,74,255,0.09)", accentLine: "rgba(109,74,255,0.35)",
+  accentText: "#ffffff", link: "#6d4aff",
+  grad: "linear-gradient(135deg,#6d4aff 0%,#8b5cf6 55%,#a855f7 100%)",
+  glow: "radial-gradient(1100px 320px at 10% -12%, rgba(109,74,255,0.05), transparent 60%)",
+  sidebar: "#ffffff",
+  shadow: "0 1px 2px rgba(40,20,90,0.06)", shadowHi: "0 18px 44px rgba(40,20,90,0.14)",
 };
 const dark = {
-  bg: "#0e1015", surface: "#14171d", raised: "#191c23", raised2: "#1f232b",
-  border: "#23272f", border2: "#30353f",
-  text: "#e4e7ec", text2: "#a3abb8", text3: "#6b7482",
-  accent: "#8b88f0", accentBg: "rgba(139,136,240,0.14)", accentText: "#0e1015", link: "#9a97ff",
-  shadow: "0 1px 2px rgba(0,0,0,0.4)", shadowHi: "0 16px 38px rgba(0,0,0,0.5)",
+  bg: "#0f0e14", surface: "#15141b", raised: "#1a1921", raised2: "#211f29",
+  border: "#26242e", border2: "#35323e",
+  text: "#e6e4ec", text2: "#a7a3b3", text3: "#6f6b7c",
+  accent: "#9b7bff", accentBg: "rgba(155,123,255,0.15)", accentLine: "rgba(155,123,255,0.45)",
+  accentText: "#ffffff", link: "#a891ff",
+  grad: "linear-gradient(135deg,#7c5cff 0%,#a855f7 55%,#c084fc 100%)",
+  glow: "radial-gradient(1100px 320px at 10% -12%, rgba(124,92,255,0.09), transparent 60%)",
+  sidebar: "linear-gradient(180deg,#17151f 0%,#15141b 40%)",
+  shadow: "0 1px 2px rgba(0,0,0,0.35)", shadowHi: "0 18px 44px rgba(0,0,0,0.5)",
 };
 
 export function makeTheme(mode) {
   const isLight = mode === "light";
   return {
     mode,
-    radius: 10, radiusLg: 16,
+    radius: 10, radiusLg: 14,
     sev: isLight ? sevLight : sevDark,
     status: STATUS_META,
     health: HEALTH_META,
@@ -81,6 +89,23 @@ export function applyCssVars(theme) {
   r.setProperty("--text-3",      c.text3);
   r.setProperty("--accent",      c.accent);
   r.setProperty("--accent-dim",  c.accentBg);
+  // Names used by styles.css.
+  for (const [k, v] of Object.entries({
+    surface: c.surface, raised: c.raised, raised2: c.raised2, border2: c.border2,
+    text2: c.text2, text3: c.text3, "accent-bg": c.accentBg, "accent-line": c.accentLine,
+    "accent-text": c.accentText, grad: c.grad, glow: c.glow, sidebar: c.sidebar,
+    shadow: c.shadow, "shadow-hi": c.shadowHi,
+  })) r.setProperty(`--${k}`, v);
+  for (const [name, sev] of Object.entries({ crit: "critical", high: "high", med: "medium", low: "low", info: "info" })) {
+    r.setProperty(`--${name}`, theme.sev[sev].fg);
+    r.setProperty(`--${name}-solid`, theme.sev[sev].solid);
+    r.setProperty(`--${name}-bg`, theme.sev[sev].bg);
+  }
+  const st = (k) => theme.status[k][isLight ? "light" : "dark"];
+  r.setProperty("--ok", st("signed_off"));
+  r.setProperty("--ok-bg", `${st("signed_off")}1f`);
+  r.setProperty("--run", c.accent);
+  document.documentElement.dataset.theme = theme.mode;
   const green  = theme.status.signed_off[isLight ? "light" : "dark"];
   const red    = theme.sev.critical.fg;
   const orange = theme.sev.high.fg;

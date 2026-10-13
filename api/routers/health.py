@@ -172,21 +172,24 @@ async def health_dashboard_status(
     )
     running = running_result.scalar_one_or_none()
 
-    # Real per-stage states published by the worker (None until it starts).
-    stages = None
-    if running is not None:
-        raw = await request.app.state.redis.get(scan_stages_key(running.id))
+    # Real per-stage states published by the worker (None until it starts, and
+    # gone a few hours after a scan finishes).
+    async def stages_of(scan: SelfScan | None) -> list | None:
+        if scan is None:
+            return None
+        raw = await request.app.state.redis.get(scan_stages_key(scan.id))
         try:
-            stages = json.loads(raw) if raw else None
+            return json.loads(raw) if raw else None
         except ValueError:
-            stages = None
+            return None
 
     return {
         "latest_scan": _scan_to_dict(latest) if latest else None,
         "running": running is not None,
         "running_scan_id": str(running.id) if running else None,
         "running_started_at": running.started_at.isoformat() if running and running.started_at else None,
-        "running_stages": stages,
+        "running_stages": await stages_of(running),
+        "latest_stages": await stages_of(latest),
     }
 
 

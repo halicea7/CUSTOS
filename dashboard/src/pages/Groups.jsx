@@ -1,255 +1,216 @@
-import React, { useEffect, useState } from "react";
+import React, { useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  listGroups, createGroup, updateGroup, deleteGroup,
-  listMembers, addMember, removeMember,
+  addMember, createGroup, deleteGroup, listMembers, removeMember, updateGroup,
 } from "../api/groups.js";
 import { getUsers } from "../api/settings.js";
-import { useTheme, Icon } from "../App.jsx";
-import { Btn, Avatar } from "../components/atoms.jsx";
-import { PageHeader, PageWrap, SectionCard, TextInput, SelectInput } from "../components/ui.jsx";
+import { keys, useGroups, useRepos, useSubmissions } from "../api/queries.js";
 import { errorMessage } from "../api/errors.js";
+import { Icon, useTheme } from "../App.jsx";
+import { Modal } from "../components/ui.jsx";
+import { ArmedButton, Status, groupByRepo } from "../components/queue/Board.jsx";
+import { useToast } from "../components/Toast.jsx";
 
-function GroupCard({ theme, group, users, preloadedMembers = [], onUpdated, onDeleted }) {
-  const [expanded,   setExpanded]   = useState(false);
-  const [members,    setMembers]    = useState(null);
-  const [newUser,    setNewUser]    = useState("");
-  const [adding,     setAdding]     = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [editName,   setEditName]   = useState(null);
-  const [err,        setErr]        = useState("");
-  const t = theme;
+const plural = (k, w) => `${k} ${w}${k !== 1 ? "s" : ""}`;
+const initial = (name) => (name || "?")[0].toUpperCase();
+const membersKey = (id) => ["groups", id, "members"];
 
-  const loadMembers = async () => {
-    const m = await listMembers(group.id).catch(() => []);
-    setMembers(m);
+function RenameModal({ group, onClose, onSaved }) {
+  const { theme } = useTheme();
+  const [name, setName] = useState(group.name);
+  const [desc, setDesc] = useState(group.description || "");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!name.trim()) return;
+    setBusy(true); setErr("");
+    try { await updateGroup(group.id, { name: name.trim(), description: desc.trim() }); onSaved(name.trim()); }
+    catch (e) { setErr(errorMessage(e, "Couldn't rename the group")); }
+    finally { setBusy(false); }
   };
+  return (
+    <Modal theme={theme} title="Edit group" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="field">
+          <label htmlFor="g-name">Name</label>
+          <input id="g-name" className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && save()} />
+        </div>
+        <div className="field">
+          <label htmlFor="g-desc">Description</label>
+          <input id="g-desc" className="input" value={desc} onChange={(e) => setDesc(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && save()} />
+        </div>
+        {err && <div className="result bad">{err}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={busy || !name.trim()}>Save</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 
-  const handleExpand = () => {
-    setExpanded(v => !v);
-    if (!expanded && members === null) loadMembers();
+function GroupCard({ group, users, repos, latestByRepo, defaultOpen }) {
+  const navigate = useNavigate();
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(defaultOpen);
+  const [renaming, setRenaming] = useState(false);
+  const { data: members = [], isPending } = useQuery({
+    queryKey: membersKey(group.id), queryFn: () => listMembers(group.id),
+  });
+
+  const names = new Set(members.map((m) => m.username));
+  const free = users.filter((u) => !names.has(u.username));
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: keys.groups });
+    qc.invalidateQueries({ queryKey: keys.repos });
   };
-
-  const handleAddMember = async () => {
-    if (!newUser) return;
-    setAdding(true); setErr("");
-    try {
-      await addMember(group.id, newUser);
-      setNewUser(""); await loadMembers();
-      onUpdated({ ...group, member_count: group.member_count + 1 });
-    } catch (e) {
-      setErr(errorMessage(e, "Failed to add member."));
-    } finally { setAdding(false); }
-  };
-
-  const handleRemoveMember = async (username) => {
-    await removeMember(group.id, username).catch(() => {});
-    setMembers(prev => prev.filter(m => m.username !== username));
-    onUpdated({ ...group, member_count: Math.max(0, group.member_count - 1) });
-  };
-
-  const handleRename = async () => {
-    if (!editName?.trim()) return setEditName(null);
-    try {
-      const updated = await updateGroup(group.id, { name: editName.trim() });
-      onUpdated(updated); setEditName(null);
-    } catch (e) { setErr(errorMessage(e, "Failed to rename.")); }
+  const act = async (fn, done, fail) => {
+    try { await fn(); toast(done); refresh(); } catch (e) { toast(errorMessage(e, fail), { bad: true }); }
   };
 
   return (
-    <div style={{ border: `1px solid ${t.c.border}`, borderRadius: t.radiusLg,
-      overflow: "hidden", marginBottom: 12, background: t.c.surface, boxShadow: t.c.shadow }}>
-      {/* Header row */}
-      <div onClick={handleExpand} style={{ display: "flex", alignItems: "center",
-        justifyContent: "space-between", padding: "15px 18px", cursor: "pointer",
-        userSelect: "none", gap: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 13, minWidth: 0 }}>
-          <span style={{ color: t.c.text3, fontSize: 10, transition: "transform 0.18s",
-            transform: expanded ? "rotate(90deg)" : "none", display: "inline-block" }}>▶</span>
-          <div style={{ width: 34, height: 34, borderRadius: 9, background: t.c.accentBg,
-            color: t.c.accent, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <Icon name="groups" size={18} color={t.c.accent} />
-          </div>
-          <div style={{ minWidth: 0 }}>
-            {editName !== null ? (
-              <input autoFocus value={editName}
-                onChange={e => setEditName(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setEditName(null); }}
-                onClick={e => e.stopPropagation()}
-                style={{ fontSize: 15, fontWeight: 600, color: t.c.text,
-                  background: t.c.bg, border: `1px solid ${t.c.accent}`,
-                  borderRadius: t.radius / 2, padding: "2px 8px", outline: "none",
-                  fontFamily: t.fontDisplay, width: "100%" }} />
-            ) : (
-              <div style={{ fontSize: 15, fontWeight: 600, color: t.c.text, fontFamily: t.fontDisplay }}>
-                {group.name}
-              </div>
-            )}
-            {group.description && (
-              <div style={{ fontSize: 12.5, color: t.c.text3, marginTop: 2 }}>{group.description}</div>
-            )}
-          </div>
+    <div className="gcard">
+      <div className="gh" onClick={() => setOpen((v) => !v)} role="button" aria-expanded={open} tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" && setOpen((v) => !v)}>
+        <div className="gicon"><Icon name="groups" size={18} /></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, color: "var(--text)" }}>{group.name}</div>
+          {group.description && <div className="muted" style={{ fontSize: ".84rem" }}>{group.description}</div>}
         </div>
+        <div className="stack hide-sm">
+          {members.slice(0, 4).map((m) => <div key={m.username} className="avatar" title={m.username}>{initial(m.username)}</div>)}
+        </div>
+        <span className="muted" style={{ fontSize: ".84rem", whiteSpace: "nowrap" }}>
+          {plural(group.member_count ?? members.length, "member")} · {plural(repos.length, "repo")}
+        </span>
+        <span className="chev" style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .2s" }}>›</span>
+      </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }} onClick={e => e.stopPropagation()}>
-          {/* Avatar stack — shows real initials from preloaded members */}
-          <div style={{ display: "flex" }}>
-            {preloadedMembers.slice(0, 4).map((username, i) => (
-              <div key={username} style={{ marginLeft: i ? -8 : 0, borderRadius: 999,
-                border: `2px solid ${t.c.surface}` }}>
-                <Avatar theme={t} name={username} size={26} />
+      {open && (
+        <div className="gb">
+          <div>
+            <div className="lbl" style={{ marginBottom: 8 }}>Members</div>
+            <select className="input" value="" style={{ width: "100%", marginBottom: 10 }} aria-label="Add a member"
+              disabled={!free.length}
+              onChange={(e) => {
+                const u = e.target.value;
+                if (u) act(() => addMember(group.id, u), `Added ${u} to ${group.name}`, "Couldn't add the member");
+              }}>
+              <option value="">{free.length ? "Add a member…" : "Everyone is already a member"}</option>
+              {free.map((u) => <option key={u.username} value={u.username}>{u.username} ({u.role})</option>)}
+            </select>
+            {isPending ? <div className="muted">Loading…</div> : members.length === 0 ? (
+              <div className="muted" style={{ fontSize: ".86rem" }}>No members yet.</div>
+            ) : members.map((m) => (
+              <div key={m.username} className="member">
+                <div className="avatar" style={{ width: 26, height: 26, fontSize: ".7rem" }}>{initial(m.username)}</div>
+                <span className="mono" style={{ fontSize: ".88rem", color: "var(--text2)" }}>{m.username}</span>
+                <ArmedButton label="Remove" confirm="Confirm remove"
+                  onConfirm={() => act(() => removeMember(group.id, m.username), `Removed ${m.username} from ${group.name}`, "Couldn't remove the member")} />
               </div>
             ))}
           </div>
-          <span style={{ fontSize: 12.5, color: t.c.text3, whiteSpace: "nowrap" }}>
-            {group.member_count} member{group.member_count !== 1 ? "s" : ""}
-          </span>
-          <Btn theme={t} variant="quiet" size="sm"
-            onClick={e => { e.stopPropagation(); setEditName(group.name); }}>Rename</Btn>
-          {confirming ? (
-            <>
-              <Btn theme={t} variant="danger" size="sm" onClick={() => onDeleted(group.id)}>Confirm</Btn>
-              <Btn theme={t} variant="quiet" size="sm" onClick={() => setConfirming(false)}>Cancel</Btn>
-            </>
-          ) : (
-            <Btn theme={t} variant="quiet" size="sm" onClick={() => setConfirming(true)}>Delete</Btn>
-          )}
-        </div>
-      </div>
-
-      {/* Expanded body */}
-      {expanded && (
-        <div style={{ padding: "16px 18px", borderTop: `1px solid ${t.c.border}`,
-          background: t.c.raised }}>
-          {err && <div style={{ color: t.sev.critical.fg, fontSize: 12, marginBottom: 10 }}>{err}</div>}
-
-          {(() => {
-            const taken = new Set((members || []).map(m => m.username));
-            const choices = users.filter(u => !taken.has(u.username));
-            return (
-              <div style={{ display: "flex", gap: 8, marginBottom: 14, maxWidth: 420 }}>
-                <SelectInput theme={t} value={newUser} onChange={e => setNewUser(e.target.value)}
-                  options={[
-                    { value: "", label: choices.length ? "Add a member…" : "Everyone is already a member" },
-                    ...choices.map(u => ({ value: u.username, label: `${u.username} (${u.role})` })),
-                  ]} />
-                <Btn theme={t} variant="primary" onClick={handleAddMember} disabled={adding || !newUser}>
-                  Add
-                </Btn>
-              </div>
-            );
-          })()}
-
-          {members === null ? (
-            <div style={{ fontSize: 11, color: t.c.text3 }}>Loading…</div>
-          ) : members.length === 0 ? (
-            <div style={{ fontSize: 11, color: t.c.text3 }}>No members yet.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {members.map((m) => (
-                <div key={m.username} style={{ display: "flex", alignItems: "center",
-                  justifyContent: "space-between", padding: "8px 12px",
-                  background: t.c.surface, border: `1px solid ${t.c.border}`,
-                  borderRadius: t.radius }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <Avatar theme={t} name={m.username} size={26} />
-                    <span style={{ fontSize: 13, color: t.c.text2, fontFamily: t.fontMono }}>
-                      {m.username}
-                    </span>
-                  </div>
-                  <Btn theme={t} variant="quiet" size="sm" onClick={() => handleRemoveMember(m.username)}>
-                    Remove
-                  </Btn>
+          <div>
+            <div className="lbl" style={{ marginBottom: 8 }}>Repositories</div>
+            {repos.length ? repos.map((r) => {
+              const latest = latestByRepo.get(r.repo_full_name);
+              return (
+                <div key={r.id} className="member" style={{ cursor: "pointer" }}
+                  onClick={() => navigate(latest ? `/submissions/${latest.id}` : "/repos")}
+                  title={latest ? "Open the latest scan" : "Open Repositories"}>
+                  <span style={{ fontWeight: 500, color: "var(--text)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {r.repo_full_name}
+                  </span>
+                  <span style={{ marginLeft: "auto", fontSize: ".8rem" }}>
+                    {latest ? <Status status={latest.status} /> : <span className="muted">no scans</span>}
+                  </span>
                 </div>
-              ))}
+              );
+            }) : <div className="muted" style={{ fontSize: ".86rem" }}>None yet. Share repositories from the Repositories page.</div>}
+            <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+              <button className="btn sm" onClick={() => setRenaming(true)}>Rename</button>
+              <ArmedButton label="Delete group" confirm="Confirm delete" className="btn sm danger"
+                onConfirm={() => act(() => deleteGroup(group.id), `Deleted ${group.name}`, "Couldn't delete the group")} />
             </div>
-          )}
+          </div>
         </div>
+      )}
+      {renaming && (
+        <RenameModal group={group} onClose={() => setRenaming(false)}
+          onSaved={(name) => { setRenaming(false); toast(`Saved ${name}`); refresh(); }} />
       )}
     </div>
   );
 }
 
 export default function Groups() {
-  const { theme }     = useTheme();
-  const [groups,       setGroups]     = useState([]);
-  const [membersMap,   setMembersMap] = useState({});  // {groupId: [username, ...]}
-  const [users,        setUsers]      = useState([]);
-  const [loading,      setLoading]    = useState(true);
-  const [name,         setName]       = useState("");
-  const [desc,         setDesc]       = useState("");
-  const [creating,     setCreating]   = useState(false);
-  const [err,          setErr]        = useState("");
-  const t = theme;
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState("");
+  const [created, setCreated] = useState(null);
 
-  useEffect(() => {
-    getUsers().then(setUsers).catch(() => {});
-    listGroups()
-      .then(async (gs) => {
-        setGroups(gs);
-        // Load first 4 members of each group for the avatar stack
-        const map = {};
-        await Promise.all(gs.map(async (g) => {
-          try {
-            const members = await listMembers(g.id);
-            map[g.id] = members.slice(0, 4).map(m => m.username);
-          } catch { map[g.id] = []; }
-        }));
-        setMembersMap(map);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: groups = [], isPending, error } = useGroups();
+  const { data: users = [] } = useQuery({ queryKey: ["users"], queryFn: getUsers, staleTime: 60000 });
+  const { data: repos = [] } = useRepos();
+  const { data: subsData } = useSubmissions(null, null, 500);
+  const latestByRepo = useMemo(
+    () => new Map(groupByRepo(subsData?.submissions || []).map((r) => [r.name, r.latest])),
+    [subsData],
+  );
 
-  const handleCreate = async () => {
+  const create = async () => {
     if (!name.trim()) return;
     setCreating(true); setErr("");
     try {
       const g = await createGroup({ name: name.trim(), description: desc.trim() || undefined });
-      setGroups(prev => [g, ...prev]);
-      setName(""); setDesc("");
+      setName(""); setDesc(""); setCreated(g.id);
+      toast(`Created ${g.name}`);
+      qc.invalidateQueries({ queryKey: keys.groups });
     } catch (e) {
-      setErr(errorMessage(e, "Failed to create group."));
+      setErr(errorMessage(e, "Couldn't create the group"));
     } finally { setCreating(false); }
   };
 
-  const handleUpdated = (updated) => setGroups(prev => prev.map(g => g.id === updated.id ? updated : g));
-  const handleDeleted = async (id) => {
-    await deleteGroup(id).catch(() => {});
-    setGroups(prev => prev.filter(g => g.id !== id));
-  };
-
   return (
-    <PageWrap theme={t} max={840}>
-      <PageHeader theme={t} title="Groups"
-        subtitle="Organize users into teams. Members see every repository assigned to their group; assign repositories on the Repositories page." />
-
-      <SectionCard theme={t} title="Create group">
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 170px" }}>
-            <TextInput theme={t} value={name} onChange={e => setName(e.target.value)}
-              placeholder="Group name" onKeyDown={e => e.key === "Enter" && handleCreate()} />
-          </div>
-          <div style={{ flex: "2 1 220px" }}>
-            <TextInput theme={t} value={desc} onChange={e => setDesc(e.target.value)}
-              placeholder="Description (optional)" onKeyDown={e => e.key === "Enter" && handleCreate()} />
-          </div>
-          <Btn theme={t} variant="primary" onClick={handleCreate}
-            disabled={creating || !name.trim()}>Create</Btn>
+    <div className="page glow">
+      <div className="top">
+        <div>
+          <h1>Groups</h1>
+          <div className="subt">Members see every repository shared with their group</div>
         </div>
-        {err && <div style={{ color: t.sev.critical.fg, fontSize: 12, marginTop: 10 }}>{err}</div>}
-      </SectionCard>
+      </div>
 
-      {loading ? (
-        <div style={{ color: t.c.text3, fontSize: 13 }}>Loading…</div>
-      ) : groups.length === 0 ? (
-        <div style={{ color: t.c.text3, fontSize: 13 }}>No groups yet.</div>
+      <section className="panel panel-b" style={{ marginBottom: "var(--gap)" }}>
+        <div className="row-form">
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Group name"
+            aria-label="Group name" onKeyDown={(e) => e.key === "Enter" && create()} />
+          <input className="input" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Description (optional)"
+            aria-label="Description" style={{ flex: "2 1 240px" }} onKeyDown={(e) => e.key === "Enter" && create()} />
+          <button className="btn primary" style={{ flex: "0 0 auto" }} onClick={create} disabled={creating || !name.trim()}>
+            Create group
+          </button>
+        </div>
+        {err && <div className="result bad" style={{ marginTop: 10 }}>{err}</div>}
+      </section>
+
+      {error && <div className="banner bad">{errorMessage(error, "Failed to load groups")}</div>}
+      {isPending ? <div className="empty">Loading…</div> : groups.length === 0 ? (
+        <div className="panel"><div className="empty">No groups yet. Create one above, then add members and share repositories with it.</div></div>
       ) : (
-        groups.map(g => (
-          <GroupCard key={g.id} theme={t} group={g} users={users}
-            preloadedMembers={membersMap[g.id] || []}
-            onUpdated={handleUpdated} onDeleted={handleDeleted} />
-        ))
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 640px), 1fr))", gap: "var(--gap)", alignItems: "start" }}>
+          {groups.map((g, i) => (
+            <GroupCard key={g.id} group={g} users={users} defaultOpen={g.id === created || (i === 0 && groups.length === 1)}
+              repos={repos.filter((r) => (r.groups || []).some((x) => x.id === g.id))} latestByRepo={latestByRepo} />
+          ))}
+        </div>
       )}
-    </PageWrap>
+    </div>
   );
 }
