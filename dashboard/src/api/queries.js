@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getActiveLlmJobs, getLlmRuns, getLlmStatus, getSubmission, getSubmissionFindings,
-  listSubmissions, rerunLlm, signOff, deleteSubmission,
+  listSubmissions, rerunLlm, signOff, deleteSubmission, getQueueOverview,
 } from "./submissions.js";
 import { getHealthStatus, getScanFindings, listScans, triggerScan } from "./health.js";
 import { listGroups } from "./groups.js";
@@ -14,6 +14,7 @@ export const keys = {
   llmRuns: (id) => ["submission", id, "llm-runs"],
   llmStatus: (id) => ["submission", id, "llm-status"],
   llmActive: ["llm-active"],
+  overview: (groupId) => ["submissions", "overview", { groupId }],
   groups: ["groups"],
   healthStatus: ["health", "status"],
   scans: ["health", "scans"],
@@ -31,6 +32,19 @@ export function useSubmissions(filter, groupId, limit) {
     // Poll quickly while something is being analysed, slowly otherwise.
     refetchInterval: (q) =>
       q.state.data?.submissions?.some((s) => IN_FLIGHT.has(s.status)) ? 4000 : 30000,
+  });
+}
+
+/** Status counts and the recent-activity feed (also drives the nav badge). */
+export function useQueueOverview(groupId) {
+  return useQuery({
+    queryKey: keys.overview(groupId),
+    queryFn: () => getQueueOverview(groupId),
+    placeholderData: (prev) => prev,
+    refetchInterval: (q) => {
+      const c = q.state.data?.status_counts || {};
+      return c.pending || c.analyzing ? 5000 : 30000;
+    },
   });
 }
 

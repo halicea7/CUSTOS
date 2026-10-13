@@ -1,26 +1,27 @@
+// Muted tones: readable on a full queue without a wall of neon.
 const sevLight = {
-  critical: { fg: "#c2241a", solid: "#dc2626", bg: "#fdeceb", label: "Critical", short: "CRIT" },
-  high:     { fg: "#c2570a", solid: "#ea580c", bg: "#fdf0e6", label: "High",     short: "HIGH" },
-  medium:   { fg: "#b45309", solid: "#d97706", bg: "#fef3c7", label: "Medium",   short: "MED"  },
-  low:      { fg: "#1f6fd6", solid: "#2f7ee0", bg: "#eaf2fd", label: "Low",      short: "LOW"  },
-  info:     { fg: "#5a6473", solid: "#7b8696", bg: "#eef1f5", label: "Info",     short: "INFO" },
+  critical: { fg: "#c8372d", solid: "#d9473c", bg: "#fbebea", label: "Critical", short: "CRIT" },
+  high:     { fg: "#b9601f", solid: "#d97a33", bg: "#fbf0e6", label: "High",     short: "HIGH" },
+  medium:   { fg: "#9a6c12", solid: "#c99a2e", bg: "#fbf4e1", label: "Medium",   short: "MED"  },
+  low:      { fg: "#2f6fc4", solid: "#3d7fd6", bg: "#eaf1fb", label: "Low",      short: "LOW"  },
+  info:     { fg: "#5a6473", solid: "#8a93a1", bg: "#eef0f3", label: "Info",     short: "INFO" },
 };
 const sevDark = {
-  critical: { fg: "#ff6b63", solid: "#f85149", bg: "rgba(248,81,73,0.14)",    label: "Critical", short: "CRIT" },
-  high:     { fg: "#fb923c", solid: "#f97316", bg: "rgba(249,115,22,0.15)",   label: "High",     short: "HIGH" },
-  medium:   { fg: "#fbbf24", solid: "#f59e0b", bg: "rgba(245,158,11,0.14)",   label: "Medium",   short: "MED"  },
-  low:      { fg: "#58a6ff", solid: "#388bfd", bg: "rgba(56,139,253,0.15)",   label: "Low",      short: "LOW"  },
-  info:     { fg: "#9aa4b2", solid: "#6e7a8a", bg: "rgba(139,148,158,0.14)", label: "Info",     short: "INFO" },
+  critical: { fg: "#f0716a", solid: "#e5625a", bg: "rgba(240,113,106,0.12)", label: "Critical", short: "CRIT" },
+  high:     { fg: "#e89a5c", solid: "#dc8a4a", bg: "rgba(232,154,92,0.11)",  label: "High",     short: "HIGH" },
+  medium:   { fg: "#d9b45a", solid: "#c9a24a", bg: "rgba(217,180,90,0.10)",  label: "Medium",   short: "MED"  },
+  low:      { fg: "#6ea3e6", solid: "#5b93da", bg: "rgba(110,163,230,0.10)", label: "Low",      short: "LOW"  },
+  info:     { fg: "#9aa4b2", solid: "#6e7a8a", bg: "rgba(139,148,158,0.12)", label: "Info",     short: "INFO" },
 };
 
 export const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 
 export const STATUS_META = {
-  pending:    { label: "Pending",    dark: "#9aa4b2", light: "#7b8696" },
-  analyzing:  { label: "Analyzing",  dark: "#58a6ff", light: "#2f7ee0" },
-  needs_review: { label: "Needs review", dark: "#fbbf24", light: "#b45309" },
-  signed_off: { label: "Signed off", dark: "#3fb950", light: "#1f9d4d" },
-  error:      { label: "Error",      dark: "#ff6b63", light: "#c2241a" },
+  pending:    { label: "Pending",    dark: "#8a93a1", light: "#8a93a1" },
+  analyzing:  { label: "Analyzing",  dark: "#6ea3e6", light: "#2f6fc4" },
+  needs_review: { label: "Needs review", dark: "#d9b45a", light: "#9a6c12" },
+  signed_off: { label: "Signed off", dark: "#5cbf7a", light: "#22874a" },
+  error:      { label: "Error",      dark: "#f0716a", light: "#c8372d" },
 };
 
 export const HEALTH_META = {
@@ -35,17 +36,17 @@ export const CAT_COLORS = {
 };
 
 const light = {
-  bg: "#f5f6f8", surface: "#ffffff", raised: "#fafbfc", raised2: "#f3f4f7",
-  border: "#e6e8ec", border2: "#d4d8df",
-  text: "#181b22", text2: "#5a6473", text3: "#95a0b0",
-  accent: "#4f46e5", accentBg: "rgba(79,70,229,0.1)", accentText: "#ffffff", link: "#4f46e5",
+  bg: "#f4f5f7", surface: "#ffffff", raised: "#f8f9fb", raised2: "#eef0f3",
+  border: "#e3e6eb", border2: "#d3d8df",
+  text: "#1a1d24", text2: "#4f5866", text3: "#8a93a1",
+  accent: "#5048e0", accentBg: "rgba(80,72,224,0.09)", accentText: "#ffffff", link: "#5048e0",
   shadow: "0 1px 2px rgba(20,24,40,0.05)", shadowHi: "0 14px 34px rgba(20,24,40,0.12)",
 };
 const dark = {
-  bg: "#0d0f14", surface: "#15181f", raised: "#1a1e26", raised2: "#20252f",
-  border: "#262b35", border2: "#363d49",
-  text: "#e7eaf0", text2: "#9aa3b3", text3: "#616b7b",
-  accent: "#7c79f2", accentBg: "rgba(124,121,242,0.18)", accentText: "#0d0f14", link: "#8f8cff",
+  bg: "#0e1015", surface: "#14171d", raised: "#191c23", raised2: "#1f232b",
+  border: "#23272f", border2: "#30353f",
+  text: "#e4e7ec", text2: "#a3abb8", text3: "#6b7482",
+  accent: "#8b88f0", accentBg: "rgba(139,136,240,0.14)", accentText: "#0e1015", link: "#9a97ff",
   shadow: "0 1px 2px rgba(0,0,0,0.4)", shadowHi: "0 16px 38px rgba(0,0,0,0.5)",
 };
 

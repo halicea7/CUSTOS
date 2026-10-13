@@ -39,6 +39,24 @@ def _with_counts(sub: Submission, counts: dict | None) -> SubmissionResponse:
     return resp
 
 
+async def _group_filter(db: AsyncSession, user: User, group_id: UUID | None) -> list:
+    """WHERE clauses limiting submissions to *group_id*'s repos (none for no group)."""
+    if group_id is None:
+        return []
+    if not await can_see_group(db, user, group_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    group_repos = (
+        select(Repo.repo_full_name)
+        .join(RepoGroup, RepoGroup.repo_id == Repo.id)
+        .where(RepoGroup.group_id == group_id)
+    )
+    return [Submission.repo_full_name.in_(group_repos)]
+
+
+def _ref(sub_branch: str | None, pr_number: int | None) -> str | None:
+    return f"PR #{pr_number}" if pr_number else sub_branch
+
+
 @router.get("", response_model=SubmissionListResponse)
 async def list_submissions(
     status_filter: str | None = Query(None, alias="status"),
@@ -56,18 +74,9 @@ async def list_submissions(
         .subquery()
     )
 
-    filters = []
+    filters = await _group_filter(db, current_user, group_id)
     if status_filter:
         filters.append(Submission.status == status_filter)
-    if group_id is not None:
-        if not await can_see_group(db, current_user, group_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-        group_repos = (
-            select(Repo.repo_full_name)
-            .join(RepoGroup, RepoGroup.repo_id == Repo.id)
-            .where(RepoGroup.group_id == group_id)
-        )
-        filters.append(Submission.repo_full_name.in_(group_repos))
 
     base = restrict_to_visible(select(Submission).where(*filters), current_user)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
@@ -99,6 +108,68 @@ async def llm_active_jobs(
         return {"active": []}
     q = restrict_to_visible(select(Submission.id).where(Submission.id.in_(ids)), current_user)
     return {"active": [str(i) for i in (await db.execute(q)).scalars().all()]}
+
+
+_ACTIVITY_LIMIT = 12
+# What a submission's current status says happened last.
+_STATUS_EVENTS = {
+    SubmissionStatus.PENDING: "queued",
+    SubmissionStatus.ANALYZING: "scanning",
+    SubmissionStatus.NEEDS_REVIEW: "ready",
+    SubmissionStatus.ERROR: "failed",
+}
+
+
+@router.get("/overview")
+async def queue_overview(
+    group_id: UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run counts per status and a recent-activity feed for the queue page.
+
+    Activity merges scan progress (from each run's status) with analyst actions
+    from the audit log; repeated actions on one run within an hour (e.g. many
+    findings marked false positive) are collapsed into one entry.
+    """
+    filters = await _group_filter(db, current_user, group_id)
+    visible = restrict_to_visible(select(Submission.id).where(*filters), current_user)
+
+    counts = dict((await db.execute(
+        select(Submission.status, func.count()).where(Submission.id.in_(visible)).group_by(Submission.status)
+    )).all())
+
+    recent = (await db.execute(
+        select(Submission)
+        .where(Submission.id.in_(visible), Submission.status.in_(list(_STATUS_EVENTS)))
+        .order_by(Submission.updated_at.desc())
+        .limit(_ACTIVITY_LIMIT)
+    )).scalars().all()
+    events = [{
+        "kind": _STATUS_EVENTS[SubmissionStatus(s.status)], "at": s.updated_at,
+        "submission_id": s.id, "repo": s.repo_full_name, "ref": _ref(s.branch, s.pr_number),
+        "actor": None, "count": 1, "detail": s.error_message if s.status == SubmissionStatus.ERROR else None,
+    } for s in recent]
+
+    hour = func.date_trunc("hour", AuditLog.created_at)
+    actions = (await db.execute(
+        select(AuditLog.submission_id, AuditLog.analyst, AuditLog.action,
+               func.max(AuditLog.created_at).label("at"), func.count().label("n"),
+               Submission.repo_full_name, Submission.branch, Submission.pr_number)
+        .join(Submission, Submission.id == AuditLog.submission_id)
+        .where(AuditLog.submission_id.in_(visible))
+        .group_by(AuditLog.submission_id, AuditLog.analyst, AuditLog.action, hour,
+                  Submission.repo_full_name, Submission.branch, Submission.pr_number)
+        .order_by(func.max(AuditLog.created_at).desc())
+        .limit(_ACTIVITY_LIMIT)
+    )).all()
+    events += [{
+        "kind": a.action, "at": a.at, "submission_id": a.submission_id, "repo": a.repo_full_name,
+        "ref": _ref(a.branch, a.pr_number), "actor": a.analyst, "count": a.n, "detail": None,
+    } for a in actions]
+
+    events.sort(key=lambda e: e["at"], reverse=True)
+    return {"status_counts": counts, "activity": events[:_ACTIVITY_LIMIT]}
 
 
 @router.get("/{submission_id}", response_model=SubmissionResponse)

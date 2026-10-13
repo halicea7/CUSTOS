@@ -47,3 +47,8 @@ export async function getLlmRuns(id) {
 export async function deleteSubmission(id) {
   await api.delete(`/submissions/${id}`);
 }
+
+export async function getQueueOverview(groupId) {
+  const res = await api.get("/submissions/overview", { params: groupId ? { group_id: groupId } : {} });
+  return res.data;
+}

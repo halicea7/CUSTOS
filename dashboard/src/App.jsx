@@ -5,6 +5,7 @@ import {
 } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { getMe } from "./api/client.js";
+import { useQueueOverview } from "./api/queries.js";
 import { makeTheme, applyCssVars } from "./theme.js";
 import Login from "./pages/Login.jsx";
 import Queue from "./pages/Queue.jsx";
@@ -218,6 +219,8 @@ function ModeToggle({ theme, mode, setMode }) {
 
 function SideRail({ theme, mode, setMode }) {
   const { user, logout } = useAuth();
+  const { data: overview } = useQueueOverview(null);
+  const needsReview = overview?.status_counts?.needs_review || 0;
   const navigate = useNavigate();
   const location = useLocation();
   const section = activeSection(location.pathname);
@@ -261,6 +264,12 @@ function SideRail({ theme, mode, setMode }) {
               onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}>
               <Icon name={n.icon} size={17} color={on ? theme.c.accent : theme.c.text3} />
               {n.label}
+              {n.id === "queue" && needsReview > 0 && (
+                <span title={`${needsReview} run${needsReview !== 1 ? "s" : ""} need review`} style={{
+                  marginLeft: "auto", fontSize: 11, fontWeight: 600, borderRadius: 999, padding: "0 7px",
+                  background: on ? theme.c.accent : theme.c.raised2, color: on ? theme.c.accentText : theme.c.text2,
+                }}>{needsReview}</span>
+              )}
             </button>
           );
         })}
