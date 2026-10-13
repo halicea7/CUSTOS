@@ -372,3 +372,19 @@ button.tile:disabled, button.tile:disabled:hover { cursor: default; transform: n
 .savebar { position: sticky; bottom: 16px; z-index: 50; margin-top: var(--gap); display: flex; align-items: center; gap: 12px; padding: .7rem .9rem .7rem 1.1rem; background: var(--surface); border: 1px solid var(--border2); border-radius: 14px; box-shadow: var(--shadow-hi); font-size: .88rem; animation: fadeIn .25s var(--ease); }
 .frow > .sevpill { justify-self: start; }
 .stage.skipped .prog span, .stage.pending .prog span { width: 0 !important; }
+
+/* ── Login ─────────────────────────────────────────────────────────────────── */
+.login { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--bg); position: relative; overflow: hidden; }
+.lava { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; }
+.login-veil { position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(ellipse 34% 42% at 50% 50%, var(--bg) 0%, color-mix(in srgb, var(--bg) 70%, transparent) 45%, transparent 100%); }
+.login-box { position: relative; z-index: 2; width: min(380px, 100%); animation: modalIn .5s var(--ease); }
+.login-logo { text-align: center; margin-bottom: 28px; }
+.login-logo .row { display: inline-flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+.login-logo .mark { width: 40px; height: 40px; border-radius: 11px; background: var(--grad); display: grid; place-items: center; box-shadow: 0 8px 26px color-mix(in srgb, var(--accent) 45%, transparent); }
+.login-logo b { font-size: 28px; font-weight: 700; letter-spacing: -.03em; color: var(--text); }
+.login-logo small { display: block; color: var(--text3); font-size: .8rem; letter-spacing: .04em; }
+.login-card { background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border); border-radius: 16px; padding: 28px; box-shadow: 0 24px 60px rgba(0, 0, 0, .35); display: flex; flex-direction: column; gap: 14px; }
+.login-card .btn { margin-top: 8px; }
+.login-foot { text-align: center; margin-top: 18px; font-size: .8rem; color: var(--text3); }
