@@ -784,6 +784,13 @@ function AnalysisTab({ theme }) {
                 <ModelPicker theme={t} value={draft.bedrock_model} models={bedrockModels}
                   onChange={v => update({ bedrock_model: v })}
                   placeholder={draft.bedrock_endpoint === "runtime" ? "e.g. us.openai.gpt-oss-120b" : "e.g. openai.gpt-oss-120b"} />
+                {/^(?:[a-z]{2,4}\.)?anthropic\./i.test(draft.bedrock_model || "") && (
+                  <div style={hint}>
+                    Claude models use Anthropic&rsquo;s <b>Messages API</b> (<code style={{ fontFamily: t.fontMono }}>/anthropic/v1/messages</code>),
+                    which Custos switches to automatically. On that API the <i>Thinking</i> setting isn&rsquo;t sent, and the
+                    project ID doesn&rsquo;t apply, so the <b>account&rsquo;s</b> retention mode is what counts.
+                  </div>
+                )}
                 {bedrockPicked?.unavailable && (
                   <div role="alert" style={{ ...hint, color: t.sev.critical.fg }}>
                     ⚠ {bedrockPicked.status_reason || "Bedrock reports this model as unavailable."} Change the data

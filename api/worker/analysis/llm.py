@@ -171,6 +171,10 @@ class LlmProvider:
     # Tried once if the server says the model isn't served on this path
     # (bedrock-mantle serves some models under /openai/v1 instead of /v1).
     alt_base_url: str = ""
+    # Bedrock: Anthropic Messages API URL. Claude models only speak Messages,
+    # so they go there directly; other models fall back to it if Bedrock says
+    # they don't support the Responses API.
+    messages_url: str = ""
 
     @property
     def label(self) -> str:
@@ -275,9 +279,75 @@ async def _call_batch(
     sast_context: list[RawFinding],
 ) -> LlmResult:
     user_prompt = _build_user_prompt(files, sast_context)
+    if provider.kind == PROVIDER_BEDROCK and provider.messages_url:
+        if is_anthropic_model(provider.model):
+            return await _messages_request(client, provider, user_prompt)
+        try:
+            return await _responses_request(client, provider, user_prompt)
+        except _NoResponsesApi:
+            return await _messages_request(client, provider, user_prompt)
     if provider.kind in (PROVIDER_RESPONSES, PROVIDER_BEDROCK):
         return await _responses_request(client, provider, user_prompt)
     return await _ollama_request(client, provider, user_prompt)
+
+
+def is_anthropic_model(model: str) -> bool:
+    """Bedrock Claude IDs: anthropic.claude-…, or an inference profile like us.anthropic.claude-…"""
+    parts = (model or "").lower().split(".")
+    return "anthropic" in parts[:2]
+
+
+class _NoResponsesApi(LlmError):
+    """The model exists but isn't served through the Responses API."""
+
+
+# Messages API defaults: max_tokens is required there, unlike Responses.
+_MESSAGES_MAX_TOKENS = 16_384
+_ANTHROPIC_VERSION = "2023-06-01"
+
+
+async def _messages_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
+    """Anthropic Messages API (Bedrock's route for Claude models)."""
+    headers = {"x-api-key": provider.api_key, "anthropic-version": _ANTHROPIC_VERSION}
+    payload = {
+        "model": provider.model,
+        "max_tokens": provider.max_output_tokens or _MESSAGES_MAX_TOKENS,
+        "system": _SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+    try:
+        resp = await client.post(provider.messages_url, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        raise LlmError(f"Messages API request failed: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code in (401, 403):
+        raise LlmError(f"Bedrock rejected the API key for the Messages API (HTTP {resp.status_code}): "
+                       f"{_api_error_message(resp)}")
+    if resp.status_code >= 400:
+        raise LlmError(f"Messages API returned HTTP {resp.status_code}: {_api_error_message(resp)}")
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise LlmError("Messages API returned a non-JSON body") from exc
+    text = "".join(b.get("text", "") for b in body.get("content") or [] if b.get("type") == "text")
+    stop = body.get("stop_reason")
+    if stop == "max_tokens" and not _looks_complete(text):
+        raise LlmError("Messages API response was cut off (max_tokens) — raise Max output tokens")
+    if stop == "refusal" and not text:
+        raise LlmError("Model refused to review this batch")
+    usage = body.get("usage") or {}
+    return LlmResult(
+        findings=_parse_llm_response(text),
+        prompt_tokens=usage.get("input_tokens"),
+        completion_tokens=usage.get("output_tokens"),
+    )
+
+
+def _looks_complete(text: str) -> bool:
+    try:
+        json.loads(_extract_json(text))
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 async def _ollama_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
@@ -366,6 +436,8 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
             continue
         break
 
+    if resp.status_code in (400, 404) and _NO_RESPONSES in resp.text:
+        raise _NoResponsesApi(f"Responses API returned HTTP {resp.status_code}: {_api_error_message(resp)}")
     if resp.status_code in (401, 403):
         raise LlmError(f"Responses API rejected the API key (HTTP {resp.status_code})")
     if resp.status_code == 400 and provider.reasoning_effort and "reasoning" in resp.text.lower():
@@ -397,6 +469,8 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
 
 
 _WRONG_ROUTE = "isn't supported on this route"
+# Bedrock: "The model '…' does not support the '/v1/responses' API"
+_NO_RESPONSES = "does not support the '/v1/responses' API"
 
 
 def _responses_output_text(body: dict) -> tuple[str, str]:

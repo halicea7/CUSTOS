@@ -197,3 +197,65 @@ async def test_retention_needs_admin_and_saved_settings(client, db):
     assert (await client.get("/settings/bedrock/retention", headers=auth_headers("ana"))).status_code == 403
     h = await _admin(db)
     assert (await client.get("/settings/bedrock/retention", headers=h)).status_code == 409
+
+
+def _messages_ok(text=json.dumps(FINDINGS), stop="end_turn"):
+    return {"type": "message", "content": [{"type": "text", "text": text}], "stop_reason": stop,
+            "usage": {"input_tokens": 30, "output_tokens": 4}}
+
+
+def _bedrock(model, **kw):
+    return LlmProvider(kind=PROVIDER_BEDROCK, model=model, api_key=KEY,
+                       base_url=bedrock.base_url("us-east-1", "mantle"),
+                       messages_url=bedrock.messages_url("us-east-1", "mantle"), **kw)
+
+
+async def _batch(provider, handler):
+    seen = []
+
+    def record(request):
+        seen.append(request)
+        return handler(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(record)) as client:
+        return await _call_batch(client, provider, [("a.py", "x = 1")], []), seen
+
+
+async def test_claude_models_use_the_messages_api():
+    from worker.analysis.llm import _SYSTEM_PROMPT, is_anthropic_model
+
+    assert is_anthropic_model("anthropic.claude-haiku-4-5") and is_anthropic_model("us.anthropic.claude-sonnet-5")
+    assert not is_anthropic_model("openai.gpt-oss-120b")
+    result, [req] = await _batch(_bedrock("anthropic.claude-haiku-4-5"), lambda r: httpx.Response(200, json=_messages_ok()))
+    assert str(req.url) == "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages"
+    assert req.headers["x-api-key"] == KEY and req.headers["anthropic-version"] == "2023-06-01"
+    body = json.loads(req.content)
+    assert body["model"] == "anthropic.claude-haiku-4-5" and body["system"] == _SYSTEM_PROMPT
+    assert body["max_tokens"] == 16_384 and body["messages"][0]["role"] == "user"
+    assert (result.prompt_tokens, result.completion_tokens) == (30, 4)
+
+
+async def test_other_models_fall_back_to_messages_when_responses_is_unsupported():
+    def handler(request):
+        if request.url.path.endswith("/responses"):
+            return httpx.Response(400, json={"error": {"message": "The model 'x.y' does not support the '/v1/responses' API"}})
+        return httpx.Response(200, json=_messages_ok())
+
+    result, seen = await _batch(_bedrock("x.y"), handler)
+    assert [r.url.path for r in seen] == ["/v1/responses", "/anthropic/v1/messages"]
+    assert result.prompt_tokens == 30
+
+
+async def test_messages_cut_off_and_errors_are_explained():
+    from worker.analysis.llm import LlmError
+
+    with pytest.raises(LlmError, match="max_tokens"):
+        await _batch(_bedrock("anthropic.claude-haiku-4-5", max_output_tokens=100),
+                     lambda r: httpx.Response(200, json=_messages_ok('{"findings": [', "max_tokens")))
+    with pytest.raises(LlmError, match="HTTP 400: bad model"):
+        await _batch(_bedrock("anthropic.claude-haiku-4-5"),
+                     lambda r: httpx.Response(400, json={"type": "error", "error": {"type": "invalid_request_error", "message": "bad model"}}))
+
+
+def test_messages_url_per_endpoint():
+    assert bedrock.messages_url("us-east-1", "runtime") == "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic/v1/messages"

@@ -52,6 +52,14 @@ def alternate_base_url(region: str, endpoint: str) -> str:
     return base_url(region, endpoint, openai_prefix=True) if endpoint == ENDPOINT_MANTLE else ""
 
 
+def messages_url(region: str, endpoint: str) -> str:
+    """Anthropic Messages API URL, used for Claude models (they don't serve Responses)."""
+    region = check_region(region)
+    if endpoint == ENDPOINT_RUNTIME:
+        return f"https://bedrock-runtime.{region}.amazonaws.com/anthropic/v1/messages"
+    return f"https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages"
+
+
 def is_wrong_route(text: str) -> bool:
     return _WRONG_ROUTE in (text or "")
 

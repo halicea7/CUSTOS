@@ -82,6 +82,7 @@ async def _llm_provider(db, cfg: AppConfigResponse) -> LlmProvider:
             kind=PROVIDER_BEDROCK,
             base_url=bedrock.base_url(cfg.bedrock_region, cfg.bedrock_endpoint),
             alt_base_url=bedrock.alternate_base_url(cfg.bedrock_region, cfg.bedrock_endpoint),
+            messages_url=bedrock.messages_url(cfg.bedrock_region, cfg.bedrock_endpoint),
             model=cfg.bedrock_model,
             api_key=await load_bedrock_api_key(db),
             extra_headers=bedrock.project_headers(cfg.bedrock_project_id, cfg.bedrock_endpoint),
