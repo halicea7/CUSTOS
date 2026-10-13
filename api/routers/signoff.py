@@ -20,7 +20,7 @@ from crypto import decrypt
 from database import get_db
 from enums import BLOCKING_SEVERITIES, Disposition, Role, SubmissionStatus
 from github_client import post_github_check
-from models import AppConfig, AttackChain, AuditLog, Finding, Repo, Submission, User
+from models import AppConfig, AttackChain, AuditLog, Finding, LlmRun, Repo, Submission, User
 from schemas import ReturnSignoffRequest, SignoffRequest, SubmissionResponse
 
 router = APIRouter(prefix="/submissions", tags=["signoff"])
@@ -157,6 +157,12 @@ async def attack_chains(
         select(AttackChain).where(AttackChain.submission_id == sub.id).order_by(AttackChain.created_at)
     )).scalars().all()
     cfg = await load_app_config(db)
-    return {"gate": cfg.chain_gate, "enabled": cfg.chains_enabled, "chains": [
+    last = (await db.execute(
+        select(LlmRun).where(LlmRun.submission_id == sub.id, LlmRun.triggered_by == "chains")
+        .order_by(LlmRun.started_at.desc()).limit(1)
+    )).scalar_one_or_none()
+    analysis = last and {"status": last.status, "note": last.error, "model": last.model, "at": last.finished_at,
+                         "prompt_tokens": last.prompt_tokens, "completion_tokens": last.completion_tokens}
+    return {"gate": cfg.chain_gate, "enabled": cfg.chains_enabled, "analysis": analysis, "chains": [
         {"id": str(c.id), "title": c.title, "severity": c.severity, "confidence": c.confidence,
          "narrative": c.narrative, "steps": c.steps, "break_index": c.break_index} for c in rows]}

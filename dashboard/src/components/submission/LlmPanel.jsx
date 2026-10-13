@@ -45,17 +45,19 @@ export function LlmRuns({ submissionId }) {
             <div key={r.id} style={{ fontSize: ".82rem", borderTop: "1px solid var(--border)", paddingTop: 8 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <span className="dot" style={{ background: RUN_COLOR[r.status] || "var(--run)" }} />
-                <b style={{ color: "var(--text)" }}>{r.triggered_by === "rerun" ? "Re-run" : "Initial"}</b>
+                <b style={{ color: "var(--text)" }}>
+                  {{ rerun: "Re-run", chains: "Attack chains" }[r.triggered_by] || "Initial"}</b>
                 <span className="mono dim" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                   {r.model}
                 </span>
               </div>
               <div className="muted" style={{ marginTop: 3 }}>
                 {r.status === "complete" ? "done" : r.status} · {fmtDuration(r.duration_seconds)}
-                {" "}· {r.findings_count ?? "—"} findings · {fmtTokens(r.prompt_tokens)} in / {fmtTokens(r.completion_tokens)} out
+                {" "}· {r.findings_count ?? "—"} {r.triggered_by === "chains" ? "chains" : "findings"}
+                {" "}· {fmtTokens(r.prompt_tokens)} in / {fmtTokens(r.completion_tokens)} out
               </div>
               {r.error && (
-                <div className="mono" style={{ marginTop: 4, color: r.status === "failed" ? "var(--crit)" : "var(--text3)",
+                <div className={r.status === "failed" ? "mono" : ""} style={{ marginTop: 4, color: r.status === "failed" ? "var(--crit)" : "var(--text3)",
                   whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: ".76rem" }}>{r.error}</div>
               )}
             </div>

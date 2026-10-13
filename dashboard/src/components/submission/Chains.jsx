@@ -25,7 +25,29 @@ export function chainGatePending(resolved) {
   return ids;
 }
 
-export default function Chains({ resolved, selected, onSelect, analyzed }) {
+// analysis: the latest chain pass ({status, note, model, ...}) or null if it never ran for this run.
+function EmptyState({ analysis, enabled }) {
+  if (!analysis) {
+    return (
+      <div className="muted" style={{ fontSize: ".84rem" }}>
+        {enabled ? "Not analysed yet: this run was scanned before chain analysis ran, or its LLM review failed. Re-run the LLM to analyse it."
+          : "Chain analysis is turned off in Settings → Analysis."}
+      </div>
+    );
+  }
+  if (analysis.status === "failed") {
+    return <div className="result bad" style={{ display: "block", fontSize: ".8rem" }}>Analysis failed: {analysis.note}</div>;
+  }
+  if (analysis.status === "running") return <div className="muted"><span className="spin" /> Analysing…</div>;
+  return (
+    <div className="muted" style={{ fontSize: ".84rem" }}>
+      No chains found by <span className="mono">{analysis.model}</span>.
+      {analysis.note && <div style={{ marginTop: 4, fontSize: ".78rem" }}>{analysis.note}</div>}
+    </div>
+  );
+}
+
+export default function Chains({ resolved, selected, onSelect, analysis, enabled }) {
   return (
     <section className="panel panel-b chains">
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: ".7rem" }}>
@@ -33,11 +55,7 @@ export default function Chains({ resolved, selected, onSelect, analyzed }) {
         <span className="est" title="Estimated by the LLM from this run's findings">LLM estimate</span>
         {resolved.length > 0 && <span className="muted" style={{ marginLeft: "auto", fontSize: ".78rem" }}>{resolved.length}</span>}
       </div>
-      {resolved.length === 0 ? (
-        <div className="muted" style={{ fontSize: ".84rem" }}>
-          {analyzed ? "No chains: these findings don't combine into a bigger attack." : "Not analysed for this run."}
-        </div>
-      ) : resolved.map((c) => {
+      {resolved.length === 0 ? <EmptyState analysis={analysis} enabled={enabled} /> : resolved.map((c) => {
         const brk = c.steps[Math.min(c.break_index, c.steps.length - 1)];
         const on = selected === c.id;
         return (

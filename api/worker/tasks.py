@@ -156,7 +156,7 @@ def _repo_files(repo_path: str, cap: int = 3000) -> list[str]:
     return out
 
 
-async def _analyze_chains(db, sub: Submission, provider: LlmProvider, repo_path: str, llm_run: LlmRun,
+async def _analyze_chains(db, sub: Submission, provider: LlmProvider, repo_path: str,
                           deadline: asyncio.Timeout | None = None) -> str | None:
     """Replace the run's attack chains with a fresh LLM pass. Returns a note on failure.
 
@@ -173,6 +173,10 @@ async def _analyze_chains(db, sub: Submission, provider: LlmProvider, repo_path:
     if budget < 20:
         return f"{_CHAIN_NOTE}: not enough time left in the job"
     user_prompt, refs = chains.prompt(rows, _repo_files(repo_path))
+    # Its own entry in the run's LLM runs, so what the model did is visible on the run page.
+    record = LlmRun(submission_id=sub.id, triggered_by="chains", model=provider.label, status=RunStatus.RUNNING.value)
+    db.add(record)
+    started = time.monotonic()
     timeout = httpx.Timeout(settings.LLM_TIMEOUT_SECONDS, connect=15)
     try:
         async with asyncio.timeout(budget), httpx.AsyncClient(timeout=timeout) as client:
@@ -180,21 +184,26 @@ async def _analyze_chains(db, sub: Submission, provider: LlmProvider, repo_path:
                 result = await complete(client, provider, user_prompt, chains.SPEC)
             except InvalidJson:
                 result = await complete(client, provider, user_prompt, chains.SPEC)
-    except TimeoutError:
-        return f"{_CHAIN_NOTE}: no answer within {int(budget)}s"
-    except LlmError as exc:
-        return f"{_CHAIN_NOTE}: {exc}"
-    found = chains.validate(result.value or [], refs)
+    except (TimeoutError, LlmError) as exc:
+        note = f"no answer within {int(budget)}s" if isinstance(exc, TimeoutError) else str(exc)
+        record.status, record.error = RunStatus.FAILED.value, note[:2000]
+        record.duration_seconds, record.finished_at = time.monotonic() - started, _now()
+        return f"{_CHAIN_NOTE}: {note}"
+    stats = chains.Stats()
+    found = chains.validate(result.value or [], refs, stats)
+    record.status, record.findings_count = RunStatus.COMPLETE.value, len(found)
+    record.prompt_tokens, record.completion_tokens = result.prompt_tokens, result.completion_tokens
+    record.duration_seconds, record.finished_at = time.monotonic() - started, _now()
+    record.error = None if found and stats.kept == stats.proposed else stats.summary()
+    if not found:
+        logger.info("No attack chains kept for %s: %s", sub.id, stats.summary())
     for c in found:
         db.add(AttackChain(
             submission_id=sub.id, title=c["title"], severity=c["severity"], confidence=c["confidence"],
             narrative=c["narrative"], break_index=c["break_index"],
             steps=[{"finding_id": s["finding_id"], "role": s["role"], "why": s["why"]} for s in c["steps"]],
         ))
-    for attr, n in (("prompt_tokens", result.prompt_tokens), ("completion_tokens", result.completion_tokens)):
-        if n:
-            setattr(llm_run, attr, (getattr(llm_run, attr) or 0) + n)
-    logger.info("Attack chains for %s: %d", sub.id, len(found))
+    logger.info("Attack chains for %s: %d (%s)", sub.id, len(found), stats.summary())
     return None
 
 
@@ -344,7 +353,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 await _save_findings(db, submission, all_findings)
                 chain_note = None
                 if not llm_error and cfg.chains_enabled:
-                    chain_note = await _analyze_chains(db, submission, provider, repo_path, llm_run, deadline)
+                    chain_note = await _analyze_chains(db, submission, provider, repo_path, deadline)
 
                 submission.status = SubmissionStatus.NEEDS_REVIEW.value
                 notes = []
@@ -473,7 +482,7 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                         sql_delete(Finding).where(Finding.submission_id == sub.id, Finding.source == "llm")
                     )
                     await _save_findings(db, sub, new_dicts, carried)
-                    chain_note = (await _analyze_chains(db, sub, provider, repo_path, llm_run)
+                    chain_note = (await _analyze_chains(db, sub, provider, repo_path)
                                   if cfg.chains_enabled else None)
 
                     duration = time.time() - start_time

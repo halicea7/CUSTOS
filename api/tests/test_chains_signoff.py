@@ -1,7 +1,7 @@
 """Attack chains (validation, storage, gate) and the two-stage sign-off."""
 from types import SimpleNamespace
 
-from models import AttackChain, Finding
+from models import AttackChain, Finding, LlmRun
 from tests.conftest import auth_headers, make_repo, make_submission, make_user
 from worker import tasks
 from worker.analysis import chains
@@ -51,12 +51,53 @@ async def test_analyze_chains_stores_validated_chains(db, monkeypatch):
                          prompt_tokens=10, completion_tokens=3)
 
     monkeypatch.setattr(tasks, "complete", fake)
-    run = SimpleNamespace(prompt_tokens=100, completion_tokens=5)
-    assert await tasks._analyze_chains(db, sub, LlmProvider(kind="ollama", base_url="", model="m"), "/nonexistent", run) is None
+    assert await tasks._analyze_chains(db, sub, LlmProvider(kind="ollama", base_url="", model="m"), "/nonexistent") is None
     await db.commit()
     [c] = (await db.execute(AttackChain.__table__.select())).all()
     assert c.severity == "critical" and c.break_index == 0 and c.steps[1]["finding_id"] == str(rows[0].id)
-    assert (run.prompt_tokens, run.completion_tokens) == (110, 8)
+    # The pass is recorded as its own LLM run, visible on the run page.
+    [run] = (await db.execute(LlmRun.__table__.select().where(LlmRun.triggered_by == "chains"))).all()
+    assert (run.status, run.findings_count, run.prompt_tokens, run.completion_tokens) == ("complete", 1, 10, 3)
+
+
+async def test_zero_kept_chains_explain_why(client, db, monkeypatch):
+    await make_user(db, "ana")
+    sub = await _run(db, [{"severity": "high"}, {"severity": "low"}])
+
+    async def bogus(client, provider, user_prompt, spec):   # cites findings that don't exist
+        return LlmResult(value=[{"title": "x", "severity": "high", "steps": [{"ref": "F7"}, {"ref": "F9"}]}])
+
+    monkeypatch.setattr(tasks, "complete", bogus)
+    await tasks._analyze_chains(db, sub, LlmProvider(kind="ollama", base_url="", model="m"), "/nonexistent")
+    await db.commit()
+    body = (await client.get(f"/submissions/{sub.id}/chains", headers=auth_headers("ana"))).json()
+    assert body["chains"] == [] and body["analysis"]["status"] == "complete"
+    assert "proposed 1" in body["analysis"]["note"] and "don't exist" in body["analysis"]["note"]
+
+
+async def test_failed_chain_pass_is_recorded(db, monkeypatch):
+    from worker.analysis.llm import LlmError
+
+    sub = await _run(db, [{"severity": "high"}, {"severity": "low"}])
+
+    async def refuse(client, provider, user_prompt, spec):
+        raise LlmError("Model refused to review this batch")
+
+    monkeypatch.setattr(tasks, "complete", refuse)
+    note = await tasks._analyze_chains(db, sub, LlmProvider(kind="ollama", base_url="", model="m"), "/nonexistent")
+    await db.commit()
+    assert note.startswith("Attack chain analysis failed") and "refused" in note
+    [run] = (await db.execute(LlmRun.__table__.select().where(LlmRun.triggered_by == "chains"))).all()
+    assert run.status == "failed" and "refused" in run.error
+
+
+def test_lenient_references_and_keys():
+    _, refs = chains.prompt([_f("a", "high"), _f("b", "low")], [])
+    raw = chains._parse('{"attack_chains": [{"title": "t", "severity": "high", "confidence": "low", '
+                        '"steps": ["F1 (the high one)", {"ref": "f-2", "role": "impact"}], "break_at": 1}]}')
+    stats = chains.Stats()
+    [c] = chains.validate(raw, refs, stats)
+    assert [s["finding_id"] for s in c["steps"]] == ["a", "b"] and stats.summary().endswith("kept 1.")
 
 
 async def _chain(db, sub, severity="high"):

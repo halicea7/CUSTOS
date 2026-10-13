@@ -651,7 +651,7 @@ export default function Submission() {
               <Progress findings={findings} />
               <SeverityBars findings={findings} />
               <Chains resolved={chainList} selected={chainOn} onSelect={selectChain}
-                analyzed={!!chainsData?.enabled && !sub.error_message?.includes("LLM review failed")} />
+                analysis={chainsData?.analysis} enabled={chainsData?.enabled !== false} />
               <LlmRuns submissionId={id} />
               <Keys />
             </div>
