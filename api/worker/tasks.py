@@ -40,6 +40,10 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# Left for saving results and posting the check after the LLM phase.
+_LLM_RESERVE_SECONDS = 60
+
+
 class JobTimeout(RuntimeError):
     pass
 
@@ -56,7 +60,7 @@ async def _job_deadline(job_timeout: int):
     budget = max(job_timeout - 30, 1)
     try:
         async with asyncio.timeout(budget) as cm:
-            yield
+            yield cm
     except TimeoutError:
         if cm.expired():
             raise JobTimeout(f"Job exceeded its {job_timeout}s time limit") from None
@@ -83,16 +87,29 @@ async def _llm_provider(db, cfg: AppConfigResponse) -> LlmProvider:
 
 
 async def _run_llm(
-    repo_path: str, sast_context: list[RawFinding], cfg: AppConfigResponse, provider: LlmProvider
+    repo_path: str, sast_context: list[RawFinding], cfg: AppConfigResponse, provider: LlmProvider,
+    deadline: asyncio.Timeout | None = None,
 ) -> LlmResult:
-    return await call_llm(
-        repo_path=repo_path,
-        sast_context=sast_context,
-        provider=provider,
-        max_content_chars=cfg.llm_max_content_chars,
-        max_file_size_kb=cfg.max_file_size_kb,
-        max_files=cfg.max_files_per_repo,
-    )
+    """Run the LLM review. With the job's *deadline*, give up early enough to
+    still save the tool findings: a slow or unreachable LLM fails this phase
+    (LlmError) instead of the whole job."""
+    budget = None
+    if deadline is not None and deadline.when() is not None:
+        budget = max(deadline.when() - asyncio.get_running_loop().time() - _LLM_RESERVE_SECONDS, 1)
+    try:
+        async with asyncio.timeout(budget) as cm:
+            return await call_llm(
+                repo_path=repo_path,
+                sast_context=sast_context,
+                provider=provider,
+                max_content_chars=cfg.llm_max_content_chars,
+                max_file_size_kb=cfg.max_file_size_kb,
+                max_files=cfg.max_files_per_repo,
+            )
+    except TimeoutError:
+        if not cm.expired():
+            raise
+        raise LlmError(f"LLM review ran out of time (job limit {cfg.worker_job_timeout}s)") from None
 
 
 async def _run_sast(repo_path: str) -> list[RawFinding]:
@@ -210,7 +227,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
         await db.commit()
 
         try:
-            async with _job_deadline(cfg.worker_job_timeout):
+            async with _job_deadline(cfg.worker_job_timeout) as deadline:
                 repo_path = await clone_repo(
                     url=submission.repo_url,
                     sha=sha,
@@ -227,7 +244,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 llm_error: str | None = None
                 llm_start = time.monotonic()
                 try:
-                    result = await _run_llm(repo_path, sast_findings, cfg, provider)
+                    result = await _run_llm(repo_path, sast_findings, cfg, provider, deadline)
                     llm_findings = result.findings
                     _finish_llm_run(llm_run, result, time.monotonic() - llm_start)
                     await _record_llm_duration(db, time.monotonic() - llm_start)
@@ -501,7 +518,7 @@ async def _scan_self_at(
             provider = await _llm_provider(db, cfg)
             tracker = StageTracker(ctx.get("redis") if ctx else None, scan.id, _self_scan_stages(cfg, provider))
             await tracker.publish()
-            async with _job_deadline(cfg.worker_job_timeout):
+            async with _job_deadline(cfg.worker_job_timeout) as deadline:
                 # Tools run concurrently; each stage reports its own real state.
                 config_findings, semgrep, gitleaks, deps = await asyncio.gather(
                     tracker.run("config", run_config_checks(db)),
@@ -524,7 +541,7 @@ async def _scan_self_at(
                 llm_findings: list[RawFinding] = []
                 await tracker.set("llm", "running")
                 try:
-                    llm_findings = (await _run_llm(custos_path, sast_context, cfg, provider)).findings
+                    llm_findings = (await _run_llm(custos_path, sast_context, cfg, provider, deadline)).findings
                     await tracker.set("llm", "done")
                 except LlmError as exc:
                     logger.warning("Self-scan LLM phase failed: %s", exc)

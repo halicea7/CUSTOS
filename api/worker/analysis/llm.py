@@ -136,6 +136,9 @@ PROVIDER_OLLAMA = "ollama"
 PROVIDER_RESPONSES = "responses"
 
 
+_CONNECT_TIMEOUT_SECONDS = 15
+
+
 class LlmError(RuntimeError):
     """Raised when every LLM batch failed (server unreachable, bad response...)."""
 
@@ -216,7 +219,10 @@ async def call_llm(
     batches = _batch_files(files, max_content_chars)[: settings.LLM_MAX_BATCHES]
     sem = asyncio.Semaphore(max(1, settings.LLM_CONCURRENCY))
 
-    async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
+    # A long read timeout for slow models, but fail fast when the server can't
+    # be reached at all (e.g. a firewall silently dropping the connection).
+    timeout = httpx.Timeout(settings.LLM_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
+    async with httpx.AsyncClient(timeout=timeout) as client:
 
         async def run(batch: list[tuple[str, str]]) -> LlmResult:
             async with sem:
