@@ -86,7 +86,7 @@ function Changes({ cmp, isPending, findings, isNew, change, onChange }) {
   const fixed = cmp?.fixed || [];
   const dash = isPending ? "…" : null;
   return (
-    <section className="changes">
+    <section className="changes" data-tour="run-changes">
       <button className={`tile ch-new ${change === "new" ? "on" : ""}`} disabled={!prev}
         onClick={() => onChange(change === "new" ? null : "new")}>
         <div className="k"><span className="dot" style={{ background: "var(--accent)" }} />New since last scan</div>
@@ -427,13 +427,13 @@ export default function Submission() {
             title="Re-clones the same commit; only LLM findings are replaced">
             {llmBusy ? <><span className="spin" /> Re-running</> : "↻ Re-run LLM"}
           </button>
-          <button className="btn" disabled={inFlight} onClick={() => setShowReport(true)}>↓ Report</button>
-          <button className="btn" disabled={!canRemediate}
+          <button className="btn" disabled={inFlight} onClick={() => setShowReport(true)} data-tour="run-report">↓ Report</button>
+          <button className="btn" disabled={!canRemediate} data-tour="run-remediations"
             title={canRemediate ? "Task file for an AI coding agent: fixes for the findings, most severe first" : "Nothing to remediate"}
             onClick={() => downloadBlob(generateRemediations(sub, findings), "REMEDIATIONS.md", "text/markdown")}>
             ↓ REMEDIATIONS.md
           </button>
-          <button className="btn primary" disabled={sub.status !== "needs_review"} onClick={() => setShowSignOff(true)}>
+          <button className="btn primary" disabled={sub.status !== "needs_review"} onClick={() => setShowSignOff(true)} data-tour="run-signoff">
             {sub.status === "signed_off" ? "Signed off ✓" : "Sign off"}
           </button>
         </div>
@@ -460,7 +460,7 @@ export default function Submission() {
           <Changes cmp={cmpQuery.data} isPending={cmpQuery.isPending} findings={findings} isNew={isNew}
             change={change} onChange={refilter(setChange)} />
           <div className="cols">
-            <section className="panel">
+            <section className="panel" data-tour="run-findings">
               <div className="filters">
                 <span className="lbl">Tool</span>
                 <div className="chips">

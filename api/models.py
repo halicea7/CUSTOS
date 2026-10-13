@@ -31,6 +31,8 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False, default=Role.ANALYST.value)
     created_at: Mapped[datetime] = _created_at()
+    # Set when the welcome tour is finished or skipped; cleared to replay it.
+    tour_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Submission(Base):

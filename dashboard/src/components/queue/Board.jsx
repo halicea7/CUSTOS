@@ -162,7 +162,7 @@ export function SummaryStrip({ subs, repos, onChip }) {
   const queued = subs.filter((s) => s.status === "pending").length;
   const longWait = waiting.length && Date.now() - oldest > OLD_AFTER;
   return (
-    <div className="strip">
+    <div className="strip" data-tour="queue-summary">
       <button className="tile hero" onClick={() => onChip("needs_review")} title="Show runs that need review">
         <div className="k"><span className="dot" style={{ background: "var(--accent)" }} />Needs review</div>
         <div className="v">{waiting.length}</div>

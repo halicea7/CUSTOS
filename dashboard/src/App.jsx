@@ -13,6 +13,7 @@ import { Modal } from "./components/ui.jsx";
 import { Btn } from "./components/atoms.jsx";
 import { ToastProvider } from "./components/Toast.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
+import { TourProvider } from "./components/tour/Tour.jsx";
 
 // Less-visited pages load on demand to keep the initial bundle small.
 const Submission = lazy(() => import("./pages/Submission.jsx"));
@@ -43,6 +44,8 @@ function AuthProvider({ children }) {
     localStorage.setItem("custos_token", token);
     setUser(userData);
   };
+  // Merge a fresh /auth/me-shaped object (e.g. after the tour is marked done).
+  const updateUser = (patch) => setUser((u) => (u ? { ...u, ...patch } : u));
   const logout = () => {
     localStorage.removeItem("custos_token");
     queryClient.clear(); // don't leak the previous user's cached data
@@ -50,7 +53,7 @@ function AuthProvider({ children }) {
   };
 
   return (
-    <AuthCtx.Provider value={{ user, login, logout }}>
+    <AuthCtx.Provider value={{ user, login, logout, updateUser }}>
       {children}
     </AuthCtx.Provider>
   );
@@ -213,11 +216,11 @@ function SideRail({ mode, setMode, onSearch }) {
         <span className="logo"><Icon name="shield" size={16} color="#fff" /></span>
         CUSTOS <small>v1.1</small>
       </button>
-      <button className="kbar" onClick={onSearch}>
+      <button className="kbar" onClick={onSearch} data-tour="search">
         ⌕ Search… <span className="kbd">{mac ? "⌘K" : "Ctrl K"}</span>
       </button>
 
-      <nav style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <nav style={{ display: "flex", flexDirection: "column", gap: 3 }} data-tour="nav">
         {NAV.filter((n) => !n.admin || user?.role === "admin").map((n) => (
           <button key={n.id} className={`navlink ${section === n.id ? "on" : ""}`}
             aria-current={section === n.id ? "page" : undefined}
@@ -269,6 +272,7 @@ function Shell({ theme, mode, setMode, children }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   return (
+    <TourProvider>
     <div style={{ display: "flex", minHeight: "100vh", background: theme.c.bg }}>
       <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden>
         <defs><linearGradient id="custos-ring" x1="0" x2="1">
@@ -279,6 +283,7 @@ function Shell({ theme, mode, setMode, children }) {
       <main style={{ flex: 1, minWidth: 0 }}>{children}</main>
       <CommandPalette open={search} onClose={() => setSearch(false)} />
     </div>
+    </TourProvider>
   );
 }
 

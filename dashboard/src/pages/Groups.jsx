@@ -187,7 +187,7 @@ export default function Groups() {
         </div>
       </div>
 
-      <section className="panel panel-b" style={{ marginBottom: "var(--gap)" }}>
+      <section className="panel panel-b" style={{ marginBottom: "var(--gap)" }} data-tour="groups-create">
         <div className="row-form">
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Group name"
             aria-label="Group name" onKeyDown={(e) => e.key === "Enter" && create()} />

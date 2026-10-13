@@ -13,6 +13,7 @@ import { useGroups } from "../api/queries.js";
 import { Btn } from "../components/atoms.jsx";
 import { ArmedButton } from "../components/queue/Board.jsx";
 import { useToast } from "../components/Toast.jsx";
+import { useTour } from "../components/tour/Tour.jsx";
 import {
   ChoiceCards, Feedback, Field, Modal, ModelPicker, PageHeader, ThinkBadge, PageWrap, SectionCard, SelectInput, Slider, Tabs, TextInput, Toggle,
 } from "../components/ui.jsx";
@@ -27,6 +28,7 @@ const strength = (v) => (v.length < 8 ? 0
 
 function AccountTab({ user, onLogout }) {
   const toast = useToast();
+  const { start: startTour } = useTour();
   const [form,    setForm]    = useState({ current_password: "", new_password: "", confirm: "" });
   const [loading, setLoading] = useState(false);
   const [err,     setErr]     = useState("");
@@ -90,7 +92,10 @@ function AccountTab({ user, onLogout }) {
             <div className="avatar">{(user?.username || "?")[0].toUpperCase()}</div>
             <div className="dim">Signed in as <b style={{ color: "var(--text)" }}>{user?.username}</b> ({user?.role})</div>
           </div>
-          <div><button className="btn danger" onClick={onLogout}>Sign out</button></div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn" onClick={startTour} data-tour="tour-replay">▶ Take the tour again</button>
+            <button className="btn danger" onClick={onLogout}>Sign out</button>
+          </div>
         </div>
       </section>
     </div>
@@ -161,7 +166,7 @@ function UsersTab({ currentUser }) {
 
   return (
     <div className="sgrid">
-      <section className="panel">
+      <section className="panel" data-tour="users">
         <div className="panel-h"><h2>User accounts</h2><span className="aside">{users.length} user{users.length !== 1 ? "s" : ""}</span></div>
         {error ? <div className="panel-b"><div className="result bad">{errorMessage(error, "Couldn't load users")}</div></div>
           : isPending ? <div className="empty">Loading…</div> : (
@@ -652,7 +657,7 @@ function AnalysisTab({ theme }) {
       </p>
       <div className="sgrid">
 
-      <SectionCard theme={t} title="AI review" right={<StatusPill theme={t}
+      <SectionCard theme={t} title="AI review" tour="ai-review" right={<StatusPill theme={t}
         status={draft.llm_provider !== cfg?.llm_provider
           ? { tone: "pending", text: "Save to check this provider" } : status} />}>
         <div style={{ maxWidth: 600 }}>

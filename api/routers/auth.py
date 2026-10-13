@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -10,7 +10,7 @@ from auth import create_access_token, get_current_user, hash_password, verify_pa
 from config import settings
 from database import get_db
 from models import User
-from schemas import LoginRequest, TokenResponse, UserResponse
+from schemas import LoginRequest, TokenResponse, TourRequest, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -70,4 +70,17 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
 
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+@router.put("/me/tour", response_model=UserResponse)
+async def set_tour(
+    body: TourRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Record that the welcome tour was finished or skipped, or reset it to replay."""
+    current_user.tour_completed_at = datetime.now(UTC) if body.done else None
+    await db.commit()
+    await db.refresh(current_user)
     return current_user

@@ -118,7 +118,7 @@ export default function Queue() {
       <SummaryStrip subs={subs} repos={repos} onChip={pickChip} />
 
       <div className="cols q">
-        <section className="panel">
+        <section className="panel" data-tour="queue-table">
           <div className="panel-h">
             <div className="seg">
               {[["repos", "By repository"], ["runs", "All runs"]].map(([k, l]) => (

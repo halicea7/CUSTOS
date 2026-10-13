@@ -21,6 +21,7 @@ class TokenResponse(BaseModel):
 class UserResponse(BaseModel):
     username: str
     role: str
+    tour_completed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -273,6 +274,11 @@ class TestBedrockRequest(BaseModel):
     project_id: str = Field("", pattern=r"^[A-Za-z0-9_-]{0,128}$")
     # The unsaved key from the form; otherwise the saved one is used.
     api_key: str | None = Field(None, max_length=4000)
+
+
+class TourRequest(BaseModel):
+    # true: finished or skipped (don't show again); false: show it again.
+    done: bool
 
 
 class SetRetentionRequest(BaseModel):

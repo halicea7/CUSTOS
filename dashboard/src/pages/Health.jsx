@@ -35,7 +35,7 @@ function HealthBadge({ health }) {
 function Services() {
   const { data, error, isPending, dataUpdatedAt } = useHealthServices();
   return (
-    <section className="panel" style={{ marginBottom: "var(--gap)" }}>
+    <section className="panel" style={{ marginBottom: "var(--gap)" }} data-tour="health-services">
       <div className="panel-h">
         <h2>Services</h2>
         <span className="muted" style={{ fontSize: ".8rem" }}>

@@ -99,3 +99,17 @@ async def test_sharing_an_existing_repo_with_a_group(client, db):
 
     assert (await client.delete(f"/repos/{repo_id}/groups/{team.id}", headers=alice)).status_code == 204
     assert (await client.get(f"/submissions/{sub.id}", headers=bob)).status_code == 404
+
+
+async def test_welcome_tour_is_shown_once_and_can_be_replayed(client, db):
+    from tests.conftest import auth_headers, make_user
+
+    await make_user(db, "newbie")
+    h = auth_headers("newbie")
+    assert (await client.get("/auth/me", headers=h)).json()["tour_completed_at"] is None
+    done = await client.put("/auth/me/tour", headers=h, json={"done": True})
+    assert done.status_code == 200 and done.json()["tour_completed_at"]
+    assert (await client.get("/auth/me", headers=h)).json()["tour_completed_at"]
+    again = await client.put("/auth/me/tour", headers=h, json={"done": False})
+    assert again.json()["tour_completed_at"] is None
+    assert (await client.put("/auth/me/tour", json={"done": True})).status_code == 401

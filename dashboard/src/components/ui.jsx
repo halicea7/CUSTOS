@@ -93,9 +93,9 @@ export function Tabs({ theme, tabs, active, onChange }) { // eslint-disable-line
   );
 }
 
-export function SectionCard({ theme, title, subtitle, right, children, pad = true }) { // eslint-disable-line no-unused-vars
+export function SectionCard({ theme, title, subtitle, right, children, pad = true, tour }) { // eslint-disable-line no-unused-vars
   return (
-    <section className="panel" style={{ marginBottom: "var(--gap)" }}>
+    <section className="panel" style={{ marginBottom: "var(--gap)" }} data-tour={tour}>
       {title && (
         <div className="panel-h">
           <h2>{title}{subtitle && <span className="aside" style={{ fontWeight: 400 }}>{subtitle}</span>}</h2>

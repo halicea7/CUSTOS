@@ -160,13 +160,13 @@ export default function Repos() {
         <div className="tools">
           <input className="input" value={query} onChange={(e) => setQuery(e.target.value)}
             placeholder="Search repositories…" aria-label="Search repositories" style={{ width: "clamp(200px,16vw,340px)" }} />
-          <button className="btn primary" onClick={() => setShowAdd(true)}>+ Add repository</button>
+          <button className="btn primary" onClick={() => setShowAdd(true)} data-tour="add-repo">+ Add repository</button>
         </div>
       </div>
 
       {error && <div className="banner bad">{errorMessage(error, "Failed to load repositories")}</div>}
 
-      <section className="panel">
+      <section className="panel" data-tour="repo-table">
         {isPending ? <div className="empty">Loading…</div> : repos.length === 0 ? (
           <div className="empty">
             No repositories connected yet.{" "}
