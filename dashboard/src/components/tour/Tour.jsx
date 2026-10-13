@@ -20,7 +20,7 @@ const FIND_FOR = 4000;  // ms to wait for a target after navigating
 async function exampleRun() {
   try {
     const { submissions = [] } = await listSubmissions(null, null, 50);
-    const done = submissions.filter((s) => s.status === "needs_review" || s.status === "signed_off");
+    const done = submissions.filter((s) => ["needs_review", "awaiting_approval", "signed_off"].includes(s.status));
     const total = (s) => Object.values(s.finding_counts || {}).reduce((a, n) => a + n, 0);
     return (done.find((s) => total(s) > 0) || done[0])?.id || null;
   } catch {

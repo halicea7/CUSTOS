@@ -15,6 +15,7 @@ const PAGE_SIZE  = 60;    // rows shown at a time in "All runs"
 
 const STATUS_CHIPS = [
   { key: "needs_review", label: "Needs review" },
+  { key: "awaiting_approval", label: "Awaiting approval" },
   { key: "scanning",     label: "Scanning",   match: (s) => s === "pending" || s === "analyzing" },
   { key: "signed_off",   label: "Signed off" },
   { key: "error",        label: "Error" },
@@ -115,7 +116,7 @@ export default function Queue() {
 
       {error && <div className="banner bad">{error}</div>}
 
-      <SummaryStrip subs={subs} repos={repos} onChip={pickChip} />
+      <SummaryStrip subs={subs} repos={repos} onChip={pickChip} admin={user?.role === "admin"} />
 
       <div className="cols q">
         <section className="panel" data-tour="queue-table">
@@ -174,7 +175,7 @@ export default function Queue() {
         </section>
 
         <div className="rail">
-          <AttentionList subs={subs} onOpen={onOpen} />
+          <AttentionList subs={subs} onOpen={onOpen} admin={user?.role === "admin"} />
           <ActivityFeed events={overview?.activity || []} onOpen={onOpen} />
         </div>
       </div>

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getActiveLlmJobs, getLlmRuns, getLlmStatus, getSubmission, getSubmissionFindings,
   listSubmissions, rerunLlm, signOff, deleteSubmission, getQueueOverview, getComparison,
+  getChains, getSignoffs, returnSignoff,
 } from "./submissions.js";
 import { getFindingAudit, setDispositions } from "./findings.js";
 import { getHealthStatus, getScanFindings, getServices, listScans, triggerScan } from "./health.js";
@@ -14,6 +15,8 @@ export const keys = {
   submission: (id) => ["submission", id],
   findings: (id) => ["submission", id, "findings"],
   comparison: (id) => ["submission", id, "compare"],
+  chains: (id) => ["submission", id, "chains"],
+  signoffs: (id) => ["submission", id, "signoffs"],
   audit: (findingId) => ["finding", findingId, "audit"],
   llmRuns: (id) => ["submission", id, "llm-runs"],
   llmStatus: (id) => ["submission", id, "llm-status"],
@@ -97,6 +100,29 @@ export function useComparison(id, status) {
   });
 }
 
+/** Attack chains (LLM estimates) of a finished run. */
+export function useChains(id, status) {
+  return useQuery({ queryKey: keys.chains(id), queryFn: () => getChains(id), enabled: !IN_FLIGHT.has(status) });
+}
+
+/** Each sign-off stage of a run with its comment, oldest first. */
+export function useSignoffs(id) {
+  return useQuery({ queryKey: keys.signoffs(id), queryFn: () => getSignoffs(id) });
+}
+
+/** Admin: send an analyst's sign-off back for more review. */
+export function useReturnSignoff(id) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (note) => returnSignoff(id, note),
+    onSuccess: (updated) => {
+      qc.setQueryData(keys.submission(id), updated);
+      qc.invalidateQueries({ queryKey: keys.signoffs(id) });
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+    },
+  });
+}
+
 export function useFindingAudit(findingId) {
   return useQuery({ queryKey: keys.audit(findingId), queryFn: () => getFindingAudit(findingId), enabled: !!findingId });
 }
@@ -148,6 +174,7 @@ export function useSignOff(id) {
     mutationFn: (note) => signOff(id, note),
     onSuccess: (updated) => {
       qc.setQueryData(keys.submission(id), updated);
+      qc.invalidateQueries({ queryKey: keys.signoffs(id) });
       qc.invalidateQueries({ queryKey: ["submissions"] });
     },
   });

@@ -10,8 +10,10 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -197,6 +199,8 @@ class LlmProvider:
 @dataclass
 class LlmResult:
     findings: list[RawFinding] = field(default_factory=list)
+    # Parsed output for prompts other than the finding review (e.g. attack chains).
+    value: Any = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     batches: int = 0
@@ -293,17 +297,21 @@ async def _call_batch(
     files: list[tuple[str, str]],
     sast_context: list[RawFinding],
 ) -> LlmResult:
-    user_prompt = _build_user_prompt(files, sast_context)
+    return await complete(client, provider, _build_user_prompt(files, sast_context), FINDINGS_SPEC)
+
+
+async def complete(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str, spec: "PromptSpec") -> LlmResult:
+    """Send one prompt to the configured provider, in whichever API it speaks."""
     if provider.kind == PROVIDER_BEDROCK and provider.messages_url:
         if is_anthropic_model(provider.model):
-            return await _messages_request(client, provider, user_prompt)
+            return await _messages_request(client, provider, user_prompt, spec)
         try:
-            return await _responses_request(client, provider, user_prompt)
+            return await _responses_request(client, provider, user_prompt, spec)
         except _NoResponsesApi:
-            return await _messages_request(client, provider, user_prompt)
+            return await _messages_request(client, provider, user_prompt, spec)
     if provider.kind in (PROVIDER_RESPONSES, PROVIDER_BEDROCK):
-        return await _responses_request(client, provider, user_prompt)
-    return await _ollama_request(client, provider, user_prompt)
+        return await _responses_request(client, provider, user_prompt, spec)
+    return await _ollama_request(client, provider, user_prompt, spec)
 
 
 def is_anthropic_model(model: str) -> bool:
@@ -321,13 +329,15 @@ _MESSAGES_MAX_TOKENS = 16_384
 _ANTHROPIC_VERSION = "2023-06-01"
 
 
-async def _messages_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
+async def _messages_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str,
+                            spec: "PromptSpec | None" = None) -> LlmResult:
     """Anthropic Messages API (Bedrock's route for Claude models)."""
+    spec = spec or FINDINGS_SPEC
     headers = {"x-api-key": provider.api_key, "anthropic-version": _ANTHROPIC_VERSION}
     payload = {
         "model": provider.model,
         "max_tokens": provider.max_output_tokens or _MESSAGES_MAX_TOKENS,
-        "system": _SYSTEM_PROMPT,
+        "system": spec.system,
         "messages": [{"role": "user", "content": user_prompt}],
     }
     try:
@@ -350,11 +360,7 @@ async def _messages_request(client: httpx.AsyncClient, provider: LlmProvider, us
     if stop == "refusal" and not text:
         raise LlmError("Model refused to review this batch")
     usage = body.get("usage") or {}
-    return LlmResult(
-        findings=_parse_llm_response(text),
-        prompt_tokens=usage.get("input_tokens"),
-        completion_tokens=usage.get("output_tokens"),
-    )
+    return spec.result(text, usage.get("input_tokens"), usage.get("output_tokens"))
 
 
 def _looks_complete(text: str) -> bool:
@@ -365,16 +371,18 @@ def _looks_complete(text: str) -> bool:
         return False
 
 
-async def _ollama_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
+async def _ollama_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str,
+                          spec: "PromptSpec | None" = None) -> LlmResult:
+    spec = spec or FINDINGS_SPEC
     base_url = (provider.base_url or settings.OLLAMA_BASE_URL).rstrip("/")
     payload: dict = {
         "model": provider.model,
         "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": spec.system},
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,
-        "format": _RESPONSE_SCHEMA,
+        "format": spec.schema,
     }
     if provider.ollama_think:
         payload["think"] = True
@@ -397,11 +405,7 @@ async def _ollama_request(client: httpx.AsyncClient, provider: LlmProvider, user
         raise LlmError("Ollama returned a non-JSON body") from exc
 
     raw_content = body.get("message", {}).get("content", "")
-    return LlmResult(
-        findings=_parse_llm_response(raw_content),
-        prompt_tokens=body.get("prompt_eval_count"),
-        completion_tokens=body.get("eval_count"),
-    )
+    return spec.result(raw_content, body.get("prompt_eval_count"), body.get("eval_count"))
 
 
 # Output formats tried in order. Strict JSON schema is ideal; some
@@ -414,13 +418,36 @@ _RESPONSES_FORMATS: list[dict | None] = [
 ]
 
 
-async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
+@dataclass
+class PromptSpec:
+    """A kind of request: its system prompt, output schema and how to read the reply."""
+
+    system: str
+    schema: dict           # Ollama "format" (loose JSON schema)
+    strict_schema: dict    # Responses API json_schema (strict)
+    name: str
+    parse: Callable[[str], Any]
+    findings: bool = False  # parsed value is the finding list
+
+    def responses_formats(self) -> list[dict | None]:
+        return [{"type": "json_schema", "name": self.name, "schema": self.strict_schema, "strict": True},
+                {"type": "json_object"}, None]
+
+    def result(self, text: str, prompt_tokens, completion_tokens) -> "LlmResult":
+        parsed = self.parse(text)
+        return LlmResult(findings=parsed if self.findings else [], value=None if self.findings else parsed,
+                         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+
+
+async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str,
+                             spec: "PromptSpec | None" = None) -> LlmResult:
+    spec = spec or FINDINGS_SPEC
     url = responses_endpoint(provider.base_url)
     headers = {"Authorization": f"Bearer {provider.api_key}"} if provider.api_key else {}
     headers.update(provider.extra_headers)
     payload: dict = {
         "model": provider.model,
-        "instructions": _SYSTEM_PROMPT,
+        "instructions": spec.system,
         "input": user_prompt,
         # Don't let the provider retain the code under review.
         "store": False,
@@ -431,7 +458,7 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
         payload["max_output_tokens"] = provider.max_output_tokens
 
     resp = None
-    for fmt in _RESPONSES_FORMATS:
+    for fmt in spec.responses_formats():
         if fmt is None:
             payload.pop("text", None)
         else:
@@ -476,11 +503,7 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
     if refusal and not text:
         raise LlmError(f"Model refused: {refusal[:200]}")
     usage = body.get("usage") or {}
-    return LlmResult(
-        findings=_parse_llm_response(text),
-        prompt_tokens=usage.get("input_tokens"),
-        completion_tokens=usage.get("output_tokens"),
-    )
+    return spec.result(text, usage.get("input_tokens"), usage.get("output_tokens"))
 
 
 _WRONG_ROUTE = "isn't supported on this route"
@@ -796,3 +819,7 @@ def _str_or_none(v) -> str | None:
     if v is None or v == "":
         return None
     return v if isinstance(v, str) else json.dumps(v)
+
+
+FINDINGS_SPEC = PromptSpec(system=_SYSTEM_PROMPT, schema=_RESPONSE_SCHEMA, strict_schema=_STRICT_RESPONSE_SCHEMA,
+                           name="security_findings", parse=lambda text: _parse_llm_response(text), findings=True)

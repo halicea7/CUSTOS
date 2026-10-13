@@ -651,6 +651,8 @@ function AnalysisTab({ theme }) {
         ollama_think: draft.ollama_think,
         ollama_num_ctx: Number(draft.ollama_num_ctx) || 0,
         llm_max_content_chars: Number(draft.llm_max_content_chars),
+        chains_enabled: !!draft.chains_enabled,
+        chain_gate: !!draft.chain_gate,
         max_file_size_kb: Number(draft.max_file_size_kb),
         max_files_per_repo: Number(draft.max_files_per_repo),
         access_token_expire_minutes: Number(draft.access_token_expire_minutes),
@@ -1142,6 +1144,27 @@ function AnalysisTab({ theme }) {
           </Field>
           <Field theme={t} label="Max files sent to LLM" hint="most relevant first" error={errors.max_files_per_repo}>
             <TextInput theme={t} type="number" value={draft.max_files_per_repo ?? ""} onChange={set("max_files_per_repo")} mono />
+          </Field>
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="Attack chains" subtitle="an LLM pass over each run's findings">
+        <div style={{ maxWidth: 600 }}>
+          <Field theme={t} label="Find attack chains" hint="one extra LLM request per scan">
+            <Toggle theme={t} value={!!draft.chains_enabled} onChange={v => update({ chains_enabled: v })}
+              label={draft.chains_enabled ? "On" : "Off"} />
+            <div style={hint}>
+              After each scan the LLM looks at all of a run&rsquo;s findings together and proposes chains: findings that
+              combine into a bigger attack. They show on the run page; findings keep their own severity.
+            </div>
+          </Field>
+          <Field theme={t} label="Chains gate sign-off">
+            <Toggle theme={t} value={!!draft.chain_gate} onChange={v => update({ chain_gate: v })}
+              label={draft.chain_gate ? "On" : "Off"} />
+            <div style={hint}>
+              When on, every step of a live critical or high chain needs a decision before a run can be signed off,
+              even steps that are low severity on their own.
+            </div>
           </Field>
         </div>
       </SectionCard>

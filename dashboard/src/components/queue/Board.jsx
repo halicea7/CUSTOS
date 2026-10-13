@@ -7,7 +7,7 @@ const COUNTED = ["critical", "high", "medium", "low"];
 const SHORT = { critical: "Crit", high: "High", medium: "Med", low: "Low" };
 const VAR = { critical: "crit", high: "high", medium: "med", low: "low", info: "info" };
 const IN_PROGRESS = new Set(["pending", "analyzing"]);
-const DONE = new Set(["needs_review", "signed_off"]);
+const DONE = new Set(["needs_review", "awaiting_approval", "signed_off"]);
 const DAY = 86400000;
 const OLD_AFTER = 2 * DAY;  // waiting longer than this is called out
 
@@ -42,6 +42,7 @@ export function groupByRepo(subs) {
 export function Status({ status }) {
   const meta = STATUS_META[status] || STATUS_META.pending;
   const color = { pending: "var(--text3)", analyzing: "var(--run)", needs_review: "var(--med)",
+    awaiting_approval: "var(--low)",
     signed_off: "var(--ok)", error: "var(--crit)" }[status] || "var(--text3)";
   return (
     <span className="status">
@@ -151,8 +152,9 @@ function ScanChart({ subs }) {
   );
 }
 
-export function SummaryStrip({ subs, repos, onChip }) {
+export function SummaryStrip({ subs, repos, onChip, admin }) {
   const waiting = subs.filter((s) => s.status === "needs_review");
+  const approvals = admin ? subs.filter((s) => s.status === "awaiting_approval").length : 0;
   const oldest = waiting.reduce((m, s) => Math.min(m, new Date(s.created_at).getTime()), Infinity);
   // Open findings: each repo's latest run that's still awaiting review.
   const open = repos.map((r) => r.latest).filter((s) => s.status === "needs_review");
@@ -168,6 +170,7 @@ export function SummaryStrip({ subs, repos, onChip }) {
         <div className="v">{waiting.length}</div>
         <div className="h" style={longWait ? { color: "var(--high)" } : undefined}>
           {waiting.length ? `oldest waiting ${since(oldest)}` : "all caught up"}
+          {approvals > 0 && ` · ${approvals} to approve`}
         </div>
       </button>
       <button className="tile" onClick={() => onChip("needs_review")}>
@@ -319,24 +322,29 @@ export function RunTable({ subs, onOpen, onDelete, activeJobs }) {
 
 // ── Rail ─────────────────────────────────────────────────────────────────────
 
-export function AttentionList({ subs, onOpen }) {
-  const items = subs.filter((s) => s.status === "needs_review")
+export function AttentionList({ subs, onOpen, admin }) {
+  // Admins see analyst sign-offs waiting for their approval first.
+  const approvals = admin ? subs.filter((s) => s.status === "awaiting_approval") : [];
+  const items = [...approvals, ...subs.filter((s) => s.status === "needs_review")
+
     .sort((a, b) => (n(b, "critical") - n(a, "critical")) || (n(b, "high") - n(a, "high"))
-      || (new Date(a.created_at) - new Date(b.created_at)))
+      || (new Date(a.created_at) - new Date(b.created_at)))]
     .slice(0, 5);
   return (
     <section className="panel">
       <div className="panel-h"><h2>Needs your attention</h2><span className="aside">by severity, then age</span></div>
       {items.length === 0 && <div className="empty">Nothing waiting for review.</div>}
       {items.map((s) => {
-        const bar = n(s, "critical") ? "var(--crit-solid)" : n(s, "high") > 5 ? "var(--high-solid)" : "var(--accent)";
+        const bar = s.status === "awaiting_approval" ? "var(--low)" : n(s, "critical") ? "var(--crit-solid)" : n(s, "high") > 5 ? "var(--high-solid)" : "var(--accent)";
         return (
           <div key={s.id} className="att" onClick={() => onOpen(s)}>
             <div className="bar" style={{ background: bar }} />
             <div style={{ minWidth: 0 }}>
               <div className="t">{s.repo_full_name.split("/").pop()}</div>
               <div className="muted" style={{ fontSize: ".82rem" }}>
-                <span className="mono">{refOf(s)}</span> · waiting {since(s.created_at)}
+                <span className="mono">{refOf(s)}</span> · {s.status === "awaiting_approval"
+                  ? <span style={{ color: "var(--low)" }}>signed off by analyst, awaiting your approval</span>
+                  : <>waiting {since(s.created_at)}</>}
               </div>
               <div style={{ display: "flex", gap: 5, marginTop: 5, flexWrap: "wrap" }}>
                 {COUNTED.filter((k) => n(s, k)).map((k) => (
@@ -365,6 +373,10 @@ function describe(e) {
     case "ready":    return ["var(--med-solid)", <>{repo}{ref} ready for review</>];
     case "failed":   return ["var(--crit-solid)", <>{repo}{ref} scan failed{e.detail ? `: ${e.detail.slice(0, 80)}` : ""}</>];
     case "sign_off": return ["var(--ok)", <><b>{e.actor}</b> signed off {repo}{ref}</>];
+    case "analyst_sign_off": return ["var(--low)", <><b>{e.actor}</b> signed off {repo}{ref} for approval</>];
+    case "sign_off_returned": return ["var(--high)", <><b>{e.actor}</b> sent {repo}{ref} back for review</>];
+    case "awaiting_approval": return ["var(--low)", <>{repo}{ref} awaiting approval</>];
+    case "llm_rerun": return ["var(--text3)", <>LLM re-run on {repo}{ref}</>];
     default: {
       const word = DISPOSITION_WORDS[e.kind] || e.kind.replaceAll("_", " ");
       if (e.actor === "custos") return ["var(--text3)", <>Carried forward {findings} as {word} in {repo}</>];

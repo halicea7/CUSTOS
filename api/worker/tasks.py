@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import UUID
 
 import bedrock
+import httpx
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select, update
 
@@ -22,9 +23,10 @@ from database import async_session_factory
 from enums import BLOCKING_SEVERITIES, RunStatus, SubmissionStatus
 from github_client import post_github_check
 from intake import check_repo_for_updates
-from models import AppConfig, Finding, LlmRun, Repo, SelfScan, SelfScanFinding, Submission
+from models import AppConfig, AttackChain, Finding, LlmRun, Repo, SelfScan, SelfScanFinding, Submission
 from redis_util import LLM_ACTIVE_SET, llm_lock_key, llm_start_key
 from schemas import AppConfigResponse
+from worker.analysis import chains
 from worker.analysis.carryover import apply_previous_false_positives, audit_carried
 from worker.analysis.clone import clone_repo, redact
 from worker.analysis.config_checks import run_config_checks
@@ -32,10 +34,12 @@ from worker.analysis.llm import (
     PROVIDER_BEDROCK,
     PROVIDER_OLLAMA,
     PROVIDER_RESPONSES,
+    InvalidJson,
     LlmError,
     LlmProvider,
     LlmResult,
     call_llm,
+    complete,
 )
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
 from worker.analysis.sentinelone import RepoMeta, S1Error, S1Settings, run_sentinelone
@@ -131,6 +135,67 @@ async def _run_llm(
         if not cm.expired():
             raise
         raise LlmError(f"LLM review ran out of time (job limit {cfg.worker_job_timeout}s)") from None
+
+
+_CHAIN_BUDGET = 180          # seconds for the attack-chain pass
+_SKIP_DIRS = {".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__", ".next"}
+_CHAIN_NOTE = "Attack chain analysis failed"
+
+
+def _repo_files(repo_path: str, cap: int = 3000) -> list[str]:
+    root = Path(repo_path)
+    out: list[str] = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if any(part in _SKIP_DIRS for part in rel.parts):
+            continue
+        if path.is_file():
+            out.append(str(rel))
+            if len(out) >= cap:
+                break
+    return out
+
+
+async def _analyze_chains(db, sub: Submission, provider: LlmProvider, repo_path: str, llm_run: LlmRun,
+                          deadline: asyncio.Timeout | None = None) -> str | None:
+    """Replace the run's attack chains with a fresh LLM pass. Returns a note on failure.
+
+    Best effort: a failure never loses the findings, it only leaves the run without chains.
+    """
+    await db.flush()
+    await db.execute(sql_delete(AttackChain).where(AttackChain.submission_id == sub.id))
+    rows = (await db.execute(select(Finding).where(Finding.submission_id == sub.id))).scalars().all()
+    if len(rows) < 2:
+        return None
+    budget = _CHAIN_BUDGET
+    if deadline is not None and deadline.when() is not None:
+        budget = min(budget, deadline.when() - asyncio.get_running_loop().time() - 20)
+    if budget < 20:
+        return f"{_CHAIN_NOTE}: not enough time left in the job"
+    user_prompt, refs = chains.prompt(rows, _repo_files(repo_path))
+    timeout = httpx.Timeout(settings.LLM_TIMEOUT_SECONDS, connect=15)
+    try:
+        async with asyncio.timeout(budget), httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                result = await complete(client, provider, user_prompt, chains.SPEC)
+            except InvalidJson:
+                result = await complete(client, provider, user_prompt, chains.SPEC)
+    except TimeoutError:
+        return f"{_CHAIN_NOTE}: no answer within {int(budget)}s"
+    except LlmError as exc:
+        return f"{_CHAIN_NOTE}: {exc}"
+    found = chains.validate(result.value or [], refs)
+    for c in found:
+        db.add(AttackChain(
+            submission_id=sub.id, title=c["title"], severity=c["severity"], confidence=c["confidence"],
+            narrative=c["narrative"], break_index=c["break_index"],
+            steps=[{"finding_id": s["finding_id"], "role": s["role"], "why": s["why"]} for s in c["steps"]],
+        ))
+    for attr, n in (("prompt_tokens", result.prompt_tokens), ("completion_tokens", result.completion_tokens)):
+        if n:
+            setattr(llm_run, attr, (getattr(llm_run, attr) or 0) + n)
+    logger.info("Attack chains for %s: %d", sub.id, len(found))
+    return None
 
 
 async def _run_sast(repo_path: str) -> list[RawFinding]:
@@ -277,9 +342,14 @@ async def analyze_submission(ctx, submission_id: str) -> None:
 
                 all_findings = synthesize(sast_findings, llm_findings)
                 await _save_findings(db, submission, all_findings)
+                chain_note = None
+                if not llm_error and cfg.chains_enabled:
+                    chain_note = await _analyze_chains(db, submission, provider, repo_path, llm_run, deadline)
 
                 submission.status = SubmissionStatus.NEEDS_REVIEW.value
                 notes = []
+                if chain_note:
+                    notes.append(chain_note)
                 if llm_error:
                     notes.append(f"LLM review failed; showing static analysis only. {llm_error}")
                 if s1_note:
@@ -403,14 +473,19 @@ async def rerun_llm(ctx, submission_id: str) -> None:
                         sql_delete(Finding).where(Finding.submission_id == sub.id, Finding.source == "llm")
                     )
                     await _save_findings(db, sub, new_dicts, carried)
+                    chain_note = (await _analyze_chains(db, sub, provider, repo_path, llm_run)
+                                  if cfg.chains_enabled else None)
 
                     duration = time.time() - start_time
                     llm_result.findings = new_llm
                     _finish_llm_run(llm_run, llm_result, duration)
                     if sub.error_message:
                         # Drop only the LLM note; keep others (e.g. SentinelOne).
-                        kept = [ln for ln in sub.error_message.splitlines() if not ln.startswith("LLM review failed")]
+                        kept = [ln for ln in sub.error_message.splitlines()
+                                if not ln.startswith(("LLM review failed", _CHAIN_NOTE))]
                         sub.error_message = "\n".join(kept) or None
+                    if chain_note:
+                        sub.error_message = "\n".join(filter(None, [sub.error_message, chain_note]))
                     await _record_llm_duration(db, duration)
                     await db.commit()
                     logger.info(

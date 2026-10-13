@@ -434,3 +434,31 @@ button.tile:disabled, button.tile:disabled:hover { cursor: default; transform: n
 .md ol li::marker { color: var(--accent); font-weight: 600; font-size: .85em; }
 .md-code { font-family: var(--mono); font-size: .84em; padding: .08em .38em; border-radius: 5px; background: var(--raised2); color: var(--text); border: 1px solid var(--border); }
 .md-pre { margin: 0; padding: .7rem .85rem; border-radius: 9px; background: var(--bg); border: 1px solid var(--border); overflow-x: auto; font-family: var(--mono); font-size: .8rem; line-height: 1.55; color: var(--text); white-space: pre; }
+
+/* ── Attack chains ─────────────────────────────────────────────────────────── */
+.chains .chain { border: 1px solid var(--border); border-radius: 12px; padding: .75rem .85rem; background: var(--raised); display: flex; flex-direction: column; gap: 7px; cursor: pointer; transition: border-color .2s, transform .2s var(--ease), background .2s; outline: none; }
+.chains .chain + .chain { margin-top: 10px; }
+.chains .chain:hover, .chains .chain:focus-visible { border-color: var(--accent-line); transform: translateY(-1px); }
+.chains .chain.on { border-color: var(--accent); background: linear-gradient(180deg, var(--accent-bg), transparent 160%), var(--raised); }
+.chains .chain.broken { opacity: .55; }
+.chains .ct { font-weight: 600; font-size: .9rem; color: var(--text); line-height: 1.35; }
+.chains .path { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-family: var(--mono); font-size: .74rem; }
+.chains .path .ref { padding: 1px 6px; border-radius: 5px; background: var(--raised2); color: var(--text2); border: 1px solid var(--border); }
+.chains .path .ref.crit { color: var(--crit); } .chains .path .ref.high { color: var(--high); }
+.chains .path .ref.med { color: var(--med); } .chains .path .ref.low { color: var(--low); }
+.chains .path .ref.fp { text-decoration: line-through; opacity: .6; }
+.chains .path .arr { color: var(--text3); }
+.chains .brk { font-size: .78rem; color: var(--text2); } .chains .brk b { color: var(--ok); font-weight: 600; }
+.chains .narr { font-size: .8rem; color: var(--text2); }
+.chains .steps { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+.chains .step { display: grid; grid-template-columns: 3.3rem 1fr; gap: 8px; font-size: .78rem; color: var(--text2); }
+.chains .step .role { font-size: .66rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); padding-top: 2px; }
+.chaintag { font-size: .66rem; font-weight: 700; letter-spacing: .04em; padding: 1px 7px; border-radius: 5px; white-space: nowrap; }
+.flist.chain-mode .frow:not(.chain-hl) { opacity: .28; }
+.flist.chain-mode .frow.chain-hl { box-shadow: inset 3px 0 0 var(--accent); }
+.est { font-size: .66rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text3); border: 1px dashed var(--border2); border-radius: 5px; padding: 0 5px; }
+/* Sign-off timeline */
+.so-row { display: grid; grid-template-columns: 10px 1fr; gap: 9px; padding: 6px 0; font-size: .84rem; color: var(--text2); }
+.so-row + .so-row { border-top: 1px dashed var(--border); }
+.so-row > .dot { margin-top: 6px; }
+.so-note { margin-top: 3px; padding: .4rem .6rem; border-radius: 8px; background: var(--raised2); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }

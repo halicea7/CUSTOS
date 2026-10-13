@@ -118,6 +118,7 @@ _STATUS_EVENTS = {
     SubmissionStatus.PENDING: "queued",
     SubmissionStatus.ANALYZING: "scanning",
     SubmissionStatus.NEEDS_REVIEW: "ready",
+    SubmissionStatus.AWAITING_APPROVAL: "awaiting_approval",
     SubmissionStatus.ERROR: "failed",
 }
 
@@ -237,7 +238,7 @@ async def list_findings_for_submission(
     return result.scalars().all()
 
 
-_FINISHED = (SubmissionStatus.NEEDS_REVIEW, SubmissionStatus.SIGNED_OFF)
+_FINISHED = (SubmissionStatus.NEEDS_REVIEW, SubmissionStatus.AWAITING_APPROVAL, SubmissionStatus.SIGNED_OFF)
 _MAX_COMPARED = 2000
 
 

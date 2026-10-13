@@ -201,7 +201,9 @@ function activeSection(pathname) {
 function SideRail({ mode, setMode, onSearch }) {
   const { user, logout } = useAuth();
   const { data: overview } = useQueueOverview(null);
-  const needsReview = overview?.status_counts?.needs_review || 0;
+  // Admins also count analyst sign-offs waiting for their approval.
+  const needsReview = (overview?.status_counts?.needs_review || 0)
+    + (user?.role === "admin" ? overview?.status_counts?.awaiting_approval || 0 : 0);
   const navigate = useNavigate();
   const location = useLocation();
   const section = activeSection(location.pathname);

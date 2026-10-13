@@ -20,6 +20,7 @@ export const STATUS_META = {
   pending:    { label: "Pending",    dark: "#8a93a1", light: "#8a93a1" },
   analyzing:  { label: "Scanning",   dark: "#9b7bff", light: "#6d4aff" },
   needs_review: { label: "Needs review", dark: "#d9b45a", light: "#9a6c12" },
+  awaiting_approval: { label: "Awaiting approval", dark: "#7fb3e8", light: "#2563a8" },
   signed_off: { label: "Signed off", dark: "#5cbf7a", light: "#22874a" },
   error:      { label: "Error",      dark: "#f0716a", light: "#c8372d" },
 };

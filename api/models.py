@@ -250,3 +250,25 @@ class UserActivity(Base):
     action: Mapped[str] = mapped_column(Text, nullable=False)
     detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
+
+
+class AttackChain(Base):
+    """Findings of one run that the LLM judged could be combined into a bigger attack.
+
+    steps: [{"finding_id", "role" (entry|pivot|impact), "why"}] in attack order.
+    """
+
+    __tablename__ = "attack_chains"
+    __table_args__ = (Index("ix_attack_chains_submission_id", "submission_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("submissions.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[str] = mapped_column(Text, nullable=False)
+    narrative: Mapped[str | None] = mapped_column(Text)
+    steps: Mapped[list] = mapped_column(sa.JSON, nullable=False)
+    break_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = _created_at()

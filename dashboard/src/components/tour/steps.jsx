@@ -76,8 +76,10 @@ export function buildSteps({ role, name, runId }) {
         </>,
       },
       {
-        id: "run-signoff", path: run, target: T("run-signoff"), place: "left", title: "Sign off",
-        body: <p>When every critical and high finding has a decision, sign off to record your approval of this commit in the audit log.</p>,
+        id: "run-signoff", path: run, target: T("run-signoff"), place: "left", title: admin ? "Sign off and approvals" : "Sign off",
+        body: admin
+          ? <p>Analysts&rsquo; sign-offs land here as <b>Awaiting approval</b>: read their comment, then <b>Approve</b> it or <b>Send back</b> with a reason. You can also sign off a run yourself in one step.</p>
+          : <p>When every critical and high finding (and every step of a serious <b>attack chain</b>) has a decision, sign off with a comment. An admin then approves it, or sends it back with a reason you&rsquo;ll see here.</p>,
       },
     );
   } else {

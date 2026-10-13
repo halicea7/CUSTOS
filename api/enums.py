@@ -11,6 +11,8 @@ class SubmissionStatus(StrEnum):
     PENDING = "pending"
     ANALYZING = "analyzing"
     NEEDS_REVIEW = "needs_review"
+    # An analyst signed off; an admin must approve it (or send it back).
+    AWAITING_APPROVAL = "awaiting_approval"
     SIGNED_OFF = "signed_off"
     ERROR = "error"
 

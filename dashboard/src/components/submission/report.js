@@ -182,7 +182,8 @@ export function remediationTasks(findings) {
       || (a.line_start || 0) - (b.line_start || 0));
 }
 
-export function generateRemediations(sub, findings) {
+// *chains*: resolved attack chains (see Chains.jsx); live ones get a "break these first" section.
+export function generateRemediations(sub, findings, chains = []) {
   const sha = sub.commit_sha || "";
   const tasks = remediationTasks(findings);
   const excluded = findings.filter(f => f.disposition === "false_positive");
@@ -216,6 +217,17 @@ export function generateRemediations(sub, findings) {
   tasks.forEach((f, i) => {
     md += `| ${id(i)} | ${cap(f.severity)} | ${cell(f.title)} | ${location(f) ? `\`${cell(location(f))}\`` : "—"} |\n`;
   });
+  const taskOf = new Map(tasks.map((f, i) => [f.id, id(i)]));
+  const live = chains.filter(c => c.live && c.steps.every(st => taskOf.has(st.f?.id)));
+  if (live.length) {
+    md += `\n## Attack chains: break these first\n\n`;
+    md += `The review estimated that these findings combine into bigger attacks. Do the marked task of each chain before the rest; it breaks the whole chain.\n\n`;
+    live.forEach(c => {
+      const brk = c.steps[Math.min(c.break_index, c.steps.length - 1)];
+      md += `- **${cap(c.severity)}** · ${c.title.replace(/\n/g, " ")}: ${c.steps.map(st => taskOf.get(st.f.id)).join(" → ")}. `;
+      md += `Fix **${taskOf.get(brk.f.id)}** first.\n`;
+    });
+  }
   md += `\n## Tasks\n\n`;
 
   tasks.forEach((f, i) => {

@@ -22,7 +22,9 @@ const ACTIONS = {
   false_positive: ["Marked false positive", "var(--ok)"],
   confirmed: ["Confirmed", "var(--crit)"],
   escalated: ["Escalated", "var(--accent)"],
-  sign_off: ["Signed off", "var(--ok)"],
+  sign_off: ["Signed off (final)", "var(--ok)"],
+  analyst_sign_off: ["Signed off for approval", "var(--low)"],
+  sign_off_returned: ["Sent a sign-off back", "var(--high)"],
   delete_submission: ["Deleted a run", "var(--crit)"],
   user_created: ["Created user", "var(--accent)"],
   user_role_changed: ["Changed a role", "var(--high)"],
@@ -39,7 +41,7 @@ const ACTIONS = {
 };
 const TRIAGE = new Set(["false_positive", "confirmed", "escalated"]);
 const FILTERS = [["all", "All"], ["triage", "Triage"], ["repos", "Repositories"], ["access", "Sign-ins"], ["admin", "Admin"]];
-const kindOf = (a) => (TRIAGE.has(a) || ["sign_off", "delete_submission", "llm_rerun"].includes(a) ? "triage"
+const kindOf = (a) => (TRIAGE.has(a) || ["sign_off", "analyst_sign_off", "sign_off_returned", "delete_submission", "llm_rerun"].includes(a) ? "triage"
   : a.startsWith("repo_") ? "repos" : a.startsWith("login") || a === "password_changed" ? "access" : "admin");
 
 export default function UserActivity({ user }) {

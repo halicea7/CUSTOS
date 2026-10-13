@@ -11,9 +11,10 @@ import { LLM_ACTIVE, LlmProgress, LlmRuns } from "../components/submission/LlmPa
 import ReportModal from "../components/submission/ReportModal.jsx";
 import { downloadBlob, generateRemediations, remediationTasks } from "../components/submission/report.js";
 import {
-  useComparison, useDispose, useInvalidateSubmission, useLlmStatus, useRerunLlm, useSignOff,
-  useSubmission, useSubmissionFindings,
+  useChains, useComparison, useDispose, useInvalidateSubmission, useLlmStatus, useRerunLlm, useReturnSignoff,
+  useSignOff, useSignoffs, useSubmission, useSubmissionFindings,
 } from "../api/queries.js";
+import Chains, { chainGatePending, resolveChains } from "../components/submission/Chains.jsx";
 import { errorMessage } from "../api/errors.js";
 import { useToast } from "../components/Toast.jsx";
 
@@ -28,31 +29,64 @@ const GROUP_KEY = { sev: (f) => f.severity, file: (f) => f.file_path || "(no fil
 
 // ── Header pieces ────────────────────────────────────────────────────────────
 
-function SignOffModal({ sub, findings, onClose }) {
+const STAGE = {
+  analyst_sign_off: ["Signed off for approval", "var(--low)"],
+  sign_off: ["Approved and signed off", "var(--ok)"],
+  sign_off_returned: ["Sent back for review", "var(--high)"],
+};
+
+// mode: "signoff" (analyst stage 1, or an admin's one-step sign-off), "approve" (admin, stage 2),
+// "return" (admin sends an analyst's sign-off back).
+function SignOffModal({ sub, findings, chainPending, mode, onClose }) {
   const { user } = useAuth();
   const { theme } = useTheme();
   const toast = useToast();
   const signOff = useSignOff(sub.id);
+  const giveBack = useReturnSignoff(sub.id);
   const [note, setNote] = useState("");
+  const admin = user?.role === "admin";
+  const sending = mode === "return";
   const open = findings.filter((f) => isCritHigh(f) && !f.disposition).length;
-  const adminOnly = sub.is_self_update && user?.role !== "admin";
-  const blocked = open > 0 || adminOnly;
+  const chainOpen = [...chainPending].filter((id) => !findings.find((f) => f.id === id && isCritHigh(f))).length;
+  const adminOnly = sub.is_self_update && !admin;
+  const blocked = !sending && (open > 0 || chainOpen > 0 || adminOnly);
+  const busy = signOff.isPending || giveBack.isPending;
+  const error = signOff.error || giveBack.error;
 
-  const submit = () => signOff.mutate(note, {
-    onSuccess: () => { toast("Signed off"); onClose(); },
-  });
+  const submit = () => (sending
+    ? giveBack.mutate(note.trim(), { onSuccess: () => { toast("Sent back for review"); onClose(); } })
+    : signOff.mutate(note, {
+      onSuccess: (s) => {
+        toast(s.status === "awaiting_approval" ? "Signed off: waiting for an admin to approve" : "Signed off");
+        onClose();
+      },
+    }));
+  const title = sending ? "Send back for more review?" : mode === "approve" ? "Approve this sign-off?" : "Sign off this run?";
+  const action = sending ? "Send back" : mode === "approve" ? "Approve" : admin ? "Sign off" : "Sign off for approval";
 
   return (
-    <Modal theme={theme} title="Sign off this run?" onClose={onClose} width={520}>
+    <Modal theme={theme} title={title} onClose={onClose} width={520}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {open > 0 ? (
+        {!sending && open > 0 && (
           <div className="banner bad" style={{ margin: 0 }}>
             <b>{plural(open, "critical/high finding")} still untriaged.</b> Give each one a decision before signing off.
           </div>
-        ) : (
-          <div className="dim">Signing off records your approval of this commit in the audit log.</div>
         )}
-        {sub.is_self_update && (
+        {!sending && chainOpen > 0 && (
+          <div className="banner bad" style={{ margin: 0 }}>
+            <b>⛓ {plural(chainOpen, "finding")} in a critical/high attack chain still untriaged.</b> They&rsquo;re lower
+            severity on their own, but together they make a serious attack. Decide each one first.
+          </div>
+        )}
+        {!blocked && !sending && (
+          <div className="dim">
+            {mode === "approve" ? "Approving makes the sign-off final: it's recorded in the audit log and the GitHub check passes."
+              : admin ? "As an admin, this signs the run off in one step and records it in the audit log."
+                : "This is the first stage: an admin reviews your sign-off and approves it or sends it back."}
+          </div>
+        )}
+        {sending && <div className="dim">The run goes back to <b>Needs review</b>. Your reason is shown on the run page.</div>}
+        {sub.is_self_update && !sending && (
           <div className="banner note" style={{ margin: 0 }}>
             <b>This is Custos&rsquo;s own repository.</b> Signing off approves deploying this commit to Custos itself
             on its next <span className="mono">./custos update</span>, so only admins can do it. Findings marked
@@ -60,20 +94,46 @@ function SignOffModal({ sub, findings, onClose }) {
           </div>
         )}
         <div className="field">
-          <label htmlFor="signoff-note">Note (optional)</label>
+          <label htmlFor="signoff-note">{sending ? "Reason (required)" : "Comment (optional)"}</label>
           <textarea id="signoff-note" className="input textarea" rows={3} value={note} autoFocus
+            placeholder={sending ? "What needs another look?" : "Anything the next reviewer should know"}
             onChange={(e) => setNote(e.target.value)} disabled={blocked} />
         </div>
-        {signOff.error && <div className="result bad">{errorMessage(signOff.error, "Sign-off failed")}</div>}
+        {error && <div className="result bad">{errorMessage(error, "That didn't work")}</div>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={blocked || signOff.isPending} onClick={submit}
+          <button className={`btn ${sending ? "danger" : "primary"}`} onClick={submit}
+            disabled={blocked || busy || (sending && !note.trim())}
             title={adminOnly ? "Only admins can sign off Custos's own repository" : undefined}>
-            {signOff.isPending ? "Signing off…" : "Sign off"}
+            {busy ? <><span className="spin" /> Saving</> : action}
           </button>
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** Every sign-off stage with its comment, so analysts and admins can read each other's notes. */
+function SignoffHistory({ id }) {
+  const { data: rows = [] } = useSignoffs(id);
+  if (!rows.length) return null;
+  return (
+    <section className="panel panel-b">
+      <div className="panel-t">Sign-off</div>
+      {rows.map((r, i) => {
+        const [label, color] = STAGE[r.action] || [r.action, "var(--text3)"];
+        return (
+          <div key={i} className="so-row">
+            <span className="dot" style={{ background: color }} />
+            <div style={{ minWidth: 0 }}>
+              <div><b style={{ color: "var(--text)" }}>{r.by}</b> · {label}
+                <span className="muted" title={new Date(r.at).toLocaleString()}> · {ago(r.at)}</span></div>
+              {r.note && <div className="so-note">{r.note}</div>}
+            </div>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -261,6 +321,29 @@ export default function Submission() {
   const findingsQuery = useSubmissionFindings(id, inFlight ? "analyzing" : sub.status);
   const findings = useMemo(() => findingsQuery.data || [], [findingsQuery.data]);
   const cmpQuery = useComparison(id, inFlight ? "analyzing" : sub.status);
+  const [chainOn, setChainOn] = useState(null);           // selected attack chain id
+  const { data: chainsData } = useChains(id, inFlight ? "analyzing" : sub.status);
+  const { data: signoffs = [] } = useSignoffs(id);
+  const chainList = useMemo(() => resolveChains(chainsData?.chains, findings), [chainsData, findings]);
+  const activeChain = chainList.find((c) => c.id === chainOn) || null;
+  // finding id → strongest live chain it's part of, for the row tags.
+  const chainTags = useMemo(() => {
+    const m = new Map();
+    chainList.filter((c) => c.live).forEach((c) => c.steps.forEach((st) => {
+      const cur = m.get(st.f.id);
+      if (!cur) m.set(st.f.id, { sev: c.severity, ref: st.ref, n: 1, titles: [c.title] });
+      else {
+        cur.n += 1; cur.titles.push(c.title);
+        if (sevRank(c.severity) < sevRank(cur.sev)) cur.sev = c.severity;
+      }
+    }));
+    return m;
+  }, [chainList]);
+  const selectChain = (cid) => {
+    setChainOn(cid);
+    if (cid) setTimeout(() => document.querySelector(".frow.chain-hl")?.scrollIntoView({ block: "center", behavior: "smooth" }), 50);
+  };
+  const lastStage = signoffs.at(-1);
   const refresh = useInvalidateSubmission(id);
   const dispose = useDispose(id);
   const { data: llm, refetch: refetchLlm } = useLlmStatus(id);
@@ -275,7 +358,7 @@ export default function Submission() {
   const [focusId, setFocusId] = useState(null);
   const [drawer, setDrawer] = useState(false);
   const [showReport, setShowReport] = useState(false);
-  const [showSignOff, setShowSignOff] = useState(false);
+  const [showSignOff, setShowSignOff] = useState(null);   // null | "signoff" | "approve" | "return"
   const [animKey, setAnimKey] = useState(0);
 
   // A different run: start fresh.
@@ -378,7 +461,7 @@ export default function Submission() {
         else if (open || cur) decideFocused(HOTKEYS[k], document.getElementById("finding-note")?.value);
         else return;
       } else if (k === "escape") {
-        if (drawer) setDrawer(false); else setSelected(new Set());
+        if (drawer) setDrawer(false); else if (chainOn) setChainOn(null); else setSelected(new Set());
       } else return;
       e.preventDefault();
     };
@@ -434,18 +517,39 @@ export default function Submission() {
           <button className="btn" disabled={inFlight} onClick={() => setShowReport(true)} data-tour="run-report">↓ Report</button>
           <button className="btn" disabled={!canRemediate} data-tour="run-remediations"
             title={canRemediate ? "Task file for an AI coding agent: fixes for the findings, most severe first" : "Nothing to remediate"}
-            onClick={() => downloadBlob(generateRemediations(sub, findings), "REMEDIATIONS.md", "text/markdown")}>
+            onClick={() => downloadBlob(generateRemediations(sub, findings, chainList), "REMEDIATIONS.md", "text/markdown")}>
             ↓ REMEDIATIONS.md
           </button>
-          <button className="btn primary" disabled={sub.status !== "needs_review"} onClick={() => setShowSignOff(true)} data-tour="run-signoff">
-            {sub.status === "signed_off" ? "Signed off ✓" : "Sign off"}
-          </button>
+          {sub.status === "awaiting_approval" && isAdmin ? (
+            <>
+              <button className="btn danger" onClick={() => setShowSignOff("return")}>Send back</button>
+              <button className="btn primary" onClick={() => setShowSignOff("approve")} data-tour="run-signoff">Approve sign-off</button>
+            </>
+          ) : (
+            <button className="btn primary" disabled={sub.status !== "needs_review"} data-tour="run-signoff"
+              onClick={() => setShowSignOff("signoff")}
+              title={sub.status === "awaiting_approval" ? "Signed off by an analyst; an admin needs to approve it" : undefined}>
+              {sub.status === "signed_off" ? "Signed off ✓" : sub.status === "awaiting_approval" ? "Awaiting approval"
+                : isAdmin ? "Sign off" : "Sign off for approval"}
+            </button>
+          )}
         </div>
       </div>
 
       {sub.error_message && (
         <div className={`banner ${sub.status === "error" ? "bad" : "note"}`}>
           <b>{sub.status === "error" ? "Analysis failed: " : "Note: "}</b>{sub.error_message}
+        </div>
+      )}
+      {sub.status === "needs_review" && lastStage?.action === "sign_off_returned" && (
+        <div className="banner note">
+          <b>Sent back by {lastStage.by}</b> {ago(lastStage.at)}{lastStage.note ? <>: {lastStage.note}</> : "."} Address it, then sign off again.
+        </div>
+      )}
+      {sub.status === "awaiting_approval" && (
+        <div className="banner note">
+          <b>Signed off by {lastStage?.by || "an analyst"}</b>, waiting for an admin to approve.
+          {lastStage?.note && <> Comment: &ldquo;{lastStage.note}&rdquo;</>}
         </div>
       )}
       <LlmProgress status={llm} />
@@ -489,7 +593,7 @@ export default function Submission() {
                 </div>
               </div>
 
-              <div key={animKey} className="flist anim">
+              <div key={animKey} className={`flist anim ${activeChain ? "chain-mode" : ""}`}>
                 {!flat.length ? (
                   <div className="empty">{findings.length ? "Nothing matches these filters." : "No findings: this commit is clean."}</div>
                 ) : groups.map((g) => (
@@ -508,7 +612,7 @@ export default function Submission() {
                       const i = flat.indexOf(f);
                       return (
                         <div key={f.id} data-fid={f.id}
-                          className={`frow ${selected.has(f.id) ? "sel" : ""} ${focusId === f.id ? "focus" : ""}`}
+                          className={`frow ${selected.has(f.id) ? "sel" : ""} ${focusId === f.id ? "focus" : ""} ${activeChain?.steps.some((st) => st.f?.id === f.id) ? "chain-hl" : ""}`}
                           style={{ "--sev": `var(--${sevVar(f.severity)})`, animationDelay: `${Math.min(i, 14) * 18}ms` }}
                           onClick={() => openFinding(f.id)}>
                           <button className="cb" aria-label="Select for bulk triage" aria-pressed={selected.has(f.id)}
@@ -518,6 +622,15 @@ export default function Submission() {
                             <div className="ttl" title={f.title}>{f.title}</div>
                             <div className="fsub">
                               {isNew(f) && <span className="newtag">NEW</span>}
+                              {chainTags.get(f.id) && (() => {
+                                const t = chainTags.get(f.id);
+                                return (
+                                  <span className="chaintag" title={t.titles.join(" · ")}
+                                    style={{ color: `var(--${sevVar(t.sev)})`, background: `var(--${sevVar(t.sev)}-bg)` }}>
+                                    ⛓ {t.ref} · chain: {t.sev}{t.n > 1 ? ` ×${t.n}` : ""}
+                                  </span>
+                                );
+                              })()}
                               {f.file_path && <span className="path">{findingLoc(f)}</span>}
                               {f.cwe && <span>{f.cwe}</span>}
                             </div>
@@ -534,8 +647,11 @@ export default function Submission() {
             </section>
 
             <div className="side">
+              <SignoffHistory id={id} />
               <Progress findings={findings} />
               <SeverityBars findings={findings} />
+              <Chains resolved={chainList} selected={chainOn} onSelect={selectChain}
+                analyzed={!!chainsData?.enabled && !sub.error_message?.includes("LLM review failed")} />
               <LlmRuns submissionId={id} />
               <Keys />
             </div>
@@ -554,7 +670,8 @@ export default function Submission() {
         onClear={() => setSelected(new Set())} />
 
       {showReport && <ReportModal theme={theme} sub={sub} findings={findings} onClose={() => setShowReport(false)} />}
-      {showSignOff && <SignOffModal sub={sub} findings={findings} onClose={() => setShowSignOff(false)} />}
+      {showSignOff && <SignOffModal sub={sub} findings={findings} mode={showSignOff}
+        chainPending={chainsData?.gate ? chainGatePending(chainList) : new Set()} onClose={() => setShowSignOff(null)} />}
     </div>
   );
 }

@@ -63,6 +63,18 @@ def _no_github_expiry_lookup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_chain_llm_calls(monkeypatch):
+    """The attack-chain pass calls the LLM after every scan; tests stay offline (no chains)."""
+    from worker import tasks
+    from worker.analysis.llm import LlmResult
+
+    async def no_chains(client, provider, user_prompt, spec):
+        return LlmResult(value=[])
+
+    monkeypatch.setattr(tasks, "complete", no_chains)
+
+
+@pytest.fixture(autouse=True)
 async def _clean_tables(_schema):
     yield
     async with engine.begin() as conn:

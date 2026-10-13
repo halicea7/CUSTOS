@@ -113,6 +113,11 @@ class SignoffRequest(BaseModel):
     note: str | None = Field(None, max_length=5000)
 
 
+class ReturnSignoffRequest(BaseModel):
+    # Why it goes back: the analyst sees this on the run page.
+    note: str = Field(..., min_length=1, max_length=5000)
+
+
 class AuditLogResponse(BaseModel):
     id: UUID
     submission_id: UUID
@@ -209,6 +214,9 @@ class AppConfigResponse(BaseModel):
     ollama_num_ctx: int  # 0 = let Ollama/Modelfile decide
     # LLM context
     llm_max_content_chars: int
+    # Attack chains: an LLM pass over each run's findings; critical/high chains can gate sign-off.
+    chains_enabled: bool = True
+    chain_gate: bool = True
     # Scanning
     max_file_size_kb: int
     max_files_per_repo: int
@@ -259,6 +267,8 @@ class AppConfigUpdateRequest(BaseModel):
     ollama_think: bool | None = None
     ollama_num_ctx: int | None = Field(None, ge=0, le=1_048_576)
     llm_max_content_chars: int | None = Field(None, ge=1_000, le=2_000_000)
+    chains_enabled: bool | None = None
+    chain_gate: bool | None = None
     max_file_size_kb: int | None = Field(None, ge=1, le=10_240)
     max_files_per_repo: int | None = Field(None, ge=1, le=10_000)
     access_token_expire_minutes: int | None = Field(None, ge=5, le=10_080)

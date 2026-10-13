@@ -57,3 +57,18 @@ export async function getComparison(id) {
   const res = await api.get(`/submissions/${id}/compare`);
   return res.data;
 }
+
+export async function getChains(id) {
+  const res = await api.get(`/submissions/${id}/chains`);
+  return res.data;
+}
+
+export async function getSignoffs(id) {
+  const res = await api.get(`/submissions/${id}/signoffs`);
+  return res.data;
+}
+
+export async function returnSignoff(id, note) {
+  const res = await api.post(`/submissions/${id}/signoff/return`, { note });
+  return res.data;
+}
