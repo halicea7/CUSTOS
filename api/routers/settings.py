@@ -1,13 +1,16 @@
 import asyncio
+import logging
 import platform
 from uuid import UUID
 
+import bedrock
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
+    BEDROCK_API_KEY,
     CONFIG_KEYS,
     RESPONSES_API_KEY,
     RESPONSES_API_KEY_ORIGIN,
@@ -16,6 +19,7 @@ from app_config import (  # noqa: F401 — CONFIG_KEYS re-exported
     S1_TOKEN_ORIGIN,
     is_local_url,
     load_app_config,
+    load_bedrock_api_key,
     load_responses_api_key,
     load_s1_token,
     url_origin,
@@ -30,6 +34,8 @@ from schemas import (
     AppConfigUpdateRequest,
     ChangePasswordRequest,
     CreateUserRequest,
+    SetRetentionRequest,
+    TestBedrockRequest,
     TestResponsesRequest,
     TestS1Request,
     UpdateUserRoleRequest,
@@ -38,6 +44,7 @@ from schemas import (
 from worker.analysis.llm import responses_endpoint
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+logger = logging.getLogger(__name__)
 
 # ── Account (all roles) ────────────────────────────────────────────────────────
 
@@ -337,6 +344,67 @@ async def test_s1(
     return {"ok": True, "cli_version": version}
 
 
+# ── Amazon Bedrock ─────────────────────────────────────────────────────────────
+
+@router.post("/config/test-bedrock")
+async def test_bedrock(
+    body: TestBedrockRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Check a Bedrock key and region, and list its models (bedrock-mantle only)."""
+    key = (body.api_key or "").strip() or await load_bedrock_api_key(db)
+    if not key:
+        return {"ok": False, "needs_key": True, "models": [], "error": "Enter a Bedrock API key"}
+    return await bedrock.list_models(body.region, body.endpoint, key, body.project_id)
+
+
+async def _saved_bedrock(db: AsyncSession) -> tuple[AppConfigResponse, str]:
+    cfg = await load_app_config(db)
+    if not cfg.bedrock_region:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Save a Bedrock region first")
+    key = await load_bedrock_api_key(db)
+    if not key:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Save a Bedrock API key first")
+    return cfg, key
+
+
+@router.get("/bedrock/retention")
+async def bedrock_retention(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Retention modes for the *saved* Bedrock settings: account, project and model."""
+    cfg, key = await _saved_bedrock(db)
+    out = await bedrock.get_retention(cfg.bedrock_region, cfg.bedrock_endpoint, key,
+                                      cfg.bedrock_project_id, cfg.bedrock_model)
+    return {**out, "region": cfg.bedrock_region, "project_id": cfg.bedrock_project_id,
+            "model_id": cfg.bedrock_model, "settable_modes": list(bedrock.SETTABLE_MODES)}
+
+
+@router.put("/bedrock/retention")
+async def set_bedrock_retention(
+    body: SetRetentionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Set the retention mode on Custos's Bedrock project, or account-wide for the Region."""
+    if body.scope == "account" and not body.confirm_account:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "Changing the account-wide mode affects every Bedrock user in this account and "
+                            "Region; confirm it explicitly")
+    cfg, key = await _saved_bedrock(db)
+    try:
+        await bedrock.set_retention(cfg.bedrock_region, cfg.bedrock_endpoint, key, body.scope, body.mode,
+                                    cfg.bedrock_project_id)
+    except bedrock.BedrockError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from None
+    where = f"project {cfg.bedrock_project_id}" if body.scope == "project" else "the whole account"
+    logger.info("%s set Bedrock data retention to %s for %s in %s",
+                current_user.username, body.mode, where, cfg.bedrock_region)
+    return await bedrock_retention(db=db, _=current_user)
+
+
 @router.get("/config", response_model=AppConfigResponse)
 async def get_config(
     db: AsyncSession = Depends(get_db),
@@ -384,6 +452,21 @@ async def update_config(
     if provider == "responses" and not updates.get("responses_model", current.responses_model):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Set a model for the Responses API provider")
 
+    bedrock_key = updates.pop("bedrock_api_key", None)
+    if bedrock_key is not None:
+        bedrock_key = bedrock_key.strip()
+    if "bedrock_region" in updates:
+        updates["bedrock_region"] = updates["bedrock_region"].strip().lower()
+    if provider == "bedrock":
+        missing = [label for label, ok in (
+            ("region", updates.get("bedrock_region", current.bedrock_region)),
+            ("model", updates.get("bedrock_model", current.bedrock_model)),
+            ("API key", bedrock_key if bedrock_key is not None else current.bedrock_api_key_set),
+        ) if not ok]
+        if missing:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "To use Amazon Bedrock, set the " + ", ".join(missing))
+
     if updates.get("self_update_repo"):
         exists = (await db.execute(
             select(Repo.id).where(Repo.repo_full_name == updates["self_update_repo"])
@@ -427,6 +510,15 @@ async def update_config(
     if s1_token is not None:
         await _store_bound_secret(db, S1_TOKEN, S1_TOKEN_ORIGIN, s1_token,
                                   s1_console, current_user.username)
+    if bedrock_key is not None:
+        row = await db.get(AppConfig, BEDROCK_API_KEY)
+        if not bedrock_key:
+            if row:
+                await db.delete(row)
+        elif row:
+            row.value, row.updated_by = encrypt(bedrock_key), current_user.username
+        else:
+            db.add(AppConfig(key=BEDROCK_API_KEY, value=encrypt(bedrock_key), updated_by=current_user.username))
 
     for key, value in updates.items():
         existing = await db.get(AppConfig, key)

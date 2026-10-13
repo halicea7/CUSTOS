@@ -186,6 +186,15 @@ class AppConfigResponse(BaseModel):
     responses_api_key_set: bool
     responses_api_key_last4: str | None = None
     responses_api_key_origin: str | None = None
+    # Amazon Bedrock (Responses API on bedrock-mantle or bedrock-runtime). Key is write-only.
+    bedrock_region: str = ""
+    bedrock_endpoint: str = "mantle"
+    bedrock_model: str = ""
+    bedrock_project_id: str = ""
+    bedrock_reasoning_effort: str = ""
+    bedrock_max_output_tokens: int = 0
+    bedrock_api_key_set: bool = False
+    bedrock_api_key_last4: str | None = None
     # Ollama
     ollama_base_url: str
     ollama_model: str
@@ -224,7 +233,16 @@ class AppConfigUpdateRequest(BaseModel):
     s1_publish: bool | None = None
     # Write-only. An empty string removes the stored token.
     s1_api_token: str | None = Field(None, max_length=4000)
-    llm_provider: Literal["ollama", "responses"] | None = None
+    llm_provider: Literal["ollama", "responses", "bedrock"] | None = None
+    bedrock_region: str | None = Field(None, pattern=r"^(?:[a-z]{2}(?:-gov)?-[a-z]+-\d{1,2})?$")
+    bedrock_endpoint: Literal["mantle", "runtime"] | None = None
+    bedrock_model: str | None = Field(None, pattern=r"^[A-Za-z0-9._:/-]{0,200}$")
+    # "" = no project (the account's default project). Mantle only.
+    bedrock_project_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{0,128}$")
+    bedrock_reasoning_effort: Literal["", "none", "low", "medium", "high"] | None = None
+    bedrock_max_output_tokens: int | None = Field(None, ge=0, le=1_000_000)
+    # Write-only. An empty string removes the stored key.
+    bedrock_api_key: str | None = Field(None, max_length=4000)
     responses_base_url: str | None = Field(None, pattern=r"^https?://[^\s]+$", max_length=500)
     responses_model: str | None = Field(None, max_length=200)
     # Write-only. An empty string removes the stored key.
@@ -247,6 +265,21 @@ class TestS1Request(BaseModel):
     scope_type: Literal["ACCOUNT", "SITE"]
     scope_id: str = Field(..., pattern=r"^\d{1,30}$")
     api_token: str | None = Field(None, max_length=4000)
+
+
+class TestBedrockRequest(BaseModel):
+    region: str = Field(..., pattern=r"^[a-z]{2}(?:-gov)?-[a-z]+-\d{1,2}$")
+    endpoint: Literal["mantle", "runtime"] = "mantle"
+    project_id: str = Field("", pattern=r"^[A-Za-z0-9_-]{0,128}$")
+    # The unsaved key from the form; otherwise the saved one is used.
+    api_key: str | None = Field(None, max_length=4000)
+
+
+class SetRetentionRequest(BaseModel):
+    scope: Literal["project", "account"]
+    mode: Literal["inherit", "none", "default", "aws_review"]
+    # Must be true for scope "account": it changes every Bedrock user in the account and Region.
+    confirm_account: bool = False
 
 
 class TestResponsesRequest(BaseModel):

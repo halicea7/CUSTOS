@@ -5,18 +5,19 @@ import time
 from datetime import UTC, datetime
 from uuid import UUID
 
+import bedrock
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import case, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app_config import load_app_config, load_responses_api_key
+from app_config import load_app_config, load_bedrock_api_key, load_responses_api_key
 from auth import get_current_user, require_admin
 from database import get_db
 from enums import SEVERITY_ORDER
 from models import SelfScan, SelfScanFinding, User
 from redis_util import ARQ_QUEUE, scan_stages_key
-from worker.analysis.llm import PROVIDER_RESPONSES, responses_endpoint
+from worker.analysis.llm import PROVIDER_BEDROCK, PROVIDER_RESPONSES, responses_endpoint
 
 router = APIRouter(prefix="/health", tags=["health-dashboard"])
 
@@ -71,7 +72,18 @@ def _svc(name: str, state: str, detail: str) -> dict:
 
 async def _probe_llm(db: AsyncSession) -> dict:
     cfg = await load_app_config(db)
-    if cfg.llm_provider == PROVIDER_RESPONSES:
+    if cfg.llm_provider == PROVIDER_BEDROCK:
+        name = f"LLM (Bedrock {cfg.bedrock_region or '—'})"
+        key = await load_bedrock_api_key(db)
+        if not (cfg.bedrock_region and key):
+            return _svc(name, "warn", "region or API key not saved")
+        if cfg.bedrock_endpoint == bedrock.ENDPOINT_RUNTIME:
+            # bedrock-runtime has no models list; the control plane's retention read checks the key.
+            url = f"https://bedrock.{cfg.bedrock_region}.amazonaws.com/data-retention"
+        else:
+            url = bedrock.base_url(cfg.bedrock_region, cfg.bedrock_endpoint) + "/models"
+        headers = {"Authorization": f"Bearer {key}"}
+    elif cfg.llm_provider == PROVIDER_RESPONSES:
         name, url = "LLM (Responses API)", responses_endpoint(cfg.responses_base_url).removesuffix("/responses") + "/models"
         key = await load_responses_api_key(db, cfg.responses_base_url)
         headers = {"Authorization": f"Bearer {key}"} if key else {}

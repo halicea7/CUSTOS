@@ -11,3 +11,6 @@ export const testOllama = (url) => api.get("/settings/config/test-ollama", { par
 export const testS1 = (body) => api.post("/settings/config/test-s1", body).then(r => r.data);
 export const testResponses = (base_url, api_key, allow_http = false) =>
   api.post("/settings/config/test-responses", { base_url, api_key: api_key || null, allow_http }).then(r => r.data);
+export const testBedrock = (body) => api.post("/settings/config/test-bedrock", body).then(r => r.data);
+export const getBedrockRetention = () => api.get("/settings/bedrock/retention").then(r => r.data);
+export const setBedrockRetention = (body) => api.put("/settings/bedrock/retention", body).then(r => r.data);

@@ -31,6 +31,10 @@ SELF_UPDATE_REPO = "self_update_repo"
 # to non-local hosts" rule (e.g. a campus LLM gateway without TLS). Holds the
 # exact http:// origin it was granted for; any other host is still refused.
 RESPONSES_HTTP_ALLOWED_ORIGIN = "responses_http_allowed_origin"
+# Amazon Bedrock API key. Stored encrypted and write-only like the others, but
+# not origin-bound: every Bedrock URL is built from a validated region name,
+# so it can only ever be sent to AWS.
+BEDROCK_API_KEY = "bedrock_api_key"
 
 CONFIG_KEYS = {
     "llm_provider", "responses_base_url", "responses_model", RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN,
@@ -38,6 +42,8 @@ CONFIG_KEYS = {
     "s1_verify_secrets", "s1_publish", S1_TOKEN, S1_TOKEN_ORIGIN,
     SELF_UPDATE_REPO, RESPONSES_HTTP_ALLOWED_ORIGIN,
     "responses_reasoning_effort", "responses_max_output_tokens",
+    "bedrock_region", "bedrock_endpoint", "bedrock_model", "bedrock_project_id", BEDROCK_API_KEY,
+    "bedrock_reasoning_effort", "bedrock_max_output_tokens",
     "ollama_base_url", "ollama_model", "ollama_think", "ollama_num_ctx",
     "llm_max_content_chars",
     "max_file_size_kb", "max_files_per_repo",
@@ -59,6 +65,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
     api_key = _key_for_url(ov, responses_base_url)
     s1_console_url = ov.get("s1_console_url", settings.S1_CONSOLE_URL).rstrip("/")
     s1_token = _s1_token_for_url(ov, s1_console_url) if s1_console_url else ""
+    bedrock_key = _decrypt_or_empty(ov.get(BEDROCK_API_KEY), "Bedrock API key")
     s1_scanners = [s for s in ov.get("s1_scanners", ",".join(S1_SCANNERS)).split(",") if s in S1_SCANNERS]
     return AppConfigResponse(
         self_update_repo=ov.get(SELF_UPDATE_REPO, ""),
@@ -82,6 +89,14 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
         responses_max_output_tokens=int(ov.get("responses_max_output_tokens", 0)),
         responses_api_key_set=bool(api_key),
         responses_api_key_last4=api_key[-4:] if len(api_key) >= 8 else None,
+        bedrock_region=ov.get("bedrock_region", ""),
+        bedrock_endpoint=ov.get("bedrock_endpoint", "mantle"),
+        bedrock_model=ov.get("bedrock_model", ""),
+        bedrock_project_id=ov.get("bedrock_project_id", ""),
+        bedrock_reasoning_effort=ov.get("bedrock_reasoning_effort", ""),
+        bedrock_max_output_tokens=int(ov.get("bedrock_max_output_tokens", 0)),
+        bedrock_api_key_set=bool(bedrock_key),
+        bedrock_api_key_last4=bedrock_key[-4:] if len(bedrock_key) >= 8 else None,
         ollama_base_url=ov.get("ollama_base_url", settings.OLLAMA_BASE_URL).rstrip("/"),
         ollama_model=ov.get("ollama_model", settings.OLLAMA_MODEL),
         ollama_think=ov.get("ollama_think", "false").lower() == "true",
@@ -164,6 +179,11 @@ async def load_responses_api_key(db: AsyncSession, base_url: str) -> str:
         select(AppConfig).where(AppConfig.key.in_((RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN)))
     )
     return _key_for_url({r.key: r.value for r in rows.scalars()}, base_url)
+
+
+async def load_bedrock_api_key(db: AsyncSession) -> str:
+    row = await db.get(AppConfig, BEDROCK_API_KEY)
+    return _decrypt_or_empty(row.value if row else None, "Bedrock API key")
 
 
 def is_local_url(url: str) -> bool:

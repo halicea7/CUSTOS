@@ -4,8 +4,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth, useTheme, useUnsavedGuard } from "../App.jsx";
 import {
   getUsers, createUser, updateUserRole, deleteUser,
-  changePassword, getConfig, updateConfig, testOllama, testResponses, testS1,
+  changePassword, getConfig, updateConfig, testOllama, testResponses, testS1, testBedrock,
 } from "../api/settings.js";
+import BedrockRetention from "../components/settings/BedrockRetention.jsx";
 import { listRepos } from "../api/repos.js";
 import { listMembers } from "../api/groups.js";
 import { useGroups } from "../api/queries.js";
@@ -289,6 +290,9 @@ function needsHttpException(d, cfg) {
 const prettyOrigin = (o) => (o || "").replace(/^(https:\/\/.+):443$/, "$1").replace(/^(http:\/\/.+):80$/, "$1");
 
 const URL_RE = /^https?:\/\/\S+$/;
+const BEDROCK_REGION_RE = /^[a-z]{2}(?:-gov)?-[a-z]+-\d{1,2}$/;
+const bedrockBase = (region, endpoint) => (endpoint === "runtime"
+  ? `https://bedrock-runtime.${region}.amazonaws.com/openai/v1` : `https://bedrock-mantle.${region}.api.aws/v1`);
 const S1_CONSOLE_RE = /^https:\/\/[^\s/]+\/?$/;
 const S1_SCANNER_OPTIONS = [
   { value: "secret", label: "Secrets" },
@@ -313,6 +317,15 @@ function validate(d, cfg) {
     if (bound && !d.responses_api_key_input && !d.responses_api_key_clear
         && urlOrigin(d.responses_base_url) !== bound) {
       e.responses_api_key = `The saved key only works with ${prettyOrigin(bound)}. Enter the key again to use this host, or remove it.`;
+    }
+  }
+  if (d.llm_provider === "bedrock") {
+    if (!BEDROCK_REGION_RE.test(d.bedrock_region || "")) e.bedrock_region = "An AWS region such as us-east-1";
+    if (!d.bedrock_model?.trim()) e.bedrock_model = "Pick a model from the connection test, or type its ID";
+    else if (!/^[A-Za-z0-9._:/-]{1,200}$/.test(d.bedrock_model.trim())) e.bedrock_model = "Model IDs use letters, digits and . _ : / -";
+    if (!/^[A-Za-z0-9_-]{0,128}$/.test(d.bedrock_project_id || "")) e.bedrock_project_id = "Letters, digits, - and _ only";
+    if (!d.bedrock_api_key_input?.trim() && (d.bedrock_api_key_clear || d.bedrock_api_key_replace || !cfg?.bedrock_api_key_set)) {
+      e.bedrock_api_key = "Enter a Bedrock API key";
     }
   }
   if (d.s1_enabled) {
@@ -343,6 +356,7 @@ function fieldForServerError(msg) {
   if (/model for the Responses API/i.test(msg)) return "responses_model";
   if (/plain HTTP/i.test(msg)) return "responses_base_url";
   if (/SentinelOne token is bound/i.test(msg)) return "s1_api_token";
+  if (/To use Amazon Bedrock/i.test(msg)) return "bedrock_model";
   return null;
 }
 
@@ -362,7 +376,19 @@ function useProviderStatus(cfg) {
       }
       return { tone: "ok", text: res.models?.length ? `Connected · ${res.models.length} models` : "Connected" };
     };
-    if (cfg.llm_provider === "responses") {
+    if (cfg.llm_provider === "bedrock") {
+      if (!cfg.bedrock_api_key_set) done({ tone: "warn", text: "No API key saved" });
+      else if (cfg.bedrock_endpoint === "runtime") done({ tone: "pending", text: "bedrock-runtime · checked on the Health page" });
+      else {
+        testBedrock({ region: cfg.bedrock_region, endpoint: cfg.bedrock_endpoint, project_id: cfg.bedrock_project_id })
+          .then((r) => {
+            const m = r.details?.find((x) => x.name === cfg.bedrock_model);
+            done(m?.unavailable ? { tone: "error", text: "Model unavailable under the current retention mode" }
+              : check(r, cfg.bedrock_model), r);
+          })
+          .catch(() => done({ tone: "error", text: "Check failed" }));
+      }
+    } else if (cfg.llm_provider === "responses") {
       if (!cfg.responses_api_key_set) {
         done({ tone: "warn", text: "No API key saved" });
       } else {
@@ -443,6 +469,7 @@ function AnalysisTab({ theme }) {
   const [serverErr, setServerErr] = useState({});    // { field: msg } from the last save
   const [ollamaTest, setOllamaTest] = useState(null);
   const [respTest, setRespTest] = useState(null);
+  const [bedrockTest, setBedrockTest] = useState(null);
   const [s1Test, setS1Test] = useState(null);
   const [confirmHttp, setConfirmHttp] = useState(false);
   const [repos, setRepos] = useState([]);
@@ -482,6 +509,9 @@ function AnalysisTab({ theme }) {
   };
   const ollamaModels = draft && modelsFrom(ollamaTest, draft.ollama_base_url, cfg?.ollama_base_url, "ollama");
   const respModels = draft && modelsFrom(respTest, draft.responses_base_url, cfg?.responses_base_url, "responses");
+  const bedrockModels = draft && modelsFrom(bedrockTest, bedrockBase(draft.bedrock_region, draft.bedrock_endpoint),
+    cfg && bedrockBase(cfg.bedrock_region, cfg.bedrock_endpoint), "bedrock");
+  const bedrockPicked = bedrockModels?.find(m => m.name === draft?.bedrock_model);
   const ollamaThinks = ollamaModels?.find(m => m.name === draft?.ollama_model)?.thinking ?? null;
   const respThinks = respModels?.find(m => m.name === draft?.responses_model)?.thinking ?? null;
   const respContext = respModels?.find(m => m.name === draft?.responses_model)?.context_length ?? null;
@@ -517,6 +547,14 @@ function AnalysisTab({ theme }) {
     catch (e) { setRespTest({ ok: false, error: errorMessage(e, "Request failed"), models: [] }); }
   };
 
+  const handleTestBedrock = async () => {
+    setBedrockTest("testing");
+    try {
+      setBedrockTest(await testBedrock({ region: draft.bedrock_region, endpoint: draft.bedrock_endpoint,
+        project_id: draft.bedrock_project_id || "", api_key: draft.bedrock_api_key_input || null }));
+    } catch (e) { setBedrockTest({ ok: false, error: errorMessage(e, "Request failed"), models: [] }); }
+  };
+
   const handleTestS1 = async () => {
     setS1Test("testing");
     try {
@@ -532,6 +570,7 @@ function AnalysisTab({ theme }) {
 
   const handleDiscard = () => {
     setDraft(cfg); setServerErr({}); setFb(null); setOllamaTest(null); setRespTest(null); setS1Test(null);
+    setBedrockTest(null);
   };
 
   const handleSave = async () => {
@@ -539,6 +578,8 @@ function AnalysisTab({ theme }) {
     // The API key is write-only: send it only when typed, or "" to remove it.
     const keyUpdate = draft.responses_api_key_clear ? { responses_api_key: "" }
       : draft.responses_api_key_input ? { responses_api_key: draft.responses_api_key_input } : {};
+    const bedrockKeyUpdate = draft.bedrock_api_key_clear ? { bedrock_api_key: "" }
+      : draft.bedrock_api_key_input?.trim() ? { bedrock_api_key: draft.bedrock_api_key_input.trim() } : {};
     const s1TokenUpdate = draft.s1_api_token_clear ? { s1_api_token: "" }
       : draft.s1_api_token_input ? { s1_api_token: draft.s1_api_token_input } : {};
     try {
@@ -550,6 +591,13 @@ function AnalysisTab({ theme }) {
         responses_max_output_tokens: Number(draft.responses_max_output_tokens) || 0,
         ...keyUpdate,
         ...s1TokenUpdate,
+        ...bedrockKeyUpdate,
+        bedrock_region: (draft.bedrock_region || "").trim(),
+        bedrock_endpoint: draft.bedrock_endpoint || "mantle",
+        bedrock_model: (draft.bedrock_model || "").trim(),
+        bedrock_project_id: (draft.bedrock_project_id || "").trim(),
+        bedrock_reasoning_effort: draft.bedrock_reasoning_effort || "",
+        bedrock_max_output_tokens: Number(draft.bedrock_max_output_tokens) || 0,
         self_update_repo: draft.self_update_repo || "",
         ...((draft.responses_http_allowed_origin || null) !== (cfg.responses_http_allowed_origin || null)
           ? { responses_http_allowed_origin: draft.responses_http_allowed_origin || "" } : {}),
@@ -573,7 +621,7 @@ function AnalysisTab({ theme }) {
         worker_job_timeout: Number(draft.worker_job_timeout),
         repo_check_interval_hours: Number(draft.repo_check_interval_hours),
       });
-      setCfg(updated); setDraft(updated); setRespTest(null); setS1Test(null);
+      setCfg(updated); setDraft(updated); setRespTest(null); setS1Test(null); setBedrockTest(null);
       setFb({ msg: "Saved", type: "success" });
     } catch (e) {
       const msg = errorMessage(e, "Failed to save");
@@ -587,6 +635,7 @@ function AnalysisTab({ theme }) {
   if (!draft) return <Feedback theme={t} {...(fb || {})} />;
 
   const isResponses = draft.llm_provider === "responses";
+  const isBedrock = draft.llm_provider === "bedrock";
   const boundOrigin = cfg?.responses_api_key_origin;
   const promptTokens = Math.round((Number(draft.llm_max_content_chars) || 0) / 4) + PROMPT_OVERHEAD_TOKENS;
   const numCtx = Number(draft.ollama_num_ctx) || 0;
@@ -614,8 +663,19 @@ function AnalysisTab({ theme }) {
                 description: "Local model. Code never leaves your infrastructure." },
               { value: "responses", label: "Responses API",
                 description: "OpenAI or any /v1/responses-compatible server, with an API key." },
+              { value: "bedrock", label: "Amazon Bedrock",
+                description: "AWS-hosted models with a Bedrock API key, and AWS data-retention controls." },
             ]} />
 
+          {isBedrock && (
+            <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: t.radius, fontSize: 12,
+              lineHeight: 1.5, background: `${t.sev.medium.fg}14`, border: `1px solid ${t.sev.medium.fg}33`,
+              color: t.c.text2 }}>
+              Source code under review will be <b>sent to Amazon Bedrock</b> in the region below. Requests
+              ask it not to store them (<code style={{ fontFamily: t.fontMono }}>store: false</code>); what
+              AWS may still retain is set by the <b>data retention mode</b> (see that section).
+            </div>
+          )}
           {isResponses && (
             <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: t.radius, fontSize: 12,
               lineHeight: 1.5, background: `${t.sev.medium.fg}14`, border: `1px solid ${t.sev.medium.fg}33`,
@@ -628,7 +688,85 @@ function AnalysisTab({ theme }) {
 
           <div style={{ borderTop: `1px solid ${t.c.border}`, margin: "18px 0" }} />
 
-          {isResponses ? (
+          {isBedrock ? (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.2fr)", gap: 12 }}>
+                <Field theme={t} label="Region" error={errors.bedrock_region}>
+                  <TextInput theme={t} value={draft.bedrock_region || ""} mono placeholder="us-east-1"
+                    onChange={e => { update({ bedrock_region: e.target.value.trim().toLowerCase() }); setBedrockTest(null); }} />
+                </Field>
+                <Field theme={t} label="Endpoint">
+                  <SelectInput theme={t} value={draft.bedrock_endpoint || "mantle"}
+                    onChange={e => { update({ bedrock_endpoint: e.target.value }); setBedrockTest(null); }}
+                    options={[{ value: "mantle", label: "bedrock-mantle (models list, projects)" },
+                      { value: "runtime", label: "bedrock-runtime (AWS recommended)" }]} />
+                </Field>
+              </div>
+              {BEDROCK_REGION_RE.test(draft.bedrock_region || "") && (
+                <div style={{ ...hint, marginTop: -8, marginBottom: 14 }}>
+                  Requests go to <code style={{ fontFamily: t.fontMono }}>{bedrockBase(draft.bedrock_region, draft.bedrock_endpoint)}/responses</code>
+                  {draft.bedrock_endpoint === "runtime"
+                    && <> · this endpoint can&rsquo;t list models and has no projects, so use an inference profile ID such as <code style={{ fontFamily: t.fontMono }}>us.openai.gpt-oss-120b</code></>}
+                </div>
+              )}
+              <Field theme={t} label="API key" hint="Bedrock API key · only ever sent to AWS" error={errors.bedrock_api_key}>
+                {cfg?.bedrock_api_key_set && !draft.bedrock_api_key_clear && !draft.bedrock_api_key_replace ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span className="mono muted" style={{ fontSize: ".85rem" }}>saved · ends in {cfg.bedrock_api_key_last4 || "····"}</span>
+                    <Btn theme={t} size="sm" onClick={() => update({ bedrock_api_key_replace: true })}>Replace</Btn>
+                    <Btn theme={t} size="sm" variant="quiet" onClick={() => update({ bedrock_api_key_clear: true })}>Remove</Btn>
+                  </div>
+                ) : (
+                  <TextInput theme={t} type="password" mono autoComplete="off" placeholder="ABSK…"
+                    value={draft.bedrock_api_key_input || ""}
+                    onChange={e => { update({ bedrock_api_key_input: e.target.value, bedrock_api_key_clear: false }); setBedrockTest(null); }} />
+                )}
+                <div style={hint}>
+                  Long-term keys expire (you picked the length when generating it); put a reminder in to replace it.
+                </div>
+              </Field>
+              {(draft.bedrock_endpoint || "mantle") === "mantle" && (
+                <Field theme={t} label="Project ID" hint="optional · bedrock-mantle only" error={errors.bedrock_project_id}>
+                  <TextInput theme={t} value={draft.bedrock_project_id || ""} mono placeholder="proj_… (blank = default project)"
+                    onChange={e => { update({ bedrock_project_id: e.target.value.trim() }); setBedrockTest(null); }} />
+                  <div style={hint}>
+                    A project of its own lets Custos have its own retention mode without changing the whole account.
+                  </div>
+                </Field>
+              )}
+              <div style={{ marginBottom: 16 }}>
+                <Btn theme={t}
+                  variant={bedrockTest && bedrockTest !== "testing" ? (bedrockTest.ok ? "success" : "danger") : "ghost"}
+                  onClick={handleTestBedrock}
+                  disabled={bedrockTest === "testing" || !!errors.bedrock_region || !!errors.bedrock_project_id}>
+                  {bedrockTest === "testing" ? "Testing…" : "Test connection"}
+                </Btn>
+                <ConnectionResult theme={t} result={bedrockTest} />
+              </div>
+              <Field theme={t} label="Model" error={errors.bedrock_model}>
+                <ModelPicker theme={t} value={draft.bedrock_model} models={bedrockModels}
+                  onChange={v => update({ bedrock_model: v })}
+                  placeholder={draft.bedrock_endpoint === "runtime" ? "e.g. us.openai.gpt-oss-120b" : "e.g. openai.gpt-oss-120b"} />
+                {bedrockPicked?.unavailable && (
+                  <div role="alert" style={{ ...hint, color: t.sev.critical.fg }}>
+                    ⚠ {bedrockPicked.status_reason || "Bedrock reports this model as unavailable."} Change the data
+                    retention mode, or pick another model.
+                  </div>
+                )}
+              </Field>
+              <Field theme={t} label="Thinking" hint="reasoning effort, for models that reason">
+                <SelectInput theme={t} value={draft.bedrock_reasoning_effort || ""}
+                  onChange={set("bedrock_reasoning_effort")}
+                  options={[{ value: "", label: "Model default" }, { value: "none", label: "Off" },
+                    { value: "low", label: "Low" }, { value: "medium", label: "Medium" },
+                    { value: "high", label: "High" }]} />
+              </Field>
+              <Field theme={t} label="Max output tokens">
+                <Slider theme={t} value={Number(draft.bedrock_max_output_tokens) || 0} steps={MAX_OUTPUT_STEPS}
+                  format={fmtMaxOutput} onChange={v => update({ bedrock_max_output_tokens: v })} />
+              </Field>
+            </>
+          ) : isResponses ? (
             <>
               <Field theme={t} label="Base URL" hint="requests go to {base}/responses" error={errors.responses_base_url}>
                 <TextInput theme={t} value={draft.responses_base_url || ""} mono
@@ -793,6 +931,12 @@ function AnalysisTab({ theme }) {
           )}
         </div>
       </SectionCard>
+
+      {(isBedrock || cfg?.llm_provider === "bedrock") && (
+        <BedrockRetention theme={t} cfg={cfg}
+          unsaved={!!draft && !!cfg && ["llm_provider", "bedrock_region", "bedrock_endpoint", "bedrock_model",
+            "bedrock_project_id", "bedrock_api_key_input", "bedrock_api_key_clear", "bedrock_api_key_replace"].some(k => (draft[k] || "") !== (cfg[k] || ""))} />
+      )}
 
       <SectionCard theme={t} title="SentinelOne CNS" subtitle="extra scanning layer"
         right={<StatusPill theme={t} status={draft.s1_enabled !== cfg?.s1_enabled

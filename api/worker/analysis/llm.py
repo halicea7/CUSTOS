@@ -134,6 +134,8 @@ _STRICT_RESPONSE_SCHEMA = {
 
 PROVIDER_OLLAMA = "ollama"
 PROVIDER_RESPONSES = "responses"
+# Amazon Bedrock speaks the Responses API; only the URL, headers and label differ.
+PROVIDER_BEDROCK = "bedrock"
 
 
 _CONNECT_TIMEOUT_SECONDS = 15
@@ -150,6 +152,7 @@ class LlmProvider:
     ``ollama``: a local Ollama server's native /api/chat endpoint.
     ``responses``: any server implementing the OpenAI Responses API
     (POST {base_url}/responses), authenticated with a bearer API key.
+    ``bedrock``: Amazon Bedrock's Responses API, same request format.
     """
 
     kind: str
@@ -163,11 +166,18 @@ class LlmProvider:
     reasoning_effort: str = ""
     # Responses API: cap on generated tokens; 0 = the server's default.
     max_output_tokens: int = 0
+    # Sent with every request (e.g. Bedrock's OpenAI-Project header).
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    # Tried once if the server says the model isn't served on this path
+    # (bedrock-mantle serves some models under /openai/v1 instead of /v1).
+    alt_base_url: str = ""
 
     @property
     def label(self) -> str:
         """Model name as recorded on LLM runs."""
-        return self.model if self.kind == PROVIDER_OLLAMA else f"{self.model} (Responses API)"
+        if self.kind == PROVIDER_OLLAMA:
+            return self.model
+        return f"{self.model} ({'Bedrock' if self.kind == PROVIDER_BEDROCK else 'Responses API'})"
 
 
 @dataclass
@@ -265,7 +275,7 @@ async def _call_batch(
     sast_context: list[RawFinding],
 ) -> LlmResult:
     user_prompt = _build_user_prompt(files, sast_context)
-    if provider.kind == PROVIDER_RESPONSES:
+    if provider.kind in (PROVIDER_RESPONSES, PROVIDER_BEDROCK):
         return await _responses_request(client, provider, user_prompt)
     return await _ollama_request(client, provider, user_prompt)
 
@@ -322,6 +332,7 @@ _RESPONSES_FORMATS: list[dict | None] = [
 async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, user_prompt: str) -> LlmResult:
     url = responses_endpoint(provider.base_url)
     headers = {"Authorization": f"Bearer {provider.api_key}"} if provider.api_key else {}
+    headers.update(provider.extra_headers)
     payload: dict = {
         "model": provider.model,
         "instructions": _SYSTEM_PROMPT,
@@ -344,6 +355,12 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
             resp = await client.post(url, json=payload, headers=headers)
         except httpx.HTTPError as exc:
             raise LlmError(f"Responses API request failed: {type(exc).__name__}: {exc}") from exc
+        if provider.alt_base_url and resp.status_code in (400, 404) and _WRONG_ROUTE in resp.text:
+            url = responses_endpoint(provider.alt_base_url)
+            try:
+                resp = await client.post(url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                raise LlmError(f"Responses API request failed: {type(exc).__name__}: {exc}") from exc
         # Only fall back when the server rejects the *format*; other 400s are real errors.
         if resp.status_code == 400 and _mentions_format(resp.text):
             continue
@@ -377,6 +394,9 @@ async def _responses_request(client: httpx.AsyncClient, provider: LlmProvider, u
         prompt_tokens=usage.get("input_tokens"),
         completion_tokens=usage.get("output_tokens"),
     )
+
+
+_WRONG_ROUTE = "isn't supported on this route"
 
 
 def _responses_output_text(body: dict) -> tuple[str, str]:
