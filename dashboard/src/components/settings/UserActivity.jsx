@@ -35,10 +35,11 @@ const ACTIONS = {
   settings_changed: ["Changed analysis settings", "var(--high)"],
   retention_changed: ["Changed Bedrock data retention", "var(--high)"],
   self_check: ["Ran a self-check", "var(--text3)"],
+  llm_rerun: ["Re-ran the LLM review", "var(--accent)"],
 };
 const TRIAGE = new Set(["false_positive", "confirmed", "escalated"]);
 const FILTERS = [["all", "All"], ["triage", "Triage"], ["repos", "Repositories"], ["access", "Sign-ins"], ["admin", "Admin"]];
-const kindOf = (a) => (TRIAGE.has(a) || a === "sign_off" || a === "delete_submission" ? "triage"
+const kindOf = (a) => (TRIAGE.has(a) || ["sign_off", "delete_submission", "llm_rerun"].includes(a) ? "triage"
   : a.startsWith("repo_") ? "repos" : a.startsWith("login") || a === "password_changed" ? "access" : "admin");
 
 export default function UserActivity({ user }) {

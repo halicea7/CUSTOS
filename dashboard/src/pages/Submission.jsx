@@ -251,6 +251,8 @@ export default function Submission() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { theme } = useTheme();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const toast = useToast();
 
   const subQuery = useSubmission(id);
@@ -423,10 +425,12 @@ export default function Submission() {
           )}
           <div><div className="lbl">Submitted</div><div className="v mono" title={new Date(sub.created_at).toLocaleString()}>{ago(sub.created_at)}</div></div>
           <Status status={sub.status} />
-          <button className="btn" disabled={inFlight || llmBusy} onClick={startRerun}
-            title="Re-clones the same commit; only LLM findings are replaced">
-            {llmBusy ? <><span className="spin" /> Re-running</> : "↻ Re-run LLM"}
-          </button>
+          {isAdmin && (
+            <button className="btn" disabled={inFlight || llmBusy} onClick={startRerun}
+              title="Re-clones the same commit; only LLM findings are replaced">
+              {llmBusy ? <><span className="spin" /> Re-running</> : "↻ Re-run LLM"}
+            </button>
+          )}
           <button className="btn" disabled={inFlight} onClick={() => setShowReport(true)} data-tour="run-report">↓ Report</button>
           <button className="btn" disabled={!canRemediate} data-tour="run-remediations"
             title={canRemediate ? "Task file for an AI coding agent: fixes for the findings, most severe first" : "Nothing to remediate"}

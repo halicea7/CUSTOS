@@ -1,6 +1,7 @@
 import time
 from uuid import UUID
 
+import activity
 from arq.jobs import Job
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import case, func, select
@@ -297,7 +298,10 @@ async def compare_with_previous(
 async def rerun_llm_endpoint(
     request: Request,
     sub: Submission = Depends(get_visible_submission),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
 ):
+    """Re-run the LLM review of a finished run (admins only: it replaces the LLM findings)."""
     redis = request.app.state.redis
     locked = await redis.set(llm_lock_key(sub.id), "1", nx=True, ex=7200)
     if not locked:
@@ -306,6 +310,8 @@ async def rerun_llm_endpoint(
     job = await request.app.state.arq_pool.enqueue_job("rerun_llm", str(sub.id))
     await redis.set(llm_job_key(sub.id), job.job_id, ex=86400)
     await redis.sadd(LLM_ACTIVE_SET, str(sub.id))
+    activity.record(db, admin.username, "llm_rerun", f"{sub.repo_full_name}@{sub.commit_sha[:7]}")
+    await db.commit()
     return {"job_id": job.job_id}
 
 

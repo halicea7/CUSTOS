@@ -68,11 +68,13 @@ async def test_group_filter_cannot_bypass_visibility(client, db):
 
 async def test_llm_active_only_lists_visible(client, db):
     sub, _ = await _setup(db)
-    assert (await client.post(f"/submissions/{sub.id}/rerun-llm", headers=auth_headers("alice"))).status_code == 202
+    # Re-running replaces the LLM findings, so only admins may.
+    assert (await client.post(f"/submissions/{sub.id}/rerun-llm", headers=auth_headers("alice"))).status_code == 403
+    assert (await client.post(f"/submissions/{sub.id}/rerun-llm", headers=auth_headers("root"))).status_code == 202
     assert (await client.get("/submissions/llm-active", headers=auth_headers("alice"))).json()["active"] == [str(sub.id)]
     assert (await client.get("/submissions/llm-active", headers=auth_headers("bob"))).json()["active"] == []
     # Second concurrent re-run is refused.
-    assert (await client.post(f"/submissions/{sub.id}/rerun-llm", headers=auth_headers("alice"))).status_code == 409
+    assert (await client.post(f"/submissions/{sub.id}/rerun-llm", headers=auth_headers("root"))).status_code == 409
 
 
 async def test_sharing_an_existing_repo_with_a_group(client, db):
