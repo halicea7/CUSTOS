@@ -8,10 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from access import can_see_group, get_visible_submission, restrict_to_visible
 from app_config import SELF_UPDATE_REPO
-from auth import get_current_user
+from auth import get_current_user, require_admin
 from database import get_db
-from enums import BLOCKING_SEVERITIES, SEVERITY_ORDER
-from models import AppConfig, Finding, LlmRun, Repo, RepoGroup, Submission, User
+from enums import BLOCKING_SEVERITIES, SEVERITY_ORDER, SubmissionStatus
+from models import AppConfig, AuditLog, Finding, LlmRun, Repo, RepoGroup, Submission, User
 from redis_util import ARQ_QUEUE, LLM_ACTIVE_SET, llm_job_key, llm_lock_key, llm_start_key
 from schemas import FindingResponse, LlmRunResponse, SubmissionListResponse, SubmissionResponse
 
@@ -111,6 +111,32 @@ async def get_submission(
     self_repo = await db.get(AppConfig, SELF_UPDATE_REPO)
     resp.is_self_update = bool(self_repo and self_repo.value == sub.repo_full_name)
     return resp
+
+
+@router.delete("/{submission_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_submission(
+    submission_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Remove a run and its findings from the queue (admins only).
+
+    Refused while the worker is still on it. The audit log keeps its entries
+    and records the deletion. If the commit is still a branch or PR head, the
+    next update check scans it again.
+    """
+    sub = await db.get(Submission, submission_id)
+    if not sub:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
+    if sub.status in (SubmissionStatus.PENDING, SubmissionStatus.ANALYZING) \
+            or await request.app.state.redis.exists(llm_lock_key(sub.id)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This run is still in progress; wait for it to finish")
+    db.add(AuditLog(submission_id=sub.id, analyst=current_user.username, action="delete_submission",
+                    note=f"Deleted {sub.repo_full_name}@{sub.commit_sha[:12]} ({sub.status})"))
+    await db.delete(sub)
+    await db.commit()
 
 
 @router.get("/{submission_id}/llm-runs", response_model=list[LlmRunResponse])

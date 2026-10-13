@@ -1,6 +1,44 @@
 // Submission renderings for the queue: card grid and row list.
 import React, { useState } from "react";
 import { Severity, SeverityBar, StatusBadge, SEV_ORDER, fmtDate } from "../atoms.jsx";
+import { errorMessage } from "../../api/errors.js";
+
+const IN_PROGRESS = new Set(["pending", "analyzing"]);
+
+// Admin-only "Delete" with an inline confirm. Clicks don't open the item.
+function DeleteControl({ theme, sub, onDelete }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy,       setBusy]       = useState(false);
+  const [err,        setErr]        = useState("");
+  if (!onDelete || IN_PROGRESS.has(sub.status)) return null;
+  const t = theme;
+  const link = { background: "none", border: "none", cursor: "pointer", padding: 0,
+    fontSize: 12, fontFamily: t.fontUi };
+  const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
+  const remove = async () => {
+    setBusy(true); setErr("");
+    try { await onDelete(sub); }
+    catch (e) { setErr(errorMessage(e, "Delete failed")); setConfirming(false); }
+    finally { setBusy(false); }
+  };
+  return (
+    <span onClick={(e) => e.stopPropagation()}
+      style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "default" }}>
+      {err && <span style={{ fontSize: 11, color: "var(--red)" }}>{err}</span>}
+      {confirming ? (
+        <>
+          <span style={{ fontSize: 12, color: t.c.text2 }}>Delete run?</span>
+          <button disabled={busy} onClick={stop(remove)}
+            style={{ ...link, color: "var(--red)", fontWeight: 600 }}>{busy ? "Deleting…" : "Delete"}</button>
+          <button onClick={stop(() => setConfirming(false))} style={{ ...link, color: t.c.text3 }}>Cancel</button>
+        </>
+      ) : (
+        <button aria-label="Delete run" title="Delete this run and its findings"
+          onClick={stop(() => setConfirming(true))} style={{ ...link, color: t.c.text3 }}>Delete</button>
+      )}
+    </span>
+  );
+}
 
 function RepoCell({ theme, sub }) {
   return (
@@ -81,7 +119,7 @@ function FindingsCell({ theme, sub, isLlmActive }) {
   return <span style={{ color: t.c.text3, fontSize: 12 }}>—</span>;
 }
 
-export function QueueCards({ theme, subs, onOpen, activeJobs }) {
+export function QueueCards({ theme, subs, onOpen, onDelete, activeJobs }) {
   const [hover, setHover] = useState(null);
   const t = theme;
   return (
@@ -115,6 +153,7 @@ export function QueueCards({ theme, subs, onOpen, activeJobs }) {
                 {sub.submitter || sub.github_actor || "—"}
               </span>
               <span style={{ marginLeft: "auto" }}>{fmtDate(sub.created_at)}</span>
+              <DeleteControl theme={t} sub={sub} onDelete={onDelete} />
             </div>
           </div>
         );
@@ -123,7 +162,7 @@ export function QueueCards({ theme, subs, onOpen, activeJobs }) {
   );
 }
 
-export function QueueRows({ theme, subs, onOpen, activeJobs }) {
+export function QueueRows({ theme, subs, onOpen, onDelete, activeJobs }) {
   const [hover, setHover] = useState(null);
   const COLS = "1.8fr 1fr 190px 130px";
   return (
@@ -158,8 +197,10 @@ export function QueueRows({ theme, subs, onOpen, activeJobs }) {
                 {fmtDate(sub.created_at)}
               </div>
             </div>
-            <div style={{ justifySelf: "end" }}>
+            <div style={{ justifySelf: "end", display: "flex", flexDirection: "column",
+              alignItems: "flex-end", gap: 6 }}>
               <StatusBadge theme={theme} status={sub.status} size="lg" />
+              <DeleteControl theme={theme} sub={sub} onDelete={onDelete} />
             </div>
           </div>
         );

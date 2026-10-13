@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getActiveLlmJobs, getLlmRuns, getLlmStatus, getSubmission, getSubmissionFindings,
-  listSubmissions, rerunLlm, signOff,
+  listSubmissions, rerunLlm, signOff, deleteSubmission,
 } from "./submissions.js";
 import { getHealthStatus, getScanFindings, listScans, triggerScan } from "./health.js";
 import { listGroups } from "./groups.js";
@@ -92,6 +92,17 @@ export function useSignOff(id) {
     mutationFn: (note) => signOff(id, note),
     onSuccess: (updated) => {
       qc.setQueryData(keys.submission(id), updated);
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+    },
+  });
+}
+
+export function useDeleteSubmission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id) => deleteSubmission(id),
+    onSuccess: (_, id) => {
+      qc.removeQueries({ queryKey: keys.submission(id) });
       qc.invalidateQueries({ queryKey: ["submissions"] });
     },
   });

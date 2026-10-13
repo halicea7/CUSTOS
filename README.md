@@ -288,7 +288,7 @@ To test webhooks in local development, expose the API with the dev console's ngr
 
 Two roles: `analyst` and `admin`.
 
-- **Admins** see everything, manage users, groups and analysis settings, and trigger self-scans.
+- **Admins** see everything, manage users, groups and analysis settings, trigger self-scans, and can delete runs from the queue (not while one is in progress; the audit log keeps a record, and a commit that is still a branch or PR head is rescanned on the next update check).
 - **Analysts** see only repositories they added or that belong to a group they are a member of. This applies to every endpoint — submissions, findings, audit logs, re-runs and sign-off. Anything outside that set returns 404.
 
 ```bash

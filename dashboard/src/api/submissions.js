@@ -43,3 +43,7 @@ export async function getLlmRuns(id) {
   const res = await api.get(`/submissions/${id}/llm-runs`);
   return res.data;
 }
+
+export async function deleteSubmission(id) {
+  await api.delete(`/submissions/${id}`);
+}

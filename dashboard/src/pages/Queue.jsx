@@ -1,11 +1,11 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router";
-import { useTheme } from "../App.jsx";
+import { useTheme, useAuth } from "../App.jsx";
 import { Btn } from "../components/atoms.jsx";
 import QueueStats from "../components/queue/QueueStats.jsx";
 import ViewToggle from "../components/queue/ViewToggle.jsx";
 import { QueueCards, QueueRows } from "../components/queue/QueueItems.jsx";
-import { useActiveLlmJobs, useGroups, useSubmissions } from "../api/queries.js";
+import { useActiveLlmJobs, useDeleteSubmission, useGroups, useSubmissions } from "../api/queries.js";
 import { errorMessage } from "../api/errors.js";
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -29,6 +29,10 @@ function readView() {
 export default function Queue() {
   const { theme } = useTheme();
   const navigate   = useNavigate();
+  const { user }   = useAuth();
+  const deleteRun  = useDeleteSubmission();
+  // Admins only; the API enforces it too.
+  const onDelete   = user?.role === "admin" ? (s) => deleteRun.mutateAsync(s.id) : undefined;
 
   const [filter,  setFilter]  = useState(null);
   const [groupId, setGroupId] = useState(null);
@@ -127,8 +131,8 @@ export default function Queue() {
       {/* List */}
       {subs.length > 0 && (
         view === "grid"
-          ? <QueueCards theme={t} subs={subs} onOpen={(s) => navigate(`/submissions/${s.id}`)} activeJobs={activeJobs} />
-          : <QueueRows  theme={t} subs={subs} onOpen={(s) => navigate(`/submissions/${s.id}`)} activeJobs={activeJobs} />
+          ? <QueueCards theme={t} subs={subs} onOpen={(s) => navigate(`/submissions/${s.id}`)} onDelete={onDelete} activeJobs={activeJobs} />
+          : <QueueRows  theme={t} subs={subs} onOpen={(s) => navigate(`/submissions/${s.id}`)} onDelete={onDelete} activeJobs={activeJobs} />
       )}
 
       {data && subs.length < data.total && limit < MAX_LIMIT && (
