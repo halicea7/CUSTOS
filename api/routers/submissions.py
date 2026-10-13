@@ -14,6 +14,7 @@ from enums import BLOCKING_SEVERITIES, SEVERITY_ORDER, SubmissionStatus
 from models import AppConfig, AuditLog, Finding, LlmRun, Repo, RepoGroup, Submission, User
 from redis_util import ARQ_QUEUE, LLM_ACTIVE_SET, llm_job_key, llm_lock_key, llm_start_key
 from schemas import FindingResponse, LlmRunResponse, SubmissionListResponse, SubmissionResponse
+from worker.analysis.carryover import is_same_issue
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -233,6 +234,63 @@ async def list_findings_for_submission(
         .order_by(severity_rank, Finding.file_path, Finding.line_start)
     )
     return result.scalars().all()
+
+
+_FINISHED = (SubmissionStatus.NEEDS_REVIEW, SubmissionStatus.SIGNED_OFF)
+_MAX_COMPARED = 2000
+
+
+def _as_new(f: Finding) -> dict:
+    return {"source": f.source, "title": f.title, "file_path": f.file_path, "line_start": f.line_start,
+            "code_snippet": f.code_snippet, "cwe": f.cwe}
+
+
+@router.get("/{submission_id}/compare")
+async def compare_with_previous(
+    sub: Submission = Depends(get_visible_submission),
+    db: AsyncSession = Depends(get_db),
+):
+    """What changed since the previous finished scan of the same repo.
+
+    The previous scan is the latest earlier one of the same PR, else of the
+    same branch, else of the repo. Findings are matched the way false-positive
+    decisions carry forward (same tool rule nearby, or a reworded LLM finding).
+    Returns the new findings' IDs and the earlier findings that are gone.
+    """
+    earlier = (await db.execute(
+        select(Submission)
+        .where(Submission.repo_full_name == sub.repo_full_name, Submission.created_at < sub.created_at,
+               Submission.status.in_(_FINISHED))
+        .order_by(Submission.created_at.desc())
+        .limit(50)
+    )).scalars().all()
+    same_pr = [s for s in earlier if sub.pr_number and s.pr_number == sub.pr_number]
+    same_branch = [s for s in earlier if s.branch == sub.branch and not s.pr_number]
+    prev = (same_pr or same_branch or earlier or [None])[0]
+    if prev is None:
+        return {"previous": None, "new_finding_ids": [], "fixed": []}
+
+    async def findings_of(sid):
+        return (await db.execute(
+            select(Finding).where(Finding.submission_id == sid).limit(_MAX_COMPARED)
+        )).scalars().all()
+
+    now, before = await findings_of(sub.id), await findings_of(prev.id)
+    matched_before: set = set()
+    new_ids = []
+    for f in now:
+        hit = next((o for o in before if o.id not in matched_before and is_same_issue(_as_new(f), o)), None)
+        if hit is None:
+            new_ids.append(str(f.id))
+        else:
+            matched_before.add(hit.id)
+    fixed = [o for o in before if o.id not in matched_before]
+    return {
+        "previous": {"id": str(prev.id), "commit_sha": prev.commit_sha, "branch": prev.branch,
+                     "pr_number": prev.pr_number, "status": prev.status, "created_at": prev.created_at},
+        "new_finding_ids": new_ids,
+        "fixed": [FindingResponse.model_validate(o) for o in fixed],
+    }
 
 
 @router.post("/{submission_id}/rerun-llm", status_code=status.HTTP_202_ACCEPTED)

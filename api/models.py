@@ -180,6 +180,8 @@ class Repo(Base):
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Last "Check for updates" (manual or scheduled): polling instead of a webhook.
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the GitHub token expires (from GitHub's response headers); None = never/unknown.
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
 
 

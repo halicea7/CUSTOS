@@ -7,6 +7,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import github_client
 from access import can_see_group, restrict_to_visible
 from auth import get_current_user
 from crypto import decrypt, encrypt
@@ -80,6 +81,7 @@ def _response(repo: Repo, groups: list[GroupSummary]) -> RepoResponse:
         added_at=repo.added_at,
         last_push_at=repo.last_push_at,
         last_checked_at=repo.last_checked_at,
+        token_expires_at=repo.token_expires_at,
         enabled=repo.enabled,
         token_preview=_preview(repo.token_last4),
         groups=groups,
@@ -127,6 +129,7 @@ async def add_repo(
         github_token_enc=encrypt(body.github_token),
         webhook_secret_enc=encrypt(body.webhook_secret),
         token_last4=body.github_token[-4:],
+        token_expires_at=await github_client.fetch_token_expiry(name, body.github_token),
         added_by=current_user.username,
         enabled=True,
     )
@@ -158,6 +161,7 @@ async def update_repo(
     if body.github_token is not None:
         repo.github_token_enc = encrypt(body.github_token)
         repo.token_last4 = body.github_token[-4:]
+        repo.token_expires_at = await github_client.fetch_token_expiry(repo.repo_full_name, body.github_token)
     if body.webhook_secret is not None:
         repo.webhook_secret_enc = encrypt(body.webhook_secret)
     if body.enabled is not None:
@@ -259,6 +263,7 @@ async def validate_token(
                 return {"ok": False, "error": "Repository not found or token lacks access"}
             resp.raise_for_status()
             data = resp.json()
+            expires_at = github_client.token_expiry(resp.headers)
     except httpx.TimeoutException:
         return {"ok": False, "error": "GitHub API timed out"}
     except Exception as exc:
@@ -268,4 +273,5 @@ async def validate_token(
         "repo_name": data.get("full_name"),
         "default_branch": data.get("default_branch"),
         "private": data.get("private"),
+        "token_expires_at": expires_at.isoformat() if expires_at else None,
     }

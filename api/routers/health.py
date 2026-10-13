@@ -1,16 +1,22 @@
+import asyncio
 import json
+import re
+import time
 from datetime import UTC, datetime
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import case, select
+from sqlalchemy import case, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app_config import load_app_config, load_responses_api_key
 from auth import get_current_user, require_admin
 from database import get_db
 from enums import SEVERITY_ORDER
 from models import SelfScan, SelfScanFinding, User
-from redis_util import scan_stages_key
+from redis_util import ARQ_QUEUE, scan_stages_key
+from worker.analysis.llm import PROVIDER_RESPONSES, responses_endpoint
 
 router = APIRouter(prefix="/health", tags=["health-dashboard"])
 
@@ -52,6 +58,96 @@ def _finding_to_dict(f: SelfScanFinding) -> dict:
         "remediation": f.remediation,
         "llm_reasoning": f.llm_reasoning,
     }
+
+
+_LLM_PROBE_KEY = "custos:health:llm-probe"
+_LLM_PROBE_TTL = 60          # seconds: the page polls; don't hammer the LLM server
+_PROBE_TIMEOUT = 5
+
+
+def _svc(name: str, state: str, detail: str) -> dict:
+    return {"name": name, "state": state, "detail": detail}   # state: ok | warn | down | off
+
+
+async def _probe_llm(db: AsyncSession) -> dict:
+    cfg = await load_app_config(db)
+    if cfg.llm_provider == PROVIDER_RESPONSES:
+        name, url = "LLM (Responses API)", responses_endpoint(cfg.responses_base_url).removesuffix("/responses") + "/models"
+        key = await load_responses_api_key(db, cfg.responses_base_url)
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+    else:
+        name, url, headers = "LLM (Ollama)", f"{cfg.ollama_base_url}/api/tags", {}
+    try:
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.TimeoutException:
+        return _svc(name, "down", f"no answer within {_PROBE_TIMEOUT}s (a firewall may be dropping traffic)")
+    except httpx.HTTPError as exc:
+        return _svc(name, "down", f"unreachable ({type(exc).__name__})")
+    if resp.status_code in (401, 403):
+        return _svc(name, "warn", "reachable, but the API key was rejected")
+    if resp.status_code >= 400 and resp.status_code != 404:
+        return _svc(name, "warn", f"reachable, HTTP {resp.status_code}")
+    return _svc(name, "ok", "reachable")
+
+
+@router.get("/services")
+async def services_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Is each part of Custos up? Database, Redis, the worker's heartbeat,
+    the LLM (probed at most once a minute) and whether SentinelOne is set up."""
+    redis = request.app.state.redis
+    out = [_svc("API", "ok", "serving requests")]
+
+    t0 = time.monotonic()
+    try:
+        await db.execute(text("SELECT 1"))
+        out.append(_svc("Postgres", "ok", f"{(time.monotonic() - t0) * 1000:.0f} ms"))
+    except Exception as exc:  # noqa: BLE001 (report any failure as down)
+        out.append(_svc("Postgres", "down", type(exc).__name__))
+
+    try:
+        await asyncio.wait_for(redis.ping(), _PROBE_TIMEOUT)
+        out.append(_svc("Redis", "ok", "responding"))
+        beat = await redis.get(f"{ARQ_QUEUE}:health-check")
+    except Exception as exc:  # noqa: BLE001
+        out.append(_svc("Redis", "down", type(exc).__name__))
+        beat = None
+    if isinstance(beat, bytes):
+        beat = beat.decode()
+    if beat:
+        stats = dict(re.findall(r"(\w+)=(\d+)", beat))
+        out.append(_svc("Worker", "ok",
+                        f"{stats.get('j_ongoing', '0')} running · {stats.get('queued', '0')} queued"))
+    else:
+        out.append(_svc("Worker", "down", "no heartbeat in the last minute"))
+
+    cached = None
+    try:
+        cached = await redis.get(_LLM_PROBE_KEY)
+    except Exception:  # noqa: BLE001
+        pass
+    if cached:
+        llm = json.loads(cached)
+    else:
+        llm = await _probe_llm(db)
+        try:
+            await redis.set(_LLM_PROBE_KEY, json.dumps(llm), ex=_LLM_PROBE_TTL)
+        except Exception:  # noqa: BLE001
+            pass
+    out.append(llm)
+
+    cfg = await load_app_config(db)
+    if not cfg.s1_enabled:
+        out.append(_svc("SentinelOne", "off", "disabled in Settings"))
+    elif not cfg.s1_token_set:
+        out.append(_svc("SentinelOne", "warn", "enabled, but no API token is saved"))
+    else:
+        out.append(_svc("SentinelOne", "ok", "configured" + (" · policy set" if cfg.s1_policy_id else "")))
+    return {"services": out, "checked_at": datetime.now(UTC)}
 
 
 @router.get("/status")

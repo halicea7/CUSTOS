@@ -71,3 +71,5 @@ class WorkerSettings:
     job_timeout = _job_timeout
     # A job whose worker died is retried once; tasks are idempotent on re-entry.
     max_tries = 2
+    # Heartbeat key (custos:queue:health-check) the Health page reads.
+    health_check_interval = 60

@@ -83,6 +83,7 @@ async def check_repo_for_updates(db, redis, arq_pool, repo_rec: Repo) -> dict:
     GitHub can't be reached or refuses the token.
     """
     targets = await list_scan_targets(repo_rec.repo_full_name, decrypt(repo_rec.github_token_enc))
+    repo_rec.token_expires_at = targets.token_expires_at
     shas = {t["commit_sha"] for t in targets}
     seen = set((await db.execute(
         select(Submission.commit_sha).where(

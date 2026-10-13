@@ -52,6 +52,17 @@ async def _schema():
 
 
 @pytest.fixture(autouse=True)
+def _no_github_expiry_lookup(monkeypatch):
+    """Adding a repo asks GitHub when its token expires; tests stay offline."""
+    import github_client
+
+    async def unknown(repo, token):
+        return None
+
+    monkeypatch.setattr(github_client, "fetch_token_expiry", unknown)
+
+
+@pytest.fixture(autouse=True)
 async def _clean_tables(_schema):
     yield
     async with engine.begin() as conn:

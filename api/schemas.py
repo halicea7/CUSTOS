@@ -104,6 +104,10 @@ class DispositionRequest(BaseModel):
     note: str | None = Field(None, max_length=5000)
 
 
+class BulkDispositionRequest(DispositionRequest):
+    finding_ids: list[UUID] = Field(..., min_length=1, max_length=500)
+
+
 class SignoffRequest(BaseModel):
     note: str | None = Field(None, max_length=5000)
 
@@ -281,6 +285,7 @@ class RepoResponse(BaseModel):
     added_at: datetime
     last_push_at: datetime | None = None
     last_checked_at: datetime | None = None
+    token_expires_at: datetime | None = None
     enabled: bool
     token_preview: str
     groups: list[GroupSummary] = []

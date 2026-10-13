@@ -146,3 +146,25 @@ async def test_schedule_off_and_failures_isolated(db, github):
     await tasks.check_repos_for_updates({"redis": redis})
     repos = {s.repo_full_name for s in (await db.execute(select(Submission))).scalars()}
     assert repos == {"org/b"}
+
+
+def test_token_expiry_header_formats():
+    from datetime import UTC, datetime
+    assert github_client.token_expiry({}) is None
+    assert github_client.token_expiry({"github-authentication-token-expiration": "2026-11-02 09:21:47 +0200"}) \
+        == datetime(2026, 11, 2, 7, 21, 47, tzinfo=UTC)
+    assert github_client.token_expiry({"github-authentication-token-expiration": "2026-11-02 09:21:47 UTC"}) \
+        == datetime(2026, 11, 2, 9, 21, 47, tzinfo=UTC)
+    assert github_client.token_expiry({"github-authentication-token-expiration": "soon"}) is None
+
+
+async def test_update_check_records_when_the_token_expires(client, db, github):
+    await make_user(db, "ana")
+    repo = await make_repo(db, "org/app", owner="ana")
+    inner = _github()
+    github["handler"] = lambda r: (lambda resp: (resp.headers.update(
+        {"github-authentication-token-expiration": "2026-11-02 09:00:00 UTC"}) or resp))(inner(r))
+
+    await client.post(f"/repos/{repo.id}/check-updates", headers=auth_headers("ana"))
+    listed = (await client.get("/repos", headers=auth_headers("ana"))).json()[0]
+    assert listed["token_expires_at"].startswith("2026-11-02T09:00:00")
