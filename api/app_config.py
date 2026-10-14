@@ -40,7 +40,7 @@ CONFIG_KEYS = {
     "llm_provider", "responses_base_url", "responses_model", RESPONSES_API_KEY, RESPONSES_API_KEY_ORIGIN,
     "s1_enabled", "s1_console_url", "s1_scope_type", "s1_scope_id", "s1_policy_id", "s1_scanners",
     "s1_verify_secrets", "s1_publish", S1_TOKEN, S1_TOKEN_ORIGIN,
-    SELF_UPDATE_REPO, RESPONSES_HTTP_ALLOWED_ORIGIN,
+    SELF_UPDATE_REPO, RESPONSES_HTTP_ALLOWED_ORIGIN, "login_footer",
     "responses_reasoning_effort", "responses_max_output_tokens",
     "bedrock_region", "bedrock_endpoint", "bedrock_model", "bedrock_project_id", BEDROCK_API_KEY,
     "bedrock_reasoning_effort", "bedrock_max_output_tokens",
@@ -52,6 +52,8 @@ CONFIG_KEYS = {
     "repo_check_interval_hours",
 }
 
+# The line under the sign-in box; "" hides it. Public: shown before sign-in.
+DEFAULT_LOGIN_FOOTER = "University IT · Security Team"
 DEFAULT_WORKER_MAX_JOBS = 4
 DEFAULT_WORKER_JOB_TIMEOUT = 900
 # Scheduled "Check for updates" on every enabled repo; 0 = manual only.
@@ -69,6 +71,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
     s1_scanners = [s for s in ov.get("s1_scanners", ",".join(S1_SCANNERS)).split(",") if s in S1_SCANNERS]
     return AppConfigResponse(
         self_update_repo=ov.get(SELF_UPDATE_REPO, ""),
+        login_footer=ov.get("login_footer", DEFAULT_LOGIN_FOOTER),
         responses_http_allowed_origin=ov.get(RESPONSES_HTTP_ALLOWED_ORIGIN) or None,
         s1_enabled=_bool(ov.get("s1_enabled"), settings.S1_ENABLED),
         s1_console_url=s1_console_url,

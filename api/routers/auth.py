@@ -75,6 +75,12 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
     return TokenResponse(access_token=token)
 
 
+@router.get("/branding")
+async def branding(db: AsyncSession = Depends(get_db)):
+    """What the sign-in page shows before anyone is signed in. Public, so text only."""
+    return {"login_footer": (await load_app_config(db)).login_footer}
+
+
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)):
     return current_user

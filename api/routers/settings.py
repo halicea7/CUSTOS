@@ -541,6 +541,9 @@ async def update_config(
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 "To use Amazon Bedrock, set the " + ", ".join(missing))
 
+    if "login_footer" in updates:
+        updates["login_footer"] = updates["login_footer"].strip()
+
     if updates.get("self_update_repo"):
         exists = (await db.execute(
             select(Repo.id).where(Repo.repo_full_name == updates["self_update_repo"])

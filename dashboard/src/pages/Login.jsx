@@ -18,6 +18,12 @@ export default function Login() {
 
   useEffect(() => { if (user) navigate(from, { replace: true }); }, [user, from, navigate]);
 
+  // The line under the box is set in Settings; shown once loaded so it never flashes the default.
+  const [footer, setFooter] = useState("");
+  useEffect(() => {
+    api.get("/auth/branding").then((r) => setFooter(r.data.login_footer || "")).catch(() => {});
+  }, []);
+
   const handleSubmit = async (e) => {
     e?.preventDefault();
     setLoading(true);
@@ -70,7 +76,7 @@ export default function Login() {
           </button>
         </form>
 
-        <div className="login-foot">University IT · Security Team</div>
+        {footer && <div className="login-foot">{footer}</div>}
       </div>
     </div>
   );

@@ -378,6 +378,7 @@ function validate(d, cfg) {
         : "Enter the service user API token";
     }
   }
+  if ((d.login_footer || "").length > 120 || /[<>\n]/.test(d.login_footer || "")) e.login_footer = "Plain text, 120 characters at most";
   if (!intIn(d.max_file_size_kb, 1, 10240)) e.max_file_size_kb = "1 – 10,240 KB";
   if (!intIn(d.max_files_per_repo, 1, 10000)) e.max_files_per_repo = "1 – 10,000 files";
   if (!intIn(d.access_token_expire_minutes, 5, 10080)) e.access_token_expire_minutes = "5 – 10,080 minutes";
@@ -636,6 +637,7 @@ function AnalysisTab({ theme }) {
         bedrock_reasoning_effort: draft.bedrock_reasoning_effort || "",
         bedrock_max_output_tokens: Number(draft.bedrock_max_output_tokens) || 0,
         self_update_repo: draft.self_update_repo || "",
+        login_footer: (draft.login_footer || "").trim(),
         ...((draft.responses_http_allowed_origin || null) !== (cfg.responses_http_allowed_origin || null)
           ? { responses_http_allowed_origin: draft.responses_http_allowed_origin || "" } : {}),
         s1_enabled: draft.s1_enabled,
@@ -1100,6 +1102,17 @@ function AnalysisTab({ theme }) {
               </Field>
             </>
           )}
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="Login page">
+        <div style={{ maxWidth: 600 }}>
+          <Field theme={t} label="Text under the sign-in box" hint="plain text, one line · blank hides it"
+            error={(draft.login_footer || "").length > 120 ? "120 characters at most"
+              : /[<>]/.test(draft.login_footer || "") ? "Plain text only (no < or >)" : undefined}>
+            <TextInput theme={t} value={draft.login_footer ?? ""} onChange={set("login_footer")}
+              placeholder="e.g. University IT · Security Team" />
+          </Field>
         </div>
       </SectionCard>
 

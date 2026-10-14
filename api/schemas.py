@@ -170,6 +170,8 @@ class UpdateUserRoleRequest(BaseModel):
 class AppConfigResponse(BaseModel):
     # Registered repo that is Custos's own source ("" = self-update off).
     self_update_repo: str = ""
+    # Text under the sign-in box ("" hides it).
+    login_footer: str = ""
     # Responses API "thinking" (reasoning.effort; "" = off) and output cap (0 = server default).
     responses_reasoning_effort: str = ""
     responses_max_output_tokens: int = 0
@@ -233,6 +235,8 @@ class AppConfigResponse(BaseModel):
 class AppConfigUpdateRequest(BaseModel):
     # "" turns self-update off.
     self_update_repo: str | None = Field(None, max_length=200)
+    # Plain text, one line; "" hides it.
+    login_footer: str | None = Field(None, max_length=120, pattern=r"^[^\n\r<>]*$")
     # "" = model default (send nothing); "none" = explicitly off.
     responses_reasoning_effort: Literal["", "none", "low", "medium", "high"] | None = None
     responses_max_output_tokens: int | None = Field(None, ge=0, le=1_000_000)

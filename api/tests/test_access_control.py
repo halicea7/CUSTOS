@@ -115,3 +115,18 @@ async def test_welcome_tour_is_shown_once_and_can_be_replayed(client, db):
     again = await client.put("/auth/me/tour", headers=h, json={"done": False})
     assert again.json()["tour_completed_at"] is None
     assert (await client.put("/auth/me/tour", json={"done": True})).status_code == 401
+
+
+async def test_login_footer_is_public_and_admin_editable(client, db):
+    from tests.conftest import auth_headers, make_user
+
+    assert (await client.get("/auth/branding")).json() == {"login_footer": "University IT · Security Team"}
+    await make_user(db, "root", role="admin")
+    await make_user(db, "ana")
+    h = auth_headers("root")
+    assert (await client.patch("/settings/config", headers=auth_headers("ana"), json={"login_footer": "x"})).status_code == 403
+    assert (await client.patch("/settings/config", headers=h, json={"login_footer": "<b>hi</b>"})).status_code == 422
+    assert (await client.patch("/settings/config", headers=h, json={"login_footer": "  GW Cyber Team  "})).status_code == 200
+    assert (await client.get("/auth/branding")).json() == {"login_footer": "GW Cyber Team"}
+    await client.patch("/settings/config", headers=h, json={"login_footer": ""})
+    assert (await client.get("/auth/branding")).json() == {"login_footer": ""}
