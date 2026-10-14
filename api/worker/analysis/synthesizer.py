@@ -77,16 +77,22 @@ def dedup_raw_findings(findings: list[RawFinding]) -> list[RawFinding]:
             seen_keys.add(key)
             after_pass1.append(f)
 
-    # Pass 2: semantic dedup of LLM findings against co-located tool findings
+    # Pass 2: an LLM finding about the same thing as a co-located tool finding is
+    # folded into it (the tool's severity stands; the model's reasoning is kept).
     tool_findings = [(f, _sig_words(f.title)) for f in after_pass1 if f.source != "llm"]
     deduped: list[RawFinding] = []
     for f in after_pass1:
         if f.source == "llm":
             words = _sig_words(f.title)
-            if words and any(
-                _same_location(f, tf) and _is_semantic_dup(words, tw) for tf, tw in tool_findings
-            ):
-                continue  # semantic duplicate — drop
+            match = next((tf for tf, tw in tool_findings if _same_location(f, tf) and (
+                (words and _is_semantic_dup(words, tw))
+                or (f.cwe and tf.cwe and f.cwe.upper() == tf.cwe.upper())
+                or (f.line_start is not None and f.line_start == tf.line_start)
+            )), None)
+            if match is not None:
+                if f.llm_reasoning and not match.llm_reasoning:
+                    match.llm_reasoning = f.llm_reasoning
+                continue
         deduped.append(f)
 
     return deduped

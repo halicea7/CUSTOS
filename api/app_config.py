@@ -45,7 +45,7 @@ CONFIG_KEYS = {
     "bedrock_region", "bedrock_endpoint", "bedrock_model", "bedrock_project_id", BEDROCK_API_KEY,
     "bedrock_reasoning_effort", "bedrock_max_output_tokens",
     "ollama_base_url", "ollama_model", "ollama_think", "ollama_num_ctx",
-    "llm_max_content_chars", "chains_enabled", "chain_gate",
+    "llm_max_content_chars", "chains_enabled", "chain_gate", "verify_llm_findings",
     "max_file_size_kb", "max_files_per_repo",
     "access_token_expire_minutes",
     "worker_max_jobs", "worker_job_timeout",
@@ -104,6 +104,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
         llm_max_content_chars=int(ov.get("llm_max_content_chars", 96_000)),
         chains_enabled=_bool(ov.get("chains_enabled"), True),
         chain_gate=_bool(ov.get("chain_gate"), True),
+        verify_llm_findings=_bool(ov.get("verify_llm_findings"), True),
         max_file_size_kb=int(ov.get("max_file_size_kb", settings.MAX_FILE_SIZE_KB)),
         max_files_per_repo=int(ov.get("max_files_per_repo", settings.MAX_FILES_PER_REPO)),
         access_token_expire_minutes=int(

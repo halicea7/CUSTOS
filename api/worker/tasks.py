@@ -130,6 +130,7 @@ async def _run_llm(
                 max_content_chars=cfg.llm_max_content_chars,
                 max_file_size_kb=cfg.max_file_size_kb,
                 max_files=cfg.max_files_per_repo,
+                verify=cfg.verify_llm_findings,
             )
     except TimeoutError:
         if not cm.expired():
@@ -221,8 +222,13 @@ def _finish_llm_run(run: LlmRun, result: LlmResult, duration: float) -> None:
     run.prompt_tokens = result.prompt_tokens
     run.completion_tokens = result.completion_tokens
     run.finished_at = _now()
+    notes = []
     if result.errors:
-        run.error = redact(f"{len(result.errors)}/{result.batches} batch(es) failed: {result.errors[0]}")
+        notes.append(f"{len(result.errors)}/{result.batches} batch(es) failed: {result.errors[0]}")
+    if result.notes:
+        notes.append(result.notes)
+    if notes:
+        run.error = redact(" ".join(notes))[:2000]
 
 
 def _fail_llm_run(run: LlmRun, exc: BaseException, *secrets: str) -> None:

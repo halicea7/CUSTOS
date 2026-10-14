@@ -176,7 +176,7 @@ async def test_slow_llm_fails_its_phase_not_the_job(monkeypatch):
 
     monkeypatch.setattr(tasks, "call_llm", hang)
     monkeypatch.setattr(tasks, "_LLM_RESERVE_SECONDS", 1)
-    cfg = SimpleNamespace(llm_max_content_chars=1, max_file_size_kb=1, max_files_per_repo=1,
+    cfg = SimpleNamespace(llm_max_content_chars=1, max_file_size_kb=1, max_files_per_repo=1, verify_llm_findings=False,
                           worker_job_timeout=900)
     async with asyncio.timeout(1.5) as deadline:
         with pytest.raises(LlmError, match="ran out of time"):

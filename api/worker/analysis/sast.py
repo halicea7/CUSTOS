@@ -71,6 +71,37 @@ _SEMGREP_SEVERITY = {
 
 # ── Semgrep ───────────────────────────────────────────────────────────────────
 
+# Registry rule ids start with the language they were written for. A rule run
+# against a file of another language (e.g. a Java/JSF template rule matching
+# plain HTML) is noise: drop it. Languages not listed here are never dropped.
+_RULE_EXTENSIONS = {
+    "python": {".py", ".pyi"},
+    "java": {".java", ".jsp", ".jspx", ".jsf", ".xhtml"},
+    "kotlin": {".kt", ".kts"},
+    "javascript": {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".html", ".htm"},
+    "typescript": {".ts", ".tsx", ".js", ".jsx", ".vue"},
+    "go": {".go"},
+    "ruby": {".rb", ".erb"},
+    "php": {".php", ".phtml"},
+    "csharp": {".cs", ".cshtml", ".razor"},
+    "rust": {".rs"},
+    "scala": {".scala"},
+    "swift": {".swift"},
+    "c": {".c", ".h", ".cc", ".cpp", ".hpp"},
+}
+_AUDIT_NOTE = ("**Semgrep audit rule:** a pattern worth a look, not a confirmed vulnerability. "
+               "Custos reports these as low; check whether untrusted input actually reaches it.")
+
+
+def _language_mismatch(rule_id: str, path: str) -> bool:
+    exts = _RULE_EXTENSIONS.get(rule_id.split(".", 1)[0].lower())
+    return bool(exts) and Path(path).suffix.lower() not in exts
+
+
+def _is_audit_rule(rule_id: str) -> bool:
+    """Registry 'audit' rules flag risky APIs (text(), shell=True, ...) without proving a bug."""
+    return ".audit." in f".{rule_id}."
+
 async def run_semgrep(repo_path: str) -> list[RawFinding]:
     # --config=auto requires sending metrics to semgrep.dev, so use explicit
     # rulesets (registry names or local paths) and keep metrics off.
@@ -95,26 +126,38 @@ async def run_semgrep(repo_path: str) -> list[RawFinding]:
         return []
 
     findings: list[RawFinding] = []
+    skipped = 0
     for r in data.get("results", []):
         extra = r.get("extra", {})
+        rule_id = r.get("check_id", "Unknown rule")
+        path = _rel(repo_path, r.get("path", ""))
+        if _language_mismatch(rule_id, path):
+            skipped += 1
+            continue
         raw_sev = extra.get("severity", "INFO").upper()
+        severity = _SEMGREP_SEVERITY.get(raw_sev, "info")
+        message = extra.get("message")
+        if _is_audit_rule(rule_id) and severity in ("critical", "high", "medium"):
+            severity = "low"
+            message = f"{_AUDIT_NOTE}\n\n{message}" if message else _AUDIT_NOTE
         cwe_list: list[str] = extra.get("metadata", {}).get("cwe", [])
         # e.g. "CWE-89: SQL Injection" → "CWE-89"
         cwe = cwe_list[0].split(":")[0] if cwe_list else None
         findings.append(
             RawFinding(
                 source="semgrep",
-                severity=_SEMGREP_SEVERITY.get(raw_sev, "info"),
-                title=r.get("check_id", "Unknown rule"),
-                description=extra.get("message"),
-                file_path=_rel(repo_path, r.get("path", "")),
+                severity=severity,
+                title=rule_id,
+                description=message,
+                file_path=path,
                 line_start=r.get("start", {}).get("line"),
                 line_end=r.get("end", {}).get("line"),
                 cwe=cwe,
                 code_snippet=extra.get("lines"),
             )
         )
-    logger.info("semgrep: %d findings", len(findings))
+    logger.info("semgrep: %d findings%s", len(findings),
+                f" ({skipped} skipped: rule written for another language)" if skipped else "")
     return findings
 
 

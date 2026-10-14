@@ -217,6 +217,8 @@ class AppConfigResponse(BaseModel):
     # Attack chains: an LLM pass over each run's findings; critical/high chains can gate sign-off.
     chains_enabled: bool = True
     chain_gate: bool = True
+    # A second LLM pass re-checks critical/high AI findings with the code around them.
+    verify_llm_findings: bool = True
     # Scanning
     max_file_size_kb: int
     max_files_per_repo: int
@@ -269,6 +271,7 @@ class AppConfigUpdateRequest(BaseModel):
     llm_max_content_chars: int | None = Field(None, ge=1_000, le=2_000_000)
     chains_enabled: bool | None = None
     chain_gate: bool | None = None
+    verify_llm_findings: bool | None = None
     max_file_size_kb: int | None = Field(None, ge=1, le=10_240)
     max_files_per_repo: int | None = Field(None, ge=1, le=10_000)
     access_token_expire_minutes: int | None = Field(None, ge=5, le=10_080)

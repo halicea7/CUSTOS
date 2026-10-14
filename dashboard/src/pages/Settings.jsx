@@ -652,6 +652,7 @@ function AnalysisTab({ theme }) {
         ollama_num_ctx: Number(draft.ollama_num_ctx) || 0,
         llm_max_content_chars: Number(draft.llm_max_content_chars),
         chains_enabled: !!draft.chains_enabled,
+        verify_llm_findings: !!draft.verify_llm_findings,
         chain_gate: !!draft.chain_gate,
         max_file_size_kb: Number(draft.max_file_size_kb),
         max_files_per_repo: Number(draft.max_files_per_repo),
@@ -1148,8 +1149,17 @@ function AnalysisTab({ theme }) {
         </div>
       </SectionCard>
 
-      <SectionCard theme={t} title="Attack chains" subtitle="an LLM pass over each run's findings">
+      <SectionCard theme={t} title="AI checks" subtitle="extra LLM passes after each scan">
         <div style={{ maxWidth: 600 }}>
+          <Field theme={t} label="Verify serious AI findings" hint="one extra LLM request per scan">
+            <Toggle theme={t} value={!!draft.verify_llm_findings} onChange={v => update({ verify_llm_findings: v })}
+              label={draft.verify_llm_findings ? "On" : "Off"} />
+            <div style={hint}>
+              A second, skeptical pass re-reads each critical or high finding from the AI review with the surrounding
+              code, and confirms, lowers or rejects it. Every AI finding is also checked mechanically: the code it
+              quotes must really be in the file, and findings in test or script code are capped at low.
+            </div>
+          </Field>
           <Field theme={t} label="Find attack chains" hint="one extra LLM request per scan">
             <Toggle theme={t} value={!!draft.chains_enabled} onChange={v => update({ chains_enabled: v })}
               label={draft.chains_enabled ? "On" : "Off"} />
