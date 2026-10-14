@@ -462,3 +462,16 @@ button.tile:disabled, button.tile:disabled:hover { cursor: default; transform: n
 .so-row + .so-row { border-top: 1px dashed var(--border); }
 .so-row > .dot { margin-top: 6px; }
 .so-note { margin-top: 3px; padding: .4rem .6rem; border-radius: 8px; background: var(--raised2); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ── Report dialog ─────────────────────────────────────────────────────────── */
+.report-wrap { position: fixed; inset: 0; z-index: 200; background: rgba(5, 4, 10, .6); display: flex; padding: 3vh 2.5vw; animation: fadeIn .2s var(--ease); }
+.report-panel { flex: 1; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border2); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-hi); min-width: 0; }
+.report-bar { display: flex; align-items: center; gap: 10px; padding: .6rem .9rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.report-frame { flex: 1; border: 0; width: 100%; background: #fff; }
+.split { position: relative; display: inline-flex; }
+.split > .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split > .btn.caret { border-top-left-radius: 0; border-bottom-left-radius: 0; padding-left: .45rem; padding-right: .45rem; border-left: 1px solid rgba(255,255,255,.25); }
+.split-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; min-width: 230px; background: var(--raised); border: 1px solid var(--border2); border-radius: 10px; box-shadow: var(--shadow-hi); padding: 4px; animation: fadeIn .15s var(--ease); }
+.split-menu button { display: flex; flex-direction: column; align-items: flex-start; width: 100%; background: none; border: 0; border-radius: 7px; padding: .45rem .6rem; color: var(--text); cursor: pointer; text-align: left; font: inherit; font-size: .86rem; }
+.split-menu button:hover, .split-menu button:focus-visible { background: var(--raised2); outline: none; }
+.split-menu span { font-size: .76rem; color: var(--text3); }

@@ -310,7 +310,6 @@ function Keys() {
 export default function Submission() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { theme } = useTheme();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const toast = useToast();
@@ -669,7 +668,8 @@ export default function Submission() {
       <BulkBar count={selected.size} busy={dispose.isPending} onDecide={decideSelected}
         onClear={() => setSelected(new Set())} />
 
-      {showReport && <ReportModal theme={theme} sub={sub} findings={findings} onClose={() => setShowReport(false)} />}
+      {showReport && <ReportModal sub={sub} findings={findings} chains={chainList} cmp={cmpQuery.data}
+        signoffs={signoffs} onClose={() => setShowReport(false)} />}
       {showSignOff && <SignOffModal sub={sub} findings={findings} mode={showSignOff}
         chainPending={chainsData?.gate ? chainGatePending(chainList) : new Set()} onClose={() => setShowSignOff(null)} />}
     </div>
