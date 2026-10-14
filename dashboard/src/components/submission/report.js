@@ -4,6 +4,7 @@ import { SEV_ORDER } from "../atoms.jsx";
 export const SOURCE_LABELS = {
   semgrep: "Semgrep (SAST)", gitleaks: "Gitleaks (Secrets)",
   pip_audit: "pip-audit (Deps)", npm_audit: "npm-audit (Deps)", llm: "LLM Analysis",
+  bandit: "Bandit (SAST)", osv: "OSV-Scanner (Deps)", checkov: "Checkov (IaC)",
   s1_secret: "SentinelOne (Secrets)", s1_iac: "SentinelOne (IaC)", s1_vuln: "SentinelOne (Vulns)",
 };
 
@@ -81,7 +82,7 @@ export function generateMarkdown(sub, findings) {
 }
 
 const SECRET_SOURCES = new Set(["gitleaks", "s1_secret"]);
-const DEP_SOURCES = new Set(["pip_audit", "npm_audit", "s1_vuln"]);
+const DEP_SOURCES = new Set(["pip_audit", "npm_audit", "osv", "s1_vuln"]);
 const DISP_RANK = { confirmed: 0, escalated: 1 };  // reviewed first, then unreviewed
 
 // Default fix guidance when a tool gives none, by kind of finding.

@@ -166,10 +166,10 @@ def test_repeated_rules_and_package_advisories_are_grouped():
     tag = "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
     fs = [RawFinding(source="semgrep", severity="medium", title=tag, file_path=".github/workflows/ci.yml", line_start=n,
                      description="Pin the action.") for n in (21, 22, 66)]
-    fs += [RawFinding(source="sentinelone", severity=sev, title=f"pyjwt 2.14.0: {cve}", file_path="/uv.lock",
+    fs += [RawFinding(source="s1_vuln", severity=sev, title=f"pyjwt 2.14.0: {cve}", file_path="/uv.lock",
                       description=d, remediation="Upgrade to 2.15.0.")
            for sev, cve, d in (("medium", "CVE-2026-1", "key confusion"), ("high", "CVE-2026-2", "DoS"))]
-    fs += [RawFinding(source="sentinelone", severity="low", title="mako 1.4.1: CVE-2026-3", file_path="/uv.lock")]
+    fs += [RawFinding(source="s1_vuln", severity="low", title="mako 1.4.1: CVE-2026-3", file_path="/uv.lock")]
     fs += [RawFinding(source="gitleaks", severity="high", title="Secret detected: aws", file_path=p) for p in ("a", "b")]
     out = group_findings(fs)
     assert [f.title for f in out] == [tag, "pyjwt 2.14.0: 2 known vulnerabilities", "mako 1.4.1: CVE-2026-3",

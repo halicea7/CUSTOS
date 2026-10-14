@@ -22,7 +22,7 @@ def pipeline(monkeypatch, tmp_path):
         d.mkdir(exist_ok=True)
         return str(d)
 
-    async def fake_sast(path):
+    async def fake_sast(path, extra=()):
         return list(SAST)
 
     async def fake_check(**kw):
@@ -142,7 +142,7 @@ async def test_timeout_fails_job_immediately(db, pipeline, monkeypatch):
     db.add(AppConfig(key="worker_job_timeout", value="31", updated_by="test"))  # 1s budget
     await db.commit()
 
-    async def slow_sast(path):
+    async def slow_sast(path, extra=()):
         await asyncio.sleep(5)
         return []
 

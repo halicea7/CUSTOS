@@ -48,6 +48,8 @@ def stub_tools(monkeypatch):
     monkeypatch.setattr(tasks, "run_semgrep", lambda p: finding("semgrep", "sg"))
     monkeypatch.setattr(tasks, "run_gitleaks", lambda p: finding("gitleaks", "gl"))
     monkeypatch.setattr(tasks, "run_dep_audit", lambda p: finding("pip_audit", "pa"))
+    for name in tasks.EXTRA_RUNNERS:
+        monkeypatch.setitem(tasks.EXTRA_RUNNERS, name, lambda p, name=name: finding(name, name))
 
     async def llm(*a, **kw):
         return LlmResult(findings=[RawFinding("llm", "low", "model says hi")])
@@ -76,7 +78,7 @@ async def _run_scan(db, s1_enabled, monkeypatch, s1_result=None):
 
 async def test_self_scan_reports_real_stages_without_s1(db, stub_tools, monkeypatch):
     scan, stages, seen = await _run_scan(db, False, monkeypatch)
-    assert [s["id"] for s in stages] == ["config", "sast", "secrets", "deps", "llm"]
+    assert [s["id"] for s in stages] == ["config", "sast", "secrets", "deps", "bandit", "osv", "checkov", "llm"]
     assert all(s["state"] == "done" for s in stages)
     assert seen == {}  # S1 not run when disabled
     assert scan.status == "complete"
@@ -85,7 +87,7 @@ async def test_self_scan_reports_real_stages_without_s1(db, stub_tools, monkeypa
 async def test_self_scan_includes_s1_stage_and_findings(db, stub_tools, monkeypatch):
     s1_findings = [RawFinding("s1_vuln", "high", "lib 1.0: CVE-1"), RawFinding("s1_iac", "medium", "open bucket")]
     scan, stages, seen = await _run_scan(db, True, monkeypatch, (s1_findings, None))
-    assert [s["id"] for s in stages] == ["config", "sast", "secrets", "deps", "s1", "llm"]
+    assert [s["id"] for s in stages] == ["config", "sast", "secrets", "deps", "bandit", "osv", "checkov", "s1", "llm"]
     s1 = next(s for s in stages if s["id"] == "s1")
     assert s1["state"] == "done" and s1["tool"] == "s1-cns-cli"
     assert seen["repo_meta"] is None  # the self-scan never publishes to SentinelOne
@@ -182,3 +184,12 @@ async def test_slow_llm_fails_its_phase_not_the_job(monkeypatch):
         with pytest.raises(LlmError, match="ran out of time"):
             await tasks._run_llm("/repo", [], cfg, None, deadline)
     assert not deadline.expired()
+
+
+async def test_self_scan_skips_scanners_turned_off(db, stub_tools, monkeypatch):
+    db.add(AppConfig(key="extra_scanners", value="osv", updated_by="t"))
+    await db.commit()
+    scan, stages, _ = await _run_scan(db, False, monkeypatch)
+    assert [s["id"] for s in stages] == ["config", "sast", "secrets", "deps", "osv", "llm"]
+    rows = (await db.execute(select(SelfScanFinding.source, SelfScanFinding.category))).all()
+    assert ("osv", "dependencies") in rows and not any(src in ("bandit", "checkov") for src, _ in rows)

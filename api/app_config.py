@@ -24,6 +24,8 @@ RESPONSES_API_KEY_ORIGIN = "responses_api_key_origin"
 S1_TOKEN = "s1_api_token"
 S1_TOKEN_ORIGIN = "s1_api_token_origin"
 S1_SCANNERS = ("secret", "iac", "vuln")
+# Optional scanners (worker/analysis/scanners.py); all on unless an admin turns one off.
+EXTRA_SCANNERS = ("bandit", "osv", "checkov")
 # The registered repo that is Custos's own source. Signing off its commits
 # approves them for `./custos update` to deploy.
 SELF_UPDATE_REPO = "self_update_repo"
@@ -45,7 +47,7 @@ CONFIG_KEYS = {
     "bedrock_region", "bedrock_endpoint", "bedrock_model", "bedrock_project_id", BEDROCK_API_KEY,
     "bedrock_reasoning_effort", "bedrock_max_output_tokens",
     "ollama_base_url", "ollama_model", "ollama_think", "ollama_num_ctx",
-    "llm_max_content_chars", "chains_enabled", "chain_gate", "verify_llm_findings",
+    "llm_max_content_chars", "extra_scanners", "chains_enabled", "chain_gate", "verify_llm_findings",
     "max_file_size_kb", "max_files_per_repo",
     "access_token_expire_minutes",
     "worker_max_jobs", "worker_job_timeout",
@@ -69,6 +71,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
     s1_token = _s1_token_for_url(ov, s1_console_url) if s1_console_url else ""
     bedrock_key = _decrypt_or_empty(ov.get(BEDROCK_API_KEY), "Bedrock API key")
     s1_scanners = [s for s in ov.get("s1_scanners", ",".join(S1_SCANNERS)).split(",") if s in S1_SCANNERS]
+    extra_scanners = [s for s in ov.get("extra_scanners", ",".join(EXTRA_SCANNERS)).split(",") if s in EXTRA_SCANNERS]
     return AppConfigResponse(
         self_update_repo=ov.get(SELF_UPDATE_REPO, ""),
         login_footer=ov.get("login_footer", DEFAULT_LOGIN_FOOTER),
@@ -105,6 +108,7 @@ async def load_app_config(db: AsyncSession) -> AppConfigResponse:
         ollama_think=ov.get("ollama_think", "false").lower() == "true",
         ollama_num_ctx=int(ov.get("ollama_num_ctx", 0)),
         llm_max_content_chars=int(ov.get("llm_max_content_chars", 96_000)),
+        extra_scanners=extra_scanners,
         chains_enabled=_bool(ov.get("chains_enabled"), True),
         chain_gate=_bool(ov.get("chain_gate"), True),
         verify_llm_findings=_bool(ov.get("verify_llm_findings"), True),

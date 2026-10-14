@@ -578,6 +578,8 @@ async def update_config(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "To enable SentinelOne, set the " + ", ".join(missing),
             )
+    if "extra_scanners" in updates:
+        updates["extra_scanners"] = ",".join(dict.fromkeys(updates["extra_scanners"]))
     if "s1_scanners" in updates:
         updates["s1_scanners"] = ",".join(dict.fromkeys(updates["s1_scanners"]))
 

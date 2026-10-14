@@ -33,9 +33,13 @@ HEALTHCHECK --interval=15s --timeout=3s --retries=5 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
 
-# ── worker: git + Semgrep + Gitleaks + pip-audit + npm ───────────────────────
+# ── worker: git + Semgrep + Gitleaks + pip-audit + npm + Bandit + OSV + Checkov
 FROM base AS worker
 ARG GITLEAKS_VERSION=8.21.2
+ARG BANDIT_VERSION=1.9.4
+ARG OSV_SCANNER_VERSION=2.7.0
+# Checkov gets its own venv too: it pins dozens of libraries.
+ARG CHECKOV_VERSION=3.3.29
 # SentinelOne CNS Shift Left CLI (optional layer, enabled in Settings). Own
 # venv: its dependencies pin many libraries that could clash with ours.
 ARG S1_CLI_VERSION=1.0.4
@@ -49,7 +53,13 @@ RUN apt-get update \
  && ARCH="$( [ "${TARGETARCH:-amd64}" = "arm64" ] && echo arm64 || echo x64 )" \
  && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${ARCH}.tar.gz" \
     | tar -xz -C /usr/local/bin gitleaks \
- && pip install semgrep pip-audit \
+ && curl -fsSL -o /usr/local/bin/osv-scanner \
+    "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${TARGETARCH:-amd64}" \
+ && chmod 755 /usr/local/bin/osv-scanner \
+ && pip install semgrep pip-audit "bandit==${BANDIT_VERSION}" \
+ && python -m venv /opt/checkov \
+ && /opt/checkov/bin/pip install "checkov==${CHECKOV_VERSION}" \
+ && ln -s /opt/checkov/bin/checkov /usr/local/bin/checkov \
  && python -m venv /opt/s1cns \
  && /opt/s1cns/bin/pip install "s1-shift-left-cli==${S1_CLI_VERSION}" \
  && ln -s /opt/s1cns/bin/s1-cns-cli /usr/local/bin/s1-cns-cli \

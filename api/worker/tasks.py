@@ -42,6 +42,8 @@ from worker.analysis.llm import (
     complete,
 )
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
+from worker.analysis.scanners import RUNNERS as EXTRA_RUNNERS
+from worker.analysis.scanners import STAGES as EXTRA_STAGES
 from worker.analysis.sentinelone import RepoMeta, S1Error, S1Settings, run_sentinelone
 from worker.analysis.synthesizer import dedup_raw_findings, synthesize
 from worker.progress import StageTracker
@@ -208,11 +210,13 @@ async def _analyze_chains(db, sub: Submission, provider: LlmProvider, repo_path:
     return None
 
 
-async def _run_sast(repo_path: str) -> list[RawFinding]:
-    semgrep, gitleaks, deps = await asyncio.gather(
-        run_semgrep(repo_path), run_gitleaks(repo_path), run_dep_audit(repo_path)
+async def _run_sast(repo_path: str, extra: list[str] = ()) -> list[RawFinding]:
+    """The core tools, plus the optional scanners switched on in Settings."""
+    results = await asyncio.gather(
+        run_semgrep(repo_path), run_gitleaks(repo_path), run_dep_audit(repo_path),
+        *(EXTRA_RUNNERS[name](repo_path) for name in extra),
     )
-    return semgrep + gitleaks + deps
+    return [f for found in results for f in found]
 
 
 def _finish_llm_run(run: LlmRun, result: LlmResult, duration: float) -> None:
@@ -335,7 +339,7 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                     base_dir=settings.CLONE_BASE_DIR,
                     github_token=github_token,
                 )
-                sast_findings = await _run_sast(repo_path)
+                sast_findings = await _run_sast(repo_path, cfg.extra_scanners)
                 s1_findings, s1_note = await _run_s1(
                     db, cfg, repo_path, RepoMeta(full_name=submission.repo_full_name, branch=submission.branch)
                 )
@@ -530,6 +534,7 @@ def _self_scan_stages(cfg: AppConfigResponse, provider: LlmProvider) -> list[tup
         ("sast", "SAST analysis", "semgrep"),
         ("secrets", "Secret detection", "gitleaks"),
         ("deps", "Dependency audit", "pip-audit / npm audit"),
+        *(EXTRA_STAGES[name] for name in cfg.extra_scanners),
     ]
     if cfg.s1_enabled:
         stages.append(("s1", "SentinelOne CNS", "s1-cns-cli"))
@@ -542,6 +547,9 @@ _SOURCE_CATEGORY = {
     "gitleaks": "secrets",
     "pip_audit": "dependencies",
     "npm_audit": "dependencies",
+    "bandit": "sast",
+    "osv": "dependencies",
+    "checkov": "config",
     "config": "config",
     "llm": "llm",
     "s1_secret": "secrets",
@@ -631,13 +639,15 @@ async def _scan_self_at(
             await tracker.publish()
             async with _job_deadline(cfg.worker_job_timeout) as deadline:
                 # Tools run concurrently; each stage reports its own real state.
-                config_findings, semgrep, gitleaks, deps = await asyncio.gather(
+                config_findings, semgrep, gitleaks, deps, *extra = await asyncio.gather(
                     tracker.run("config", run_config_checks(db)),
                     tracker.run("sast", run_semgrep(custos_path)),
                     tracker.run("secrets", run_gitleaks(custos_path)),
                     tracker.run("deps", run_dep_audit(custos_path)),
+                    *(tracker.run(EXTRA_STAGES[name][0], EXTRA_RUNNERS[name](custos_path))
+                      for name in cfg.extra_scanners),
                 )
-                sast_context = config_findings + semgrep + gitleaks + deps
+                sast_context = config_findings + semgrep + gitleaks + deps + [f for found in extra for f in found]
                 notes: list[str] = []
 
                 if cfg.s1_enabled:

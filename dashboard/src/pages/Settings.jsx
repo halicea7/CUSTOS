@@ -336,6 +336,12 @@ const S1_SCANNER_OPTIONS = [
   { value: "iac", label: "IaC misconfigurations" },
   { value: "vuln", label: "Vulnerable dependencies" },
 ];
+// Optional scanners next to Semgrep, Gitleaks, pip-audit and npm audit (always on).
+const EXTRA_SCANNERS = [
+  { value: "bandit", label: "Bandit", what: "Python security checks. Repeats of a Semgrep finding are merged into it." },
+  { value: "osv", label: "OSV-Scanner", what: "Vulnerable dependencies in every other lockfile: Go, Rust, Java, Ruby, PHP, poetry, uv, yarn, pnpm." },
+  { value: "checkov", label: "Checkov", what: "Dockerfiles, Kubernetes, Helm, Terraform, CloudFormation and GitHub Actions workflows." },
+];
 const intIn = (v, lo, hi) => { const n = Number(v); return Number.isInteger(n) && n >= lo && n <= hi; };
 
 function validate(d, cfg) {
@@ -653,6 +659,7 @@ function AnalysisTab({ theme }) {
         ollama_think: draft.ollama_think,
         ollama_num_ctx: Number(draft.ollama_num_ctx) || 0,
         llm_max_content_chars: Number(draft.llm_max_content_chars),
+        extra_scanners: EXTRA_SCANNERS.map(o => o.value).filter(v => (draft.extra_scanners || []).includes(v)),
         chains_enabled: !!draft.chains_enabled,
         verify_llm_findings: !!draft.verify_llm_findings,
         chain_gate: !!draft.chain_gate,
@@ -1148,6 +1155,23 @@ function AnalysisTab({ theme }) {
               </div>
             )}
           </Field>
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="Scanners" subtitle="Semgrep, Gitleaks, pip-audit and npm audit always run; these add to them">
+        <div style={{ maxWidth: 600 }}>
+          {EXTRA_SCANNERS.map(o => {
+            const on = (draft.extra_scanners || []).includes(o.value);
+            return (
+              <Field key={o.value} theme={t} label={o.label}>
+                <Toggle theme={t} value={on} label={on ? "On" : "Off"}
+                  onChange={v => update({ extra_scanners: v
+                    ? [...(draft.extra_scanners || []), o.value]
+                    : (draft.extra_scanners || []).filter(x => x !== o.value) })} />
+                <div style={hint}>{o.what}</div>
+              </Field>
+            );
+          })}
         </div>
       </SectionCard>
 

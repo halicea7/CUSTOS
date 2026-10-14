@@ -53,7 +53,7 @@ def scan(monkeypatch, tmp_path):
     async def fake_clone(url, sha, base_dir, github_token=""):
         return str(tmp_path)
 
-    async def no_sast(path):
+    async def no_sast(path, extra=()):
         return []
 
     async def fake_check(**kw):

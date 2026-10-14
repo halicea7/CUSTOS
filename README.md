@@ -248,11 +248,20 @@ Custos can review its own updates the same way it reviews any repository, and de
 
 ## SAST tools
 
-The worker runs `semgrep`, `gitleaks`, `pip-audit` and `npm audit`, each with a timeout. A missing tool is logged and skipped. In Docker they are all installed in the `worker` image target; on a host, `./custos dev` installs them, or by hand:
+The worker runs `semgrep`, `gitleaks`, `pip-audit` and `npm audit`, plus three optional scanners that are on by default and can be turned off in **Settings → Analysis → Scanners**:
+
+- **Bandit**: Python SAST. Where it repeats a Semgrep finding (same file, nearby line, same CWE) the two become one finding.
+- **OSV-Scanner**: known vulnerabilities in every other lockfile (`go.mod`, `Cargo.lock`, `pom.xml`, `Gemfile.lock`, `composer.lock`, `poetry.lock`, `uv.lock`, `yarn.lock`, `pnpm-lock.yaml`…). It calls `api.osv.dev`, outbound only.
+- **Checkov**: Dockerfiles, Kubernetes, Helm, Terraform, CloudFormation and GitHub Actions. Its checks are mostly hardening advice and are reported as low, or medium when they open something up (privileged containers, write-all tokens, shell injection…).
+
+The scanned repository can't switch these off for itself: `# nosec` comments and its own `.bandit` and `osv-scanner.toml` files are ignored.
+
+Each tool has a timeout; a missing tool is logged and skipped. In Docker they are all installed in the `worker` image target; on a host, `./custos dev` installs them, or by hand:
 
 ```bash
-pip install semgrep pip-audit
-brew install gitleaks   # or download a release binary from github.com/gitleaks/gitleaks
+pip install semgrep pip-audit bandit
+python3 -m venv .venv-checkov && .venv-checkov/bin/pip install checkov
+brew install gitleaks osv-scanner   # or download release binaries from GitHub
 ```
 
 `pip-audit` and `npm audit` find `requirements.txt` and `package-lock.json` files up to four folders deep (skipping `node_modules`, virtualenvs and hidden folders).

@@ -1,6 +1,7 @@
 # Python
 .venv/
 .venv-s1cns/
+.venv-checkov/
 __pycache__/
 *.pyc
 *.pyo

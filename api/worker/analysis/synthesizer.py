@@ -95,12 +95,50 @@ def dedup_raw_findings(findings: list[RawFinding]) -> list[RawFinding]:
                 continue
         deduped.append(f)
 
-    return deduped
+    return _fold_second_opinions(deduped)
+
+
+# Tools that repeat what Semgrep already finds: one finding per issue, crediting both.
+_SECOND_OPINION = {"bandit": "Bandit", "checkov": "Checkov"}
+_FOLD_LINES = 2
+# Words every Checkov or Semgrep title has, which say nothing about the issue.
+_GENERIC = {"ensure", "that", "have", "been", "added", "security", "dockerfile", "yaml", "github", "actions",
+            "workflow", "workflows", "container", "audit", "lang", "python", "javascript", "rule"}
+
+
+def _repeats(f: RawFinding, s: RawFinding) -> bool:
+    """True if second-opinion finding *f* is about the same thing as Semgrep finding *s*."""
+    if (s.file_path or "").lower() != (f.file_path or "").lower() or s.line_start is None or f.line_start is None:
+        return False
+    if f.source == "bandit":   # line-precise, with a CWE
+        return bool(f.cwe and s.cwe and s.cwe.upper() == f.cwe.upper()) and abs(s.line_start - f.line_start) <= _FOLD_LINES
+    # Checkov reports a whole resource (often the whole Dockerfile) and no CWE:
+    # Semgrep's line inside that range, and a shared word that isn't boilerplate.
+    if not f.line_start - _FOLD_LINES <= s.line_start <= (f.line_end or f.line_start) + _FOLD_LINES:
+        return False
+    words = (_sig_words(f.title.split(" ", 1)[-1]) & _sig_words(s.title)) - _GENERIC
+    return any(len(w) >= 4 for w in words)
+
+
+def _fold_second_opinions(findings: list[RawFinding]) -> list[RawFinding]:
+    semgrep = [f for f in findings if f.source == "semgrep"]
+    kept = []
+    for f in findings:
+        name = _SECOND_OPINION.get(f.source)
+        match = name and next((s for s in semgrep if _repeats(f, s)), None)
+        if match:
+            note = f"_Also flagged by {name} ({f.title.split(' ', 1)[0]})._"
+            if note not in (match.description or ""):
+                match.description = f"{match.description}\n\n{note}" if match.description else note
+            continue
+        kept.append(f)
+    return kept
 
 
 _SEV = ["critical", "high", "medium", "low", "info"]
-# "pyjwt 2.14.0: CVE-2026-1", "lodash 4.17.20: GHSA-xxxx" (pip-audit, SentinelOne, ...)
-_ADVISORY = re.compile(r"^(?P<pkg>[\w@./+-]+ [\w.+!-]+): (?P<id>(?:CVE|GHSA|PYSEC|RUSTSEC|GO|OSV|SNYK)-[\w.-]+)", re.I)
+# "pyjwt 2.14.0: CVE-2026-1", "lodash 4.17.20: GHSA-xxxx" (pip-audit, OSV, SentinelOne, ...)
+_ADVISORY = re.compile(r"^(?P<pkg>[\w@./:+-]+ [\w.+!~:-]+): (?P<id>[A-Z][A-Z0-9]+-[\w.:-]+)")
+_DEP_SOURCES = {"pip_audit", "npm_audit", "osv", "s1_vuln"}
 _MAX_LISTED = 30
 
 
@@ -111,10 +149,10 @@ def _where(f: RawFinding) -> str:
 def _group_key(f: RawFinding) -> tuple | None:
     """Findings that are really one issue: the same Semgrep rule anywhere in the repo,
     or several advisories for the same package version. Secrets stay one per finding."""
-    if f.source == "semgrep":
-        return ("rule", f.title)
+    if f.source in ("semgrep", "bandit", "checkov"):
+        return ("rule", f.source, f.title)
     m = _ADVISORY.match(f.title)
-    if m and f.source != "llm":
+    if m and f.source in _DEP_SOURCES:
         return ("pkg", f.source, m["pkg"].lower(), (f.file_path or "").lower())
     return None
 

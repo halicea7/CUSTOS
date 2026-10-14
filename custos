@@ -49,6 +49,9 @@ VENV = ROOT / ".venv"
 # SentinelOne CNS CLI lives in its own venv (its pinned deps clash with ours);
 # keep the version in step with the Dockerfile's S1_CLI_VERSION.
 S1_VENV = ROOT / ".venv-s1cns"
+# Checkov pins many libraries, so it gets its own venv too (like the S1 CLI).
+CHECKOV_VENV = ROOT / ".venv-checkov"
+BANDIT_VERSION, CHECKOV_VERSION = "1.9.4", "3.3.29"
 S1_CLI_VERSION = "1.0.4"
 VPY = VENV / "bin" / "python"
 LOCAL_ENV = API / ".env"      # read by the API/worker when run on the host
@@ -647,6 +650,26 @@ def cmd_setup(args) -> None:
     else:
         warn("gitleaks not found — secret scanning will be skipped. "
              "Install: https://github.com/gitleaks/gitleaks#installing")
+    if not (VENV / "bin" / "bandit").exists():
+        info("Installing bandit into .venv…")
+        run([VPY, "-m", "pip", "install", "-q", f"bandit=={BANDIT_VERSION}"], capture=True)
+    ok("bandit")
+    if not (CHECKOV_VENV / "bin" / "checkov").exists():
+        info("Installing checkov into .venv-checkov (a minute or two)…")
+        if not CHECKOV_VENV.exists():
+            run([py, "-m", "venv", CHECKOV_VENV])
+        run([CHECKOV_VENV / "bin" / "python", "-m", "pip", "install", "-q", f"checkov=={CHECKOV_VERSION}"],
+            capture=True, check=False)
+    ((ok if (CHECKOV_VENV / "bin" / "checkov").exists() else warn))("checkov")
+    if shutil.which("osv-scanner"):
+        ok("osv-scanner")
+    elif IS_MAC and shutil.which("brew"):
+        info("Installing osv-scanner via Homebrew…")
+        run(["brew", "install", "-q", "osv-scanner"], capture=True, check=False)
+        (ok if shutil.which("osv-scanner") else warn)("osv-scanner")
+    else:
+        warn("osv-scanner not found — lockfiles other than requirements.txt / package-lock.json won't be audited. "
+             "Install: https://google.github.io/osv-scanner/installation/")
 
     if getattr(args, "with_s1", False):
         s1_cli = S1_VENV / "bin" / "s1-cns-cli"

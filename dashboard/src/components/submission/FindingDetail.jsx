@@ -19,7 +19,7 @@ const DISP_TAG = {
   escalated:      ["Escalated", "var(--accent)", "var(--accent-bg)"],
 };
 
-const SOURCE_LABEL = { npm_audit: "npm", pip_audit: "pip", sentinelone: "SentinelOne", llm: "LLM" };
+const SOURCE_LABEL = { npm_audit: "npm", pip_audit: "pip", osv: "OSV", sentinelone: "SentinelOne", llm: "LLM" };
 export const sourceLabel = (s) => SOURCE_LABEL[s] || s;
 
 const EXT_LANG = {
