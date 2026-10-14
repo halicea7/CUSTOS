@@ -4,6 +4,7 @@ import CodeViewer from "../CodeViewer.jsx";
 import Markdown from "../Markdown.jsx";
 import { useFindingAudit } from "../../api/queries.js";
 import { sevVar } from "../queue/Board.jsx";
+import { realCode } from "./report.js";
 
 export const SEV_LABEL = { critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info" };
 
@@ -71,14 +72,14 @@ export function FindingBody({ finding: f }) {
   const lang = EXT_LANG[f.file_path?.split(".").pop()?.toLowerCase()] || "plaintext";
   return (
     <>
-      {f.code_snippet && (
-        <CodeViewer code={f.code_snippet} language={lang} lineStart={f.line_start}
+      {realCode(f) && (
+        <CodeViewer code={realCode(f)} language={lang} lineStart={f.line_start}
           lineEnd={f.line_end} filePath={f.file_path} />
       )}
       {f.description && <div><h3>Description</h3><Markdown text={f.description} /></div>}
       {f.llm_reasoning && <div><h3>LLM analysis</h3><Markdown text={f.llm_reasoning} /></div>}
       {f.remediation && <div><h3>Recommended fix</h3><Markdown text={f.remediation} /></div>}
-      {!f.code_snippet && !f.description && !f.llm_reasoning && !f.remediation && (
+      {!realCode(f) && !f.description && !f.llm_reasoning && !f.remediation && (
         <p className="muted">The tool reported no further detail for this finding.</p>
       )}
       <div><h3>History</h3><History findingId={f.id} /></div>

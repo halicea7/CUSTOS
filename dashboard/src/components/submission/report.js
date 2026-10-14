@@ -41,6 +41,9 @@ const SEV_COLORS = {
   info:     { fg: "#374151", bg: "#f9fafb", border: "#d1d5db" },
 };
 
+// Semgrep returns "requires login" instead of the code when not signed in to its registry.
+export const realCode = (f) => (f.code_snippet && f.code_snippet.trim() !== "requires login" ? f.code_snippet : null);
+
 export function generateMarkdown(sub, findings) {
   const now = fmtUtc(new Date().toISOString());
   const sha = sub.commit_sha || "";
@@ -74,7 +77,7 @@ export function generateMarkdown(sub, findings) {
         md += `#### ${i + 1}. ${f.title}\n\n`;
         if (f.file_path) md += `Location: \`${f.file_path}${f.line_start ? `:${f.line_start}` : ""}\`\n\n`;
         if (f.description) md += `${f.description}\n\n`;
-        if (f.code_snippet) md += `\`\`\`\n${f.code_snippet}\n\`\`\`\n\n`;
+        if (realCode(f)) md += `\`\`\`\n${realCode(f)}\n\`\`\`\n\n`;
         if (f.remediation) md += `**Remediation:** ${f.remediation}\n\n`;
         md += `---\n\n`;
       });
@@ -110,7 +113,7 @@ export function generateHtmlReport(sub, findings) {
         <div style="padding:16px;">
           ${loc ? `<div style="font-size:12px;color:#6b7280;font-family:monospace;margin-bottom:10px;">${esc(loc)}</div>` : ""}
           ${f.description ? `<p style="font-size:13px;color:#374151;line-height:1.65;margin-bottom:14px;">${esc(f.description)}</p>` : ""}
-          ${f.code_snippet ? `<pre style="background:#0f172a;color:#e2e8f0;border-radius:6px;padding:14px;overflow-x:auto;font-size:12px;line-height:1.6;margin:0 0 14px;"><code>${esc(f.code_snippet)}</code></pre>` : ""}
+          ${realCode(f) ? `<pre style="background:#0f172a;color:#e2e8f0;border-radius:6px;padding:14px;overflow-x:auto;font-size:12px;line-height:1.6;margin:0 0 14px;"><code>${esc(realCode(f))}</code></pre>` : ""}
           ${f.remediation ? `<p style="font-size:13px;color:#374151;line-height:1.65;margin:0;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;">${esc(f.remediation)}</p>` : ""}
         </div></div>`;
     }).join("");
@@ -239,7 +242,7 @@ export function generateRemediations(sub, findings, chains = []) {
     md += `- **Review status:** ${f.disposition === "confirmed" ? "confirmed by a reviewer"
       : f.disposition === "escalated" ? "escalated by a reviewer" : "not yet reviewed (verify it first)"}\n\n`;
     if (f.description) md += `**Problem**\n\n${quote(f.description)}\n\n`;
-    if (f.code_snippet && !secret) md += `**Code**\n\n${fenced(f.code_snippet)}\n\n`;
+    if (realCode(f) && !secret) md += `**Code**\n\n${fenced(realCode(f))}\n\n`;
     md += `**Fix**\n\n${f.remediation ? quote(f.remediation) : defaultFix(f)}\n\n`;
     md += `**Done when**\n\n`;
     md += `- [ ] The issue${loc ? ` at \`${loc}\`` : ""} no longer exists and the fix addresses its root cause.\n`;

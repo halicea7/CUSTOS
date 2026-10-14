@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -98,6 +99,34 @@ def _language_mismatch(rule_id: str, path: str) -> bool:
     return bool(exts) and Path(path).suffix.lower() not in exts
 
 
+# Semgrep's "lines" says "requires login" unless signed in to its registry, so
+# Custos reads the matched lines from the checkout itself.
+_SNIPPET_MAX_LINES = 20
+_PLACEHOLDER = "requires login"
+# A pipe into a shell: "| sh", "| bash", "|sudo bash", ... (not "| python3").
+_PIPE_TO_SHELL = re.compile(r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:ba|z|da|k|fi)?sh\b")
+
+
+def _read_lines(repo_path: str, rel: str, start: int | None, end: int | None, cap: int) -> str | None:
+    if not start:
+        return None
+    path = (Path(repo_path) / rel).resolve()
+    if not path.is_relative_to(Path(repo_path).resolve()) or not path.is_file():
+        return None
+    try:
+        lines = path.read_text(errors="replace").split("\n")
+    except OSError:
+        return None
+    last = min(end or start, start + cap - 1, len(lines))
+    return "\n".join(lines[start - 1:last]) or None
+
+
+def _curl_pipe_false_alarm(rule_id: str, lines: str | None) -> bool:
+    """The GitHub-Actions curl-pipe-shell rule fires on a `run: |` block that merely
+    contains curl. Keep it only when the matched lines really pipe into a shell."""
+    return "curl-pipe" in rule_id and lines is not None and not _PIPE_TO_SHELL.search(lines)
+
+
 def _is_audit_rule(rule_id: str) -> bool:
     """Registry 'audit' rules flag risky APIs (text(), shell=True, ...) without proving a bug."""
     return ".audit." in f".{rule_id}."
@@ -134,6 +163,14 @@ async def run_semgrep(repo_path: str) -> list[RawFinding]:
         if _language_mismatch(rule_id, path):
             skipped += 1
             continue
+        start, end = r.get("start", {}).get("line"), r.get("end", {}).get("line")
+        lines = _read_lines(repo_path, path, start, end, cap=200)
+        if _curl_pipe_false_alarm(rule_id, lines):
+            skipped += 1
+            continue
+        snippet = extra.get("lines")
+        if not snippet or snippet.strip() == _PLACEHOLDER:
+            snippet = "\n".join((lines or "").split("\n")[:_SNIPPET_MAX_LINES]) or None
         raw_sev = extra.get("severity", "INFO").upper()
         severity = _SEMGREP_SEVERITY.get(raw_sev, "info")
         message = extra.get("message")
@@ -150,14 +187,14 @@ async def run_semgrep(repo_path: str) -> list[RawFinding]:
                 title=rule_id,
                 description=message,
                 file_path=path,
-                line_start=r.get("start", {}).get("line"),
-                line_end=r.get("end", {}).get("line"),
+                line_start=start,
+                line_end=end,
                 cwe=cwe,
-                code_snippet=extra.get("lines"),
+                code_snippet=snippet,
             )
         )
     logger.info("semgrep: %d findings%s", len(findings),
-                f" ({skipped} skipped: rule written for another language)" if skipped else "")
+                f" ({skipped} skipped: other-language rules or false curl-pipe matches)" if skipped else "")
     return findings
 
 

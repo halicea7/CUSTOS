@@ -98,13 +98,74 @@ def dedup_raw_findings(findings: list[RawFinding]) -> list[RawFinding]:
     return deduped
 
 
+_SEV = ["critical", "high", "medium", "low", "info"]
+# "pyjwt 2.14.0: CVE-2026-1", "lodash 4.17.20: GHSA-xxxx" (pip-audit, SentinelOne, ...)
+_ADVISORY = re.compile(r"^(?P<pkg>[\w@./+-]+ [\w.+!-]+): (?P<id>(?:CVE|GHSA|PYSEC|RUSTSEC|GO|OSV|SNYK)-[\w.-]+)", re.I)
+_MAX_LISTED = 30
+
+
+def _where(f: RawFinding) -> str:
+    return f"`{f.file_path}:{f.line_start}`" if f.line_start else f"`{f.file_path}`"
+
+
+def _group_key(f: RawFinding) -> tuple | None:
+    """Findings that are really one issue: the same Semgrep rule anywhere in the repo,
+    or several advisories for the same package version. Secrets stay one per finding."""
+    if f.source == "semgrep":
+        return ("rule", f.title)
+    m = _ADVISORY.match(f.title)
+    if m and f.source != "llm":
+        return ("pkg", f.source, m["pkg"].lower(), (f.file_path or "").lower())
+    return None
+
+
+def group_findings(findings: list[RawFinding]) -> list[RawFinding]:
+    groups: dict[tuple, list[RawFinding]] = {}
+    out: list[RawFinding | tuple] = []
+    for f in findings:
+        key = _group_key(f)
+        if key is None:
+            out.append(f)
+        elif key in groups:
+            groups[key].append(f)
+        else:
+            groups[key] = [f]
+            out.append(key)          # placeholder keeps the group where it first appeared
+    return [_merge(k, groups[k]) if isinstance(k, tuple) else k for k in out]
+
+
+def _merge(key: tuple, items: list[RawFinding]) -> RawFinding:
+    if len(items) == 1:
+        return items[0]
+    items = sorted(items, key=lambda f: (_SEV.index(f.severity) if f.severity in _SEV else 9,
+                                         f.file_path or "", f.line_start or 0))
+    first = items[0]
+    merged = dataclasses.replace(first)
+    if key[0] == "pkg":
+        pkg = _ADVISORY.match(first.title)["pkg"]
+        merged.title = f"{pkg}: {len(items)} known vulnerabilities"
+        lines = []
+        for f in items:
+            ident = _ADVISORY.match(f.title)["id"]
+            summary = " ".join((f.description or "").split())[:240]
+            lines.append(f"- **{ident}** ({f.severity}){': ' + summary if summary else ''}")
+        merged.description = "\n".join(lines)
+        fixes = list(dict.fromkeys(f.remediation for f in items if f.remediation))
+        merged.remediation = "\n".join(f"- {r}" for r in fixes) if len(fixes) > 1 else (fixes[0] if fixes else None)
+    else:
+        listed = "\n".join(f"- {_where(f)}" for f in items[:_MAX_LISTED])
+        more = f"\n- …and {len(items) - _MAX_LISTED} more" if len(items) > _MAX_LISTED else ""
+        merged.description = f"{first.description or ''}\n\n**Found in {len(items)} places:**\n{listed}{more}".strip()
+    return merged
+
+
 def synthesize(*source_lists: list[RawFinding]) -> list[dict]:
-    """Merge all source lists, deduplicate, and return dicts matching Finding columns."""
+    """Merge all source lists, deduplicate, group repeats, and return Finding-column dicts."""
     all_findings: list[RawFinding] = []
     for lst in source_lists:
         all_findings.extend(lst)
 
-    return [_to_dict(f) for f in dedup_raw_findings(all_findings)]
+    return [_to_dict(f) for f in group_findings(dedup_raw_findings(all_findings))]
 
 
 def _to_dict(f: RawFinding) -> dict:

@@ -60,9 +60,9 @@ def test_verdicts_confirm_lower_and_reject():
     report = vetting.Report()
     a, b, c = _f(title="A"), _f(title="B"), _f(title="C")
     rejected = vetting.apply_verdicts([a, b, c], [
-        {"id": "V1", "verdict": "confirm", "severity": "high", "reason": "real"},
-        {"id": "v2", "verdict": "lower", "severity": "low", "reason": "needs local access"},
-        {"id": "V3", "verdict": "reject", "severity": "info", "reason": "bound parameter"},
+        {"id": "V1", "attacker": "an API caller", "gain": "shell access", "verdict": "confirm", "severity": "high", "reason": "real"},
+        {"id": "v2", "attacker": "a local user", "gain": "reads a file", "verdict": "lower", "severity": "low", "reason": "needs local access"},
+        {"id": "V3", "attacker": "nobody", "gain": "", "verdict": "reject", "severity": "info", "reason": "bound parameter"},
     ], report)
     assert rejected == {id(c)} and a.severity == "high" and b.severity == "low"
     assert "needs local access" in b.description and "bound parameter" in report.summary()
@@ -112,8 +112,10 @@ async def test_call_llm_vets_then_verifies(tmp_path, monkeypatch):
         seen.append(spec.name)
         if spec is llm.VERIFY_SPEC:
             assert "V1" in user_prompt and "V2" in user_prompt and "curl" not in user_prompt
-            return llm.LlmResult(value=[{"id": "V1", "verdict": "confirm", "severity": "critical", "reason": "real"},
-                                        {"id": "V2", "verdict": "reject", "severity": "info", "reason": "bound parameter"}],
+            return llm.LlmResult(value=[{"id": "V1", "attacker": "an API caller", "gain": "runs commands",
+                                         "verdict": "confirm", "severity": "critical", "reason": "real"},
+                                        {"id": "V2", "attacker": "", "gain": "", "verdict": "reject", "severity": "info",
+                                         "reason": "bound parameter"}],
                                  prompt_tokens=7, completion_tokens=2)
         assert "6|     os.system('ls ' + cmd)" in user_prompt     # files are shown with line numbers
         return spec.result(json.dumps(found), 100, 10)
@@ -128,3 +130,71 @@ async def test_call_llm_vets_then_verifies(tmp_path, monkeypatch):
     seen.clear()
     off = await llm.call_llm(str(tmp_path), [], provider, verify=False)
     assert seen == ["security_findings"] and len(off.findings) == 2
+
+
+def test_findings_that_call_themselves_safe_or_not_security_are_set_aside():
+    report = vetting.Report()
+    safe1 = _f(description="Upon closer inspection, both queries properly use bound parameters. No change is needed.")
+    safe2 = _f(llm_reasoning="All parameters are properly bound, so this is actually safe.")
+    ops = _f(title="Hardcoded API endpoint", description="This is more of an operational issue than a security one.")
+    real = _f(code_snippet="os.system('ls ' + cmd)", description="The query is not safe: input reaches the shell.")
+    kept = vetting.vet([safe1, safe2, ops, real], FILES, report)
+    assert kept == [real]
+    assert report.dropped == {"its own explanation says it's safe": 2} and report.notes == ["Hardcoded API endpoint"]
+
+
+def test_verdicts_without_an_attacker_or_that_say_safe_are_rejections():
+    report = vetting.Report()
+    a, b = _f(title="Config-driven model string"), _f(title="exec $@")
+    rejected = vetting.apply_verdicts([a, b], [
+        {"id": "V1", "attacker": "none", "gain": "n/a", "verdict": "confirm", "severity": "low", "reason": "config only"},
+        {"id": "V2", "attacker": "container operator", "gain": "x", "verdict": "lower", "severity": "low",
+         "reason": "The code is safe because the operator already controls the container."},
+    ], report)
+    assert rejected == {id(a), id(b)}
+
+
+def test_verification_covers_findings_capped_by_vetting():
+    capped = _f(severity="low")
+    assert vetting.candidates([capped], {id(capped): "high"}) == [capped]
+    assert vetting.candidates([capped], {id(capped): "low"}) == []
+
+
+def test_repeated_rules_and_package_advisories_are_grouped():
+    from worker.analysis.synthesizer import group_findings
+
+    tag = "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+    fs = [RawFinding(source="semgrep", severity="medium", title=tag, file_path=".github/workflows/ci.yml", line_start=n,
+                     description="Pin the action.") for n in (21, 22, 66)]
+    fs += [RawFinding(source="sentinelone", severity=sev, title=f"pyjwt 2.14.0: {cve}", file_path="/uv.lock",
+                      description=d, remediation="Upgrade to 2.15.0.")
+           for sev, cve, d in (("medium", "CVE-2026-1", "key confusion"), ("high", "CVE-2026-2", "DoS"))]
+    fs += [RawFinding(source="sentinelone", severity="low", title="mako 1.4.1: CVE-2026-3", file_path="/uv.lock")]
+    fs += [RawFinding(source="gitleaks", severity="high", title="Secret detected: aws", file_path=p) for p in ("a", "b")]
+    out = group_findings(fs)
+    assert [f.title for f in out] == [tag, "pyjwt 2.14.0: 2 known vulnerabilities", "mako 1.4.1: CVE-2026-3",
+                                      "Secret detected: aws", "Secret detected: aws"]
+    rule, jwt = out[0], out[1]
+    assert "Found in 3 places" in rule.description and "`.github/workflows/ci.yml:66`" in rule.description
+    assert jwt.severity == "high" and "**CVE-2026-2** (high): DoS" in jwt.description and jwt.remediation == "Upgrade to 2.15.0."
+
+
+def test_semgrep_curl_pipe_needs_a_real_pipe_into_a_shell():
+    from worker.analysis.sast import _curl_pipe_false_alarm
+
+    rid = "yaml.github-actions.security.gha-curl-pipe-shell.gha-curl-pipe-shell"
+    health = "run: |\n  docker compose up -d\n  curl -sf localhost:8000/health | python3 -c 'import sys'"
+    assert _curl_pipe_false_alarm(rid, health)
+    assert not _curl_pipe_false_alarm(rid, "run: |\n  curl -fsSL https://x.sh | sudo -E bash -")
+    assert not _curl_pipe_false_alarm(rid, None)                  # can't read the file: keep it
+    assert not _curl_pipe_false_alarm("python.x", health)
+
+
+def test_semgrep_snippets_come_from_the_checkout(tmp_path):
+    from worker.analysis.sast import _read_lines
+
+    (tmp_path / "a.py").write_text("one\ntwo\nthree\nfour")
+    assert _read_lines(str(tmp_path), "a.py", 2, 3, cap=20) == "two\nthree"
+    assert _read_lines(str(tmp_path), "a.py", 2, 4, cap=2) == "two\nthree"
+    assert _read_lines(str(tmp_path), "../etc/passwd", 1, 1, cap=5) is None     # never outside the checkout
+    assert _read_lines(str(tmp_path), "missing.py", 1, 1, cap=5) is None
