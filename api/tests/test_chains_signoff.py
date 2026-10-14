@@ -154,3 +154,26 @@ async def test_two_stage_sign_off(client, db):
     assert [(h["action"], h["by"], h["note"]) for h in history] == [
         ("analyst_sign_off", "ana", "looks fine"), ("sign_off_returned", "root", "check F2"),
         ("analyst_sign_off", "ana", "fixed"), ("sign_off", "root", "approved")]
+
+
+def test_steps_are_found_under_other_keys_and_shapes():
+    _, refs = chains.prompt([_f("a", "critical"), _f("b", "high"), _f("c", "low")], [])
+    raw = [
+        {"title": "path of objects", "severity": "high", "path": [
+            {"finding": "F2", "explanation": "first"}, {"finding_id": "F1", "reason": "then"}]},
+        {"title": "bare list", "severity": "high", "findings": ["F3", "F2"]},
+        {"title": "ref only in text", "severity": "high", "chain": [
+            {"description": "Uses F1 to start"}, {"description": "then F3"}]},
+        {"title": "no refs at all", "severity": "high", "summary": "x"},
+        {"title": "words only", "severity": "high", "steps": [{"description": "one of 2 issues"}, {"description": "half 3"}]},
+    ]
+    stats = chains.Stats()
+    kept = chains.validate(raw, refs, stats)
+    assert sorted(c["title"] for c in kept) == ["bare list", "path of objects", "ref only in text"]
+    first = next(c for c in kept if c["title"] == "path of objects")
+    assert [s["finding_id"] for s in first["steps"]] == ["b", "a"] and first["steps"][0]["why"] == "first"
+    assert stats.too_short == 2 and "keys: severity, summary, title" in stats.summary()
+
+
+def test_prompt_shows_the_exact_json_shape():
+    assert '"steps": [' in chains.SPEC.system and '{"ref": "F4", "role": "entry"' in chains.SPEC.system

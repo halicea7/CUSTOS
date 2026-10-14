@@ -57,8 +57,20 @@ Rules:
 - "confidence": high = each link is evident from the findings; low = it depends
   on assumptions you couldn't confirm.
 - "break_at" is the single reference whose fix breaks the chain most cheaply.
-- At most 6 chains. Return ONLY JSON: {"chains": [...]}. No prose, no code fences.
-  Text fields may use short Markdown with `backticks` for identifiers."""
+- At most 6 chains. Return ONLY JSON in exactly this shape. No prose, no code fences.
+  Text fields may use short Markdown with `backticks` for identifiers.
+
+{"chains": [
+  {"title": "Forge a session token, then export every record",
+   "severity": "critical", "confidence": "medium",
+   "narrative": "One or two sentences on the whole attack.",
+   "steps": [
+     {"ref": "F4", "role": "entry", "why": "How this finding gives the first foothold."},
+     {"ref": "F9", "role": "pivot", "why": "How the previous step makes this one reachable."},
+     {"ref": "F1", "role": "impact", "why": "The damage at the end."}
+   ],
+   "break_at": "F4"}
+]}"""
 
 _STEP = {
     "type": "object",
@@ -127,6 +139,8 @@ def prompt(findings: list, files: list[str]) -> tuple[str, dict[str, Ref]]:
 
 
 _REF = re.compile(r"F\s*-?\s*(\d{1,3})", re.IGNORECASE)
+# In free text only a real reference counts ("F2", "F-2"), so "of 2" isn't read as F2.
+_REF_IN_TEXT = re.compile(r"\bF-?(\d{1,3})\b")
 
 
 def _ref(value) -> str:
@@ -153,7 +167,34 @@ class Stats:
             parts.append(f"{self.bad_refs} citation(s) of findings that don't exist were ignored.")
         if self.too_short:
             parts.append(f"{self.too_short} chain(s) dropped for having fewer than two real findings.")
+        parts += self.notes
         return " ".join(parts)
+
+
+_STEP_KEYS = ("steps", "path", "chain", "findings", "links", "sequence", "nodes", "refs", "references")
+_REF_KEYS = ("ref", "finding", "finding_ref", "reference", "finding_id", "id", "f")
+
+
+def _steps_of(chain: dict) -> list:
+    """The chain's steps, wherever the model put them."""
+    for k in _STEP_KEYS:
+        if isinstance(chain.get(k), list):
+            return chain[k]
+    return next((v for v in chain.values() if isinstance(v, list)), [])
+
+
+def _step_ref(step) -> str:
+    if not isinstance(step, dict):
+        return _ref(step)
+    for k in _REF_KEYS:
+        if step.get(k) is not None and (r := _ref(step[k])):
+            return r
+    # Last resort: an F-number anywhere in the step's text fields.
+    for v in step.values():
+        m = _REF_IN_TEXT.search(v) if isinstance(v, str) else None
+        if m:
+            return f"F{int(m.group(1))}"
+    return ""
 
 
 def _text(v, cap=_TEXT) -> str:
@@ -169,12 +210,12 @@ def validate(raw: list, refs: dict[str, Ref], stats: Stats | None = None) -> lis
         if not isinstance(c, dict):
             continue
         steps, used = [], set()
-        for s in c.get("steps") or []:
+        for s in _steps_of(c):
             if not isinstance(s, (dict, str, int)):
                 continue
+            ref = _step_ref(s)
             if not isinstance(s, dict):          # a bare reference instead of a step object
-                s = {"ref": s}
-            ref = _ref(s.get("ref") or s.get("finding") or s.get("id"))
+                s = {}
             if ref not in refs:
                 stats.bad_refs += 1
                 continue
@@ -182,9 +223,12 @@ def validate(raw: list, refs: dict[str, Ref], stats: Stats | None = None) -> lis
                 continue
             used.add(ref)
             role = s.get("role") if s.get("role") in ROLES else "pivot"
-            steps.append({"finding_id": refs[ref].id, "ref": ref, "role": role, "why": _text(s.get("why"), 300)})
+            why = s.get("why") or s.get("reason") or s.get("explanation") or s.get("description")
+            steps.append({"finding_id": refs[ref].id, "ref": ref, "role": role, "why": _text(why, 300)})
         if len(steps) < 2:
             stats.too_short += 1
+            if not stats.notes:   # show what the model actually sent, to diagnose shape mismatches
+                stats.notes.append(f"First dropped chain had keys: {', '.join(sorted(map(str, c)))[:200]}.")
             continue
         key = tuple(s["finding_id"] for s in steps)
         if key in seen:
@@ -192,7 +236,7 @@ def validate(raw: list, refs: dict[str, Ref], stats: Stats | None = None) -> lis
         seen.add(key)
         worst = min(SEVERITIES.index(refs[s["ref"]].severity) for s in steps)
         claimed = SEVERITIES.index(c["severity"]) if c.get("severity") in SEVERITIES else worst
-        brk = _ref(c.get("break_at"))
+        brk = _ref(c.get("break_at") or c.get("break") or c.get("fix_first"))
         out.append({
             "title": _text(c.get("title"), 200) or "Unnamed attack chain",
             "severity": SEVERITIES[min(claimed, worst)],          # never below its worst step
