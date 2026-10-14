@@ -359,6 +359,42 @@ async def _npm_audit(repo_path: str) -> list[RawFinding]:
     return findings
 
 
+# Listed as devDependencies but packaged into what users run.
+_SHIPPED_DEV_PACKAGES = {"electron", "electron-nightly", "nw"}
+_MAX_ADVISORIES = 25
+
+
+def _lock_packages(pkg_dir: Path) -> dict:
+    """The lockfile's "packages" map (node_modules path → metadata), or {}."""
+    for name in ("package-lock.json", "npm-shrinkwrap.json"):
+        lock = pkg_dir / name
+        if _is_file(lock):
+            try:
+                packages = json.loads(lock.read_text()).get("packages")
+            except (OSError, ValueError, AttributeError):
+                return {}
+            return packages if isinstance(packages, dict) else {}
+    return {}
+
+
+def _dev_only(nodes, lock: dict) -> bool:
+    """True if every installed copy of the package is marked dev in the lockfile."""
+    entries = [lock.get(n) for n in nodes or []]
+    return bool(entries) and all(isinstance(e, dict) and e.get("dev") for e in entries)
+
+
+def _installed_version(nodes, lock: dict) -> str | None:
+    versions = sorted({e["version"] for n in nodes or [] if isinstance(e := lock.get(n), dict) and e.get("version")})
+    return ", ".join(versions) or None
+
+
+def _npm_fix(fix) -> str | None:
+    if isinstance(fix, dict) and fix.get("name"):
+        major = " (a major version: check for breaking changes)" if fix.get("isSemVerMajor") else ""
+        return f"Upgrade `{fix['name']}` to {fix.get('version', 'a fixed version')}{major}, or run `npm audit fix`."
+    return "Run `npm audit fix`." if fix else None
+
+
 async def _npm_audit_dir(pkg_dir: Path, manifest: str) -> list[RawFinding]:
     # Force the public registry: a hostile repo's .npmrc could otherwise
     # redirect the audit request (and its lockfile) to an attacker's server.
@@ -373,21 +409,43 @@ async def _npm_audit_dir(pkg_dir: Path, manifest: str) -> list[RawFinding]:
     except json.JSONDecodeError:
         return []
 
+    lock = _lock_packages(pkg_dir)
     findings: list[RawFinding] = []
     for name, vuln in data.get("vulnerabilities", {}).items():
-        raw_sev = vuln.get("severity", "low")
-        via = vuln.get("via", [])
-        desc = next(
-            (v.get("title") for v in via if isinstance(v, dict) and "title" in v),
-            None,
-        )
+        advisories = [v for v in vuln.get("via", []) if isinstance(v, dict)]
+        if not advisories:
+            # Only vulnerable because a dependency is; that package has its own finding.
+            continue
+        severity = _NPM_SEVERITY.get(vuln.get("severity", "low"), "low")
+        lines = []
+        for a in advisories[:_MAX_ADVISORIES]:
+            ident = (a.get("url") or "").rstrip("/").rsplit("/", 1)[-1] or str(a.get("source") or "")
+            lines.append(f"- **{ident}** ({_NPM_SEVERITY.get(a.get('severity'), 'low')}): {a.get('title') or 'advisory'}")
+        if len(advisories) > _MAX_ADVISORIES:
+            lines.append(f"- …and {len(advisories) - _MAX_ADVISORIES} more")
+        notes = []
+        version = _installed_version(vuln.get("nodes"), lock)
+        if version:
+            notes.append(f"Installed: `{name}@{version}`.")
+        effects = vuln.get("effects") or []
+        if effects:
+            notes.append("Pulled in by: " + ", ".join(f"`{e}`" for e in effects[:10])
+                         + (f" and {len(effects) - 10} more" if len(effects) > 10 else "") + ".")
+        if name not in _SHIPPED_DEV_PACKAGES and _dev_only(vuln.get("nodes"), lock) and severity in (
+                "critical", "high", "medium"):
+            notes.append(f"_Custos lowered this from **{severity}** to **low**: it's only a dev dependency "
+                         "(build, test or tooling), not shipped with the app._")
+            severity = "low"
+        cwes = next((a["cwe"] for a in advisories if a.get("cwe")), None)
         findings.append(
             RawFinding(
                 source="npm_audit",
-                severity=_NPM_SEVERITY.get(raw_sev, "low"),
-                title=f"{name}: {desc or raw_sev + ' severity vulnerability'}",
-                description=desc,
-                remediation="npm audit fix" if vuln.get("fixAvailable") else None,
+                severity=severity,
+                # Unchanged format: earlier false-positive decisions are matched by title.
+                title=f"{name}: {advisories[0].get('title') or vuln.get('severity', 'low') + ' severity vulnerability'}",
+                description="\n".join(lines) + ("\n\n" + " ".join(notes) if notes else ""),
+                cwe=cwes[0] if isinstance(cwes, list) and cwes else None,
+                remediation=_npm_fix(vuln.get("fixAvailable")),
                 file_path=manifest,
             )
         )

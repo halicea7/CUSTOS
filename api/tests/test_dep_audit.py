@@ -54,3 +54,45 @@ async def test_npm_audit_runs_in_each_locked_package(tmp_path, monkeypatch):
     assert calls == ["dashboard"]
     assert [(f.title, f.file_path, f.severity) for f in findings] == [
         ("axios: SSRF in axios", "dashboard/package.json", "high")]
+
+
+def _adv(title, sev="high", ghsa="GHSA-aaaa-bbbb-cccc"):
+    return {"title": title, "severity": sev, "url": f"https://github.com/advisories/{ghsa}", "cwe": ["CWE-22"]}
+
+
+async def test_npm_audit_folds_transitive_entries_and_lowers_dev_only(tmp_path, monkeypatch):
+    lock = {"packages": {
+        "": {"name": "app"},
+        "node_modules/tar": {"version": "6.2.1", "dev": True},
+        "node_modules/electron-builder": {"version": "24.0.0", "dev": True},
+        "node_modules/electron": {"version": "31.7.7", "dev": True},
+        "node_modules/fast-uri": {"version": "3.1.2"},
+    }}
+    _touch(tmp_path, "package.json")
+    _touch(tmp_path, "package-lock.json", json.dumps(lock))
+    audit = {"vulnerabilities": {
+        "tar": {"severity": "critical", "nodes": ["node_modules/tar"], "effects": ["electron-builder"],
+                "via": [_adv("Hardlink path traversal", "critical"), _adv("DoS", "moderate", "GHSA-2")],
+                "fixAvailable": {"name": "electron-builder", "version": "26.0.0", "isSemVerMajor": True}},
+        "electron-builder": {"severity": "critical", "nodes": ["node_modules/electron-builder"], "via": ["tar"],
+                             "fixAvailable": True},
+        "electron": {"severity": "high", "nodes": ["node_modules/electron"], "via": [_adv("ASAR bypass")]},
+        "fast-uri": {"severity": "high", "nodes": ["node_modules/fast-uri"], "via": [_adv("Host confusion")],
+                     "fixAvailable": True},
+    }}
+
+    async def fake_run(cmd, cwd=None, timeout=0):
+        return 1, json.dumps(audit), ""
+
+    monkeypatch.setattr(sast, "_run", fake_run)
+    found = {f.title: f for f in await sast._npm_audit(str(tmp_path))}
+
+    assert set(found) == {"tar: Hardlink path traversal", "electron: ASAR bypass", "fast-uri: Host confusion"}
+    tar = found["tar: Hardlink path traversal"]
+    assert tar.severity == "low" and "lowered this from **critical** to **low**" in tar.description
+    assert "- **GHSA-2** (medium): DoS" in tar.description and "Installed: `tar@6.2.1`" in tar.description
+    assert "Pulled in by: `electron-builder`" in tar.description and tar.cwe == "CWE-22"
+    assert tar.remediation.startswith("Upgrade `electron-builder` to 26.0.0 (a major version")
+    assert found["electron: ASAR bypass"].severity == "high"       # dev dependency, but shipped to users
+    assert found["fast-uri: Host confusion"].severity == "high"
+    assert found["fast-uri: Host confusion"].remediation == "Run `npm audit fix`."
