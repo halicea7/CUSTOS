@@ -165,6 +165,10 @@ _CHECKOV_FRAMEWORKS = ("dockerfile", "kubernetes", "helm", "terraform", "cloudfo
 _CHECKOV_MEDIUM = re.compile(
     r"privileged|as root|root user|user for the container|public|0\.0\.0\.0|wildcard|\badmin\b|injection|unsecure|insecure|"
     r"write-all|credential|secret|unencrypted|not encrypted|plain ?text|http\b|ssl|tls", re.I)
+# Reliability and operations checks, not security: health checks, dead-letter
+# queues, concurrency limits, tracing.
+_CHECKOV_NOT_SECURITY = {"CKV_DOCKER_2", "CKV_AWS_115", "CKV_AWS_116", "CKV_AWS_50", "CKV_AWS_73",
+                         "CKV_AZURE_17", "CKV_K8S_8", "CKV_K8S_9"}
 _CHECKOV_NOTE = ("**Checkov hardening check:** a configuration best practice, not a confirmed vulnerability. "
                  "Check whether it matters for how this is deployed.")
 
@@ -186,6 +190,8 @@ async def run_checkov(repo_path: str) -> list[RawFinding]:
     findings = []
     for report in data if isinstance(data, list) else [data]:
         for c in ((report or {}).get("results") or {}).get("failed_checks", []):
+            if c.get("check_id") in _CHECKOV_NOT_SECURITY:
+                continue
             path = (c.get("file_path") or c.get("repo_file_path") or "").lstrip("/")
             path = _rel(repo_path, path) if Path(path).is_absolute() else path
             rng = c.get("file_line_range") or [None, None]

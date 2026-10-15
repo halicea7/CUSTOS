@@ -1,6 +1,7 @@
 """Merge and deduplicate findings from all sources into DB-ready dicts."""
 
 import dataclasses
+import posixpath
 import re
 
 from worker.analysis.sast import RawFinding
@@ -110,8 +111,9 @@ def _repeats(f: RawFinding, s: RawFinding) -> bool:
     """True if second-opinion finding *f* is about the same thing as Semgrep finding *s*."""
     if (s.file_path or "").lower() != (f.file_path or "").lower() or s.line_start is None or f.line_start is None:
         return False
-    if f.source == "bandit":   # line-precise, with a CWE
-        return bool(f.cwe and s.cwe and s.cwe.upper() == f.cwe.upper()) and abs(s.line_start - f.line_start) <= _FOLD_LINES
+    if f.source == "bandit":   # line-precise; the two tools often pick different CWEs for one call
+        same_cwe = bool(f.cwe and s.cwe and s.cwe.upper() == f.cwe.upper())
+        return s.line_start == f.line_start or (same_cwe and abs(s.line_start - f.line_start) <= _FOLD_LINES)
     # Checkov reports a whole resource (often the whole Dockerfile) and no CWE:
     # Semgrep's line inside that range, and a shared word that isn't boilerplate.
     if not f.line_start - _FOLD_LINES <= s.line_start <= (f.line_end or f.line_start) + _FOLD_LINES:
@@ -120,18 +122,53 @@ def _repeats(f: RawFinding, s: RawFinding) -> bool:
     return any(len(w) >= 4 for w in words)
 
 
+def _credit(match: RawFinding, note: str) -> None:
+    if note not in (match.description or ""):
+        match.description = f"{match.description}\n\n{note}" if match.description else note
+
+
+def _dir(path: str | None) -> str:
+    return posixpath.dirname((path or "").lstrip("/").lower())
+
+
+def _package(f: RawFinding) -> str | None:
+    """The package a dependency finding is about: "pyjwt 2.1: CVE-…" or npm audit's "pyjwt: title"."""
+    m = _ADVISORY.match(f.title)
+    if m:
+        return m["pkg"].rsplit(" ", 1)[0].lower()
+    return f.title.split(": ", 1)[0].lower() if f.source == "npm_audit" else None
+
+
 def _fold_second_opinions(findings: list[RawFinding]) -> list[RawFinding]:
     semgrep = [f for f in findings if f.source == "semgrep"]
+    leaks = [f for f in findings if f.source == "gitleaks"]
+    audits = [f for f in findings if f.source in ("npm_audit", "pip_audit", "osv")]
+    s1_ids: dict[int, tuple[RawFinding, list[str]]] = {}
     kept = []
     for f in findings:
         name = _SECOND_OPINION.get(f.source)
         match = name and next((s for s in semgrep if _repeats(f, s)), None)
         if match:
-            note = f"_Also flagged by {name} ({f.title.split(' ', 1)[0]})._"
-            if note not in (match.description or ""):
-                match.description = f"{match.description}\n\n{note}" if match.description else note
+            _credit(match, f"_Also flagged by {name} ({f.title.split(' ', 1)[0]})._")
             continue
+        # A Semgrep secret rule on a line Gitleaks already reported.
+        if f.source == "semgrep" and ".secrets." in f".{f.title}.":
+            match = next((g for g in leaks if (g.file_path or "").lower() == (f.file_path or "").lower()
+                          and g.line_start is not None and f.line_start is not None
+                          and abs(g.line_start - f.line_start) <= 1), None)
+            if match:
+                _credit(match, "_Also flagged by Semgrep._")
+                continue
+        # SentinelOne's vulnerable package that npm audit / pip-audit / OSV report from the same folder.
+        if f.source == "s1_vuln" and (pkg := _package(f)):
+            match = next((a for a in audits if _package(a) == pkg and _dir(a.file_path) == _dir(f.file_path)), None)
+            if match:
+                ident = _ADVISORY.match(f.title)
+                s1_ids.setdefault(id(match), (match, []))[1].append(ident["id"] if ident else pkg)
+                continue
         kept.append(f)
+    for match, ids in s1_ids.values():
+        _credit(match, f"_Also reported by SentinelOne ({', '.join(dict.fromkeys(ids))})._")
     return kept
 
 
@@ -140,6 +177,26 @@ _SEV = ["critical", "high", "medium", "low", "info"]
 _ADVISORY = re.compile(r"^(?P<pkg>[\w@./:+-]+ [\w.+!~:-]+): (?P<id>[A-Z][A-Z0-9]+-[\w.:-]+)")
 _DEP_SOURCES = {"pip_audit", "npm_audit", "osv", "s1_vuln"}
 _MAX_LISTED = 30
+# Checkov: "Resource: `X`."; SentinelOne IaC: "(resource: X)".
+_RESOURCE = re.compile(r"Resource: `([^`]+)`|\(resource: ([^)]+)\)")
+_CONFIG_HEAD = ("**Configuration checks:** best practices, not confirmed vulnerabilities. "
+                "Check whether each matters for how this is deployed.")
+_TOOL = {"checkov": "Checkov", "s1_iac": "SentinelOne"}
+
+
+def _check_line(f: RawFinding) -> str:
+    if f.source == "checkov":
+        cid, _, name = f.title.partition(" ")
+        return f"- **{cid}** ({f.severity}): {name}"
+    return f"- **SentinelOne** ({f.severity}): {re.sub(r'^[A-Za-z]+ - ', '', f.title)}"
+
+
+def _check_link(f: RawFinding) -> str | None:
+    if f.source == "checkov" and (f.remediation or "").startswith("See "):
+        return f"- {f.title.split(' ', 1)[0]}: {f.remediation[4:]}"
+    if f.source == "s1_iac" and f.remediation:
+        return f"- SentinelOne: {' '.join(f.remediation.split())[:300]}"
+    return None
 
 
 def _where(f: RawFinding) -> str:
@@ -149,8 +206,13 @@ def _where(f: RawFinding) -> str:
 def _group_key(f: RawFinding) -> tuple | None:
     """Findings that are really one issue: the same Semgrep rule anywhere in the repo,
     or several advisories for the same package version. Secrets stay one per finding."""
-    if f.source in ("semgrep", "bandit", "checkov"):
+    if f.source in ("semgrep", "bandit"):
         return ("rule", f.source, f.title)
+    if f.source == "npm_audit":     # the same advisory in several package.json folders
+        return ("rule", f.source, f.title)
+    if f.source in ("checkov", "s1_iac") and (res := _RESOURCE.search(f.description or "")):
+        # Both tools name resources the same way ("AWS::S3::Bucket.Site"): one finding per resource.
+        return ("resource", (f.file_path or "").lower(), res[1] or res[2])
     m = _ADVISORY.match(f.title)
     if m and f.source in _DEP_SOURCES:
         return ("pkg", f.source, m["pkg"].lower(), (f.file_path or "").lower())
@@ -175,6 +237,14 @@ def group_findings(findings: list[RawFinding]) -> list[RawFinding]:
 def _merge(key: tuple, items: list[RawFinding]) -> RawFinding:
     if len(items) == 1:
         return items[0]
+    merged = _merge_group(key, items)
+    credits = [ln for f in items for ln in (f.description or "").split("\n\n") if ln.startswith("_Also ")]
+    for note in dict.fromkeys(credits):
+        _credit(merged, note)
+    return merged
+
+
+def _merge_group(key: tuple, items: list[RawFinding]) -> RawFinding:
     items = sorted(items, key=lambda f: (_SEV.index(f.severity) if f.severity in _SEV else 9,
                                          f.file_path or "", f.line_start or 0))
     first = items[0]
@@ -190,6 +260,15 @@ def _merge(key: tuple, items: list[RawFinding]) -> RawFinding:
         merged.description = "\n".join(lines)
         fixes = list(dict.fromkeys(f.remediation for f in items if f.remediation))
         merged.remediation = "\n".join(f"- {r}" for r in fixes) if len(fixes) > 1 else (fixes[0] if fixes else None)
+    elif key[0] == "resource":
+        resource = key[2]
+        tools = " and ".join(dict.fromkeys(_TOOL[f.source] for f in items))
+        merged.title = f"{resource}: {len(items)} configuration checks failed"
+        merged.line_start = min(f.line_start for f in items if f.line_start) if any(f.line_start for f in items) else None
+        merged.line_end = max((f.line_end or f.line_start or 0) for f in items) or None
+        checks = "\n".join(_check_line(f) for f in items)
+        merged.description = f"{_CONFIG_HEAD}\n\n**Checks that failed for `{resource}`** ({tools}):\n{checks}"
+        merged.remediation = "\n".join(link for f in items if (link := _check_link(f))) or None
     else:
         listed = "\n".join(f"- {_where(f)}" for f in items[:_MAX_LISTED])
         more = f"\n- …and {len(items) - _MAX_LISTED} more" if len(items) > _MAX_LISTED else ""

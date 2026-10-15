@@ -72,8 +72,10 @@ async def test_osv_without_lockfiles_is_not_an_error(tmp_path, monkeypatch):
 async def test_checkov_reports_hardening_as_low_and_exposure_as_medium(tmp_path, monkeypatch):
     (tmp_path / "Dockerfile").write_text("FROM python:3.12\nRUN pip install flask\n")
     checks = [
-        {"check_id": "CKV_DOCKER_2", "check_name": "Ensure that HEALTHCHECK instructions have been added",
+        {"check_id": "CKV_DOCKER_7", "check_name": "Ensure the base image uses a non latest version tag",
          "file_path": "/Dockerfile", "file_line_range": [1, 2], "resource": "Dockerfile."},
+        {"check_id": "CKV_DOCKER_2", "check_name": "Ensure that HEALTHCHECK instructions have been added",
+         "file_path": "/Dockerfile", "file_line_range": [1, 2], "resource": "Dockerfile."},   # not security: dropped
         {"check_id": "CKV2_GHA_1", "check_name": "Ensure top-level permissions are not set to write-all",
          "file_path": "/.github/workflows/ci.yml", "file_line_range": [2, 3], "guideline": "https://g"},
     ]
@@ -135,3 +137,58 @@ async def test_bandit_unsure_results_are_low(tmp_path, monkeypatch):
     _fake_run(monkeypatch, 1, {"results": [{**row, "issue_severity": "MEDIUM", "issue_confidence": "MEDIUM"},
                                            {**row, "issue_severity": "MEDIUM", "issue_confidence": "HIGH"}]})
     assert [f.severity for f in await scanners.run_bandit(str(tmp_path))] == ["low", "medium"]
+
+
+def test_checkov_checks_on_one_resource_become_one_finding():
+    def ck(cid, name, sev="medium", line=10, res="AWS::S3::Bucket.Site"):
+        return RawFinding("checkov", sev, f"{cid} {name}", file_path="template.yaml", line_start=line, line_end=line + 9,
+                          description=f"Note.\n\nResource: `{res}`.", remediation=f"See https://docs/{cid}")
+    out = synthesize([ck("CKV_AWS_53", "Ensure S3 bucket has block public ACLs enabled"),
+                      ck("CKV_AWS_18", "Ensure the S3 bucket has access logging enabled", "low"),
+                      ck("CKV_AWS_117", "Ensure that AWS Lambda function is configured inside a VPC", "low", 40,
+                         "AWS::Serverless::Function.Worker")])
+    assert [(f["title"], f["severity"], f["line_start"]) for f in out] == [
+        ("AWS::S3::Bucket.Site: 2 configuration checks failed", "medium", 10),
+        ("CKV_AWS_117 Ensure that AWS Lambda function is configured inside a VPC", "low", 40)]
+    assert "- **CKV_AWS_53** (medium): Ensure S3 bucket has block public ACLs enabled" in out[0]["description"]
+    assert "- CKV_AWS_18: https://docs/CKV_AWS_18" in out[0]["remediation"]
+
+
+def test_same_line_repeats_and_sentinelone_duplicates_are_folded():
+    out = synthesize([
+        RawFinding("semgrep", "low", "python.lang.security.audit.dynamic-urllib-use-detected", file_path="c.py",
+                   line_start=5, cwe="CWE-939"),
+        RawFinding("bandit", "medium", "B310 blacklist", file_path="c.py", line_start=5, cwe="CWE-22"),
+        RawFinding("gitleaks", "high", "Secret detected: generic-api-key", file_path="a.md", line_start=7),
+        RawFinding("semgrep", "high", "generic.secrets.security.detected-generic-api-key.detected-generic-api-key",
+                   file_path="a.md", line_start=7),
+        RawFinding("npm_audit", "high", "leftpad: leftpad prototype pollution", file_path="web/package.json", description="d"),
+        RawFinding("npm_audit", "low", "leftpad: leftpad prototype pollution", file_path="docs/package.json", description="d"),
+        RawFinding("s1_vuln", "high", "leftpad 1.0.0: CVE-2026-1", file_path="/web/package-lock.json"),
+        RawFinding("s1_vuln", "high", "leftpad 1.0.0: GHSA-abcd-efgh-ijkl", file_path="/web/package-lock.json"),
+        RawFinding("s1_vuln", "high", "lodash 4.0.0: CVE-2026-2", file_path="/web/package-lock.json"),  # npm didn't see it
+    ])
+    titles = [f["title"] for f in out]
+    assert titles == ["python.lang.security.audit.dynamic-urllib-use-detected", "Secret detected: generic-api-key",
+                      "leftpad: leftpad prototype pollution", "lodash 4.0.0: CVE-2026-2"]
+    assert "_Also flagged by Bandit (B310)._" in out[0]["description"]
+    assert "_Also flagged by Semgrep._" in out[1]["description"]
+    pkg = out[2]
+    assert pkg["severity"] == "high" and "Found in 2 places" in pkg["description"]
+    assert "_Also reported by SentinelOne (CVE-2026-1, GHSA-abcd-efgh-ijkl)._" in pkg["description"]
+
+
+def test_checkov_and_sentinelone_share_one_finding_per_resource():
+    out = synthesize([
+        RawFinding("checkov", "medium", "CKV_AWS_53 Ensure S3 bucket has block public ACLs enabled", file_path="t.yaml",
+                   line_start=10, line_end=22, description="N.\n\nResource: `AWS::S3::Bucket.Site`.",
+                   remediation="See https://docs/53"),
+        RawFinding("s1_iac", "high", "Cloudformation - Unrestricted Public Access to AWS S3 Bucket", file_path="t.yaml",
+                   line_start=11, line_end=23, remediation="Block public access.",
+                   description="Unrestricted Public Access (resource: AWS::S3::Bucket.Site)"),
+    ])
+    (f,) = out
+    assert (f["title"], f["severity"], f["line_start"]) == ("AWS::S3::Bucket.Site: 2 configuration checks failed", "high", 10)
+    assert "(SentinelOne and Checkov)" in f["description"]
+    assert "- **SentinelOne** (high): Unrestricted Public Access to AWS S3 Bucket" in f["description"]
+    assert f["remediation"] == "- SentinelOne: Block public access.\n- CKV_AWS_53: https://docs/53"

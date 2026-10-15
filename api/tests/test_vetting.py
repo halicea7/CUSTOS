@@ -198,3 +198,23 @@ def test_semgrep_snippets_come_from_the_checkout(tmp_path):
     assert _read_lines(str(tmp_path), "a.py", 2, 4, cap=2) == "two\nthree"
     assert _read_lines(str(tmp_path), "../etc/passwd", 1, 1, cap=5) is None     # never outside the checkout
     assert _read_lines(str(tmp_path), "missing.py", 1, 1, cap=5) is None
+
+
+def test_xss_claims_about_plain_react_text_are_dropped():
+    files = {"src/App.jsx": "function A({err}) {\n  setNote(`Error: ${err.message}`)\n  return <p>{note}</p>\n}\n",
+             "src/Raw.jsx": "function B({h}) {\n  return <div dangerouslySetInnerHTML={{__html: h}} />\n}\n"}
+    text = RawFinding("llm", "medium", "Unescaped text in a status message", file_path="src/App.jsx", line_start=2,
+                      code_snippet="  setNote(`Error: ${err.message}`)")
+    raw = RawFinding("llm", "high", "XSS via dangerouslySetInnerHTML", file_path="src/Raw.jsx", line_start=2,
+                     code_snippet="  return <div dangerouslySetInnerHTML={{__html: h}} />", cwe="CWE-79")
+    report = vetting.Report()
+    assert vetting.vet([text, raw], files, report) == [raw]
+    assert report.dropped == {"React escapes what it renders": 1}
+
+
+def test_hardcoded_urls_are_set_aside_but_hardcoded_secrets_are_not():
+    assert vetting.hardcoded_url("Hardcoded billing API URL used as fallback")
+    assert vetting.hardcoded_url("Hard-coded API endpoint in client.py allows credential validation against it") is False
+    assert vetting.hardcoded_url("Hardcoded development endpoints exposed")
+    assert not vetting.hardcoded_url("Hardcoded API key in config")
+    assert not vetting.hardcoded_url("Unvalidated URL fragment in inline navigation")

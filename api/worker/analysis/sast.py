@@ -127,6 +127,25 @@ def _curl_pipe_false_alarm(rule_id: str, lines: str | None) -> bool:
     return "curl-pipe" in rule_id and lines is not None and not _PIPE_TO_SHELL.search(lines)
 
 
+# Example values in docs and templates: "sk-abc...", "<your-key>", "${API_KEY}", "xxxx".
+_PLACEHOLDER = re.compile(
+    r"\.\.\.|…|x{4,}|\*{4,}|#{4,}|<[^>]+>|\$\{|\{\{|\byour[_-]|example|change[_-]?me|placeholder|dummy|"
+    r"redacted|replace[_-]?me|\bsample\b|\bfake\b|\btodo\b", re.I)
+# Words, not a key: "Slack/Jira/LLM". (Not dashes: "blue-horse-staple" may be a real passphrase.)
+_PROSE = re.compile(r"[A-Za-z]{1,15}(?:/[A-Za-z]{1,15})+")
+
+
+def placeholder_secret(text: str | None) -> bool:
+    """True if the value a secret rule matched is obviously not a real credential.
+    *text* is the matched region; the value is its last token of 4+ characters."""
+    if text is None:
+        return False
+    # The last real token: gitleaks' match can run a character into the next word.
+    tokens = [t.strip("'\"`;()[]") for t in re.split(r"[=:,]\s*|\s+", text.strip())]
+    value = next((t for t in reversed(tokens) if len(t) >= 4), "")
+    return not value or bool(_PLACEHOLDER.search(value)) or bool(_PROSE.fullmatch(value))
+
+
 def _is_audit_rule(rule_id: str) -> bool:
     """Registry 'audit' rules flag risky APIs (text(), shell=True, ...) without proving a bug."""
     return ".audit." in f".{rule_id}."
@@ -168,6 +187,9 @@ async def run_semgrep(repo_path: str) -> list[RawFinding]:
         if _curl_pipe_false_alarm(rule_id, lines):
             skipped += 1
             continue
+        if ".secrets." in f".{rule_id}." and lines and placeholder_secret(lines.split("\n")[0]):
+            skipped += 1
+            continue
         snippet = extra.get("lines")
         if not snippet or snippet.strip() == _PLACEHOLDER:
             snippet = "\n".join((lines or "").split("\n")[:_SNIPPET_MAX_LINES]) or None
@@ -194,7 +216,7 @@ async def run_semgrep(repo_path: str) -> list[RawFinding]:
             )
         )
     logger.info("semgrep: %d findings%s", len(findings),
-                f" ({skipped} skipped: other-language rules or false curl-pipe matches)" if skipped else "")
+                f" ({skipped} skipped: other-language rules, false curl-pipe matches or placeholder secrets)" if skipped else "")
     return findings
 
 
@@ -228,7 +250,12 @@ async def run_gitleaks(repo_path: str) -> list[RawFinding]:
         return []
 
     findings: list[RawFinding] = []
+    placeholders = 0
     for leak in leaks:
+        path = _rel(repo_path, leak.get("File", ""))
+        if placeholder_secret(_matched_text(repo_path, path, leak)):
+            placeholders += 1
+            continue
         # NEVER store the secret value — store only that one was found.
         findings.append(
             RawFinding(
@@ -236,16 +263,27 @@ async def run_gitleaks(repo_path: str) -> list[RawFinding]:
                 severity="high",
                 title=f"Secret detected: {leak.get('RuleID', 'unknown')}",
                 description=(
-                    f"Rule '{leak.get('RuleID')}' matched in {leak.get('File')} "
+                    f"Rule '{leak.get('RuleID')}' matched in {path} "
                     f"at line {leak.get('StartLine')}. Secret value redacted."
                 ),
-                file_path=_rel(repo_path, leak.get("File", "")),
+                file_path=path,
                 line_start=leak.get("StartLine"),
                 line_end=leak.get("EndLine"),
             )
         )
-    logger.info("gitleaks: %d findings", len(findings))
+    logger.info("gitleaks: %d findings%s", len(findings),
+                f" ({placeholders} placeholder values skipped)" if placeholders else "")
     return findings
+
+
+def _matched_text(repo_path: str, path: str | None, leak: dict) -> str | None:
+    """The text gitleaks matched, read from the checkout (its report is redacted).
+    Only used to spot placeholders; never stored."""
+    line = _read_lines(repo_path, path or "", leak.get("StartLine"), None, cap=1)
+    if line is None:
+        return None
+    start, end = leak.get("StartColumn") or 1, leak.get("EndColumn") or len(line)
+    return line[max(0, start - 1):end] if leak.get("StartLine") == leak.get("EndLine") else line[max(0, start - 1):]
 
 
 # ── dependency audits ─────────────────────────────────────────────────────────

@@ -36,3 +36,19 @@ async def test_no_report_means_no_findings(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sast, "_run", fake_run)
     assert await sast.run_gitleaks(str(tmp_path)) == []
+
+
+async def test_placeholder_values_in_docs_are_skipped(tmp_path, monkeypatch):
+    (tmp_path / "SETUP.md").write_text("EXAMPLE_API_KEY=sk-abc123...\nREAL=9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c\n")
+    leaks = [{"RuleID": "generic-api-key", "File": str(tmp_path / "SETUP.md"), "StartLine": n, "EndLine": n,
+              "StartColumn": 1, "EndColumn": 40} for n in (1, 2)]
+
+    async def fake_run(cmd, cwd=None, timeout=0):
+        report = next(a.split("=", 1)[1] for a in cmd if a.startswith("--report-path="))
+        Path(report).write_text(json.dumps(leaks))
+        return 1, "", ""
+
+    monkeypatch.setattr(sast, "_run", fake_run)
+    found = await sast.run_gitleaks(str(tmp_path))
+    assert [(f.file_path, f.line_start) for f in found] == [("SETUP.md", 2)]
+    assert str(tmp_path) not in found[0].description     # no worker paths in what's stored
