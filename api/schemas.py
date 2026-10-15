@@ -109,6 +109,20 @@ class BulkDispositionRequest(DispositionRequest):
     finding_ids: list[UUID] = Field(..., min_length=1, max_length=500)
 
 
+class AgentTriageItem(BaseModel):
+    """One row of an AI agent's verdict table (from REMEDIATIONS.md), as the analyst approved it."""
+    finding_id: UUID
+    disposition: Disposition
+    verdict: Literal["valid", "not valid", "unsure"]
+    action: str | None = Field(None, max_length=40)
+    reason: str = Field(..., min_length=1, max_length=600)
+
+
+class AgentTriageRequest(BaseModel):
+    submission_id: UUID
+    items: list[AgentTriageItem] = Field(..., min_length=1, max_length=500)
+
+
 class SignoffRequest(BaseModel):
     note: str | None = Field(None, max_length=5000)
 

@@ -9,6 +9,7 @@ import {
 } from "../components/submission/FindingDetail.jsx";
 import { LLM_ACTIVE, LlmProgress, LlmRuns } from "../components/submission/LlmPanel.jsx";
 import ReportModal from "../components/submission/ReportModal.jsx";
+import AgentTriageModal from "../components/submission/AgentTriageModal.jsx";
 import { downloadBlob, generateRemediations, remediationTasks } from "../components/submission/report.js";
 import {
   useChains, useComparison, useDispose, useInvalidateSubmission, useLlmStatus, useRerunLlm, useReturnSignoff,
@@ -357,6 +358,7 @@ export default function Submission() {
   const [focusId, setFocusId] = useState(null);
   const [drawer, setDrawer] = useState(false);
   const [showReport, setShowReport] = useState(false);
+  const [showAgent, setShowAgent] = useState(false);
   const [showSignOff, setShowSignOff] = useState(null);   // null | "signoff" | "approve" | "return"
   const [animKey, setAnimKey] = useState(0);
 
@@ -448,7 +450,7 @@ export default function Submission() {
     if (inFlight) return undefined;
     const onKey = (e) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest?.("input, textarea, select, [contenteditable]")) return;
-      if (showReport || showSignOff || document.querySelector(".palette.show")) return;
+      if (showReport || showSignOff || showAgent || document.querySelector(".palette.show")) return;
       const k = e.key.toLowerCase();
       const cur = flat[focusIdx];
       if (k === "j") step(1);
@@ -515,9 +517,13 @@ export default function Submission() {
           )}
           <button className="btn" disabled={inFlight} onClick={() => setShowReport(true)} data-tour="run-report">↓ Report</button>
           <button className="btn" disabled={!canRemediate} data-tour="run-remediations"
-            title={canRemediate ? "Task file for an AI coding agent: fixes for the findings, most severe first" : "Nothing to remediate"}
+            title={canRemediate ? "Suggestions for an AI coding agent to check and propose fixes for" : "Nothing to remediate"}
             onClick={() => downloadBlob(generateRemediations(sub, findings, chainList), "REMEDIATIONS.md", "text/markdown")}>
             ↓ REMEDIATIONS.md
+          </button>
+          <button className="btn" disabled={inFlight || !findings.length} onClick={() => setShowAgent(true)}
+            data-tour="run-agent-results" title="Record the verdicts your AI agent wrote after working through REMEDIATIONS.md">
+            ⇡ Agent results
           </button>
           {sub.status === "awaiting_approval" && isAdmin ? (
             <>
@@ -668,6 +674,7 @@ export default function Submission() {
       <BulkBar count={selected.size} busy={dispose.isPending} onDecide={decideSelected}
         onClear={() => setSelected(new Set())} />
 
+      {showAgent && <AgentTriageModal sub={sub} findings={findings} onClose={() => setShowAgent(false)} />}
       {showReport && <ReportModal sub={sub} findings={findings} chains={chainList} cmp={cmpQuery.data}
         signoffs={signoffs} onClose={() => setShowReport(false)} />}
       {showSignOff && <SignOffModal sub={sub} findings={findings} mode={showSignOff}

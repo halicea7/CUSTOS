@@ -18,6 +18,12 @@ export async function getFindingAudit(id) {
   return res.data;
 }
 
+/** Apply an AI agent's verdicts as reviewed by the analyst; all or nothing. */
+export async function applyAgentTriage(submissionId, items) {
+  const res = await api.post("/findings/agent-triage", { submission_id: submissionId, items });
+  return res.data;
+}
+
 export async function setDispositions(ids, disposition, note) {
   const res = await api.post("/findings/bulk-disposition", {
     finding_ids: ids,

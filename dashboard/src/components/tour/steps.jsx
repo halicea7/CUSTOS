@@ -72,6 +72,7 @@ export function buildSteps({ role, name, runId }) {
         id: "run-remediations", path: run, target: T("run-remediations"), place: "bottom", title: "Let an AI agent check the findings",
         body: <>
           <p><b>REMEDIATIONS.md</b> gives an AI coding agent (Claude Code, Copilot, Cursor…) each finding with its file, line and a suggested fix. The agent checks whether each one is valid first, proposes small fixes for the valid ones, and leaves the decisions to you.</p>
+          <p>When it&rsquo;s done, paste its summary table into <b>⇡ Agent results</b> to review its verdicts and record them as decisions.</p>
           <p>Triage first: findings you mark <b>false positive</b> are left out. Put the file in the repo and ask the agent to work through it, then let Custos rescan.</p>
         </>,
       },

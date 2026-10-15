@@ -5,7 +5,7 @@ import {
   listSubmissions, rerunLlm, signOff, deleteSubmission, getQueueOverview, getComparison,
   getChains, getSignoffs, returnSignoff,
 } from "./submissions.js";
-import { getFindingAudit, setDispositions } from "./findings.js";
+import { applyAgentTriage, getFindingAudit, setDispositions } from "./findings.js";
 import { getHealthStatus, getScanFindings, getServices, listScans, triggerScan } from "./health.js";
 import { listGroups } from "./groups.js";
 import { listRepos } from "./repos.js";
@@ -132,6 +132,24 @@ export function useDispose(submissionId) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ ids, disposition, note }) => setDispositions(ids, disposition, note),
+    onSuccess: (updated) => {
+      const byId = new Map(updated.map((f) => [f.id, f]));
+      qc.setQueryData(keys.findings(submissionId), (old) => old?.map((f) => byId.get(f.id) || f));
+      updated.forEach((f) => {
+        qc.setQueryData(["finding", f.id], f);
+        qc.invalidateQueries({ queryKey: keys.audit(f.id) });
+      });
+      qc.invalidateQueries({ queryKey: keys.submission(submissionId) });
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+    },
+  });
+}
+
+/** Record an AI agent's verdicts (pasted back from REMEDIATIONS.md) as decisions. */
+export function useAgentTriage(submissionId) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (items) => applyAgentTriage(submissionId, items),
     onSuccess: (updated) => {
       const byId = new Map(updated.map((f) => [f.id, f]));
       qc.setQueryData(keys.findings(submissionId), (old) => old?.map((f) => byId.get(f.id) || f));
