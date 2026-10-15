@@ -78,7 +78,7 @@ export function FindingBody({ finding: f }) {
       )}
       {f.description && <div><h3>Description</h3><Markdown text={f.description} /></div>}
       {f.llm_reasoning && <div><h3>LLM analysis</h3><Markdown text={f.llm_reasoning} /></div>}
-      {f.remediation && <div><h3>Recommended fix</h3><Markdown text={f.remediation} /></div>}
+      {f.remediation && <div><h3>Suggested fix</h3><Markdown text={f.remediation} /></div>}
       {!realCode(f) && !f.description && !f.llm_reasoning && !f.remediation && (
         <p className="muted">The tool reported no further detail for this finding.</p>
       )}

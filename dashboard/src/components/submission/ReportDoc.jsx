@@ -119,7 +119,7 @@ function Finding({ f, refOf, isNew, chainOf }) {
         </div>
         {f.description && <><h4>Problem</h4><Markdown text={f.description} /></>}
         {f.llm_reasoning && <><h4>Analysis</h4><Markdown text={f.llm_reasoning} /></>}
-        {f.remediation && <><h4>Fix</h4><Markdown text={f.remediation} /></>}
+        {f.remediation && <><h4>Suggested fix</h4><Markdown text={f.remediation} /></>}
         {f.disposed_by && <div className="small" style={{ marginTop: 6 }}>Decided by {f.disposed_by} · {fmt(f.disposed_at)}</div>}
       </div>
       {code && <div><Code f={f} /></div>}

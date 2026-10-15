@@ -69,9 +69,9 @@ export function buildSteps({ role, name, runId }) {
         body: <p><b>Report</b> opens the full security report for this commit: every finding, its severity and your decisions. Download it as <b>Markdown</b> for a ticket, wiki or pull request, as <b>HTML</b>, or print it to <b>PDF</b>.</p>,
       },
       {
-        id: "run-remediations", path: run, target: T("run-remediations"), place: "bottom", title: "Hand the fixes to an AI agent",
+        id: "run-remediations", path: run, target: T("run-remediations"), place: "bottom", title: "Let an AI agent check the findings",
         body: <>
-          <p><b>REMEDIATIONS.md</b> is a task list for an AI coding agent (Claude Code, Copilot, Cursor…): each fix with its file, line and what to change, most severe first.</p>
+          <p><b>REMEDIATIONS.md</b> gives an AI coding agent (Claude Code, Copilot, Cursor…) each finding with its file, line and a suggested fix. The agent checks whether each one is valid first, proposes small fixes for the valid ones, and leaves the decisions to you.</p>
           <p>Triage first: findings you mark <b>false positive</b> are left out. Put the file in the repo and ask the agent to work through it, then let Custos rescan.</p>
         </>,
       },
@@ -87,7 +87,7 @@ export function buildSteps({ role, name, runId }) {
       id: "run-later", title: "When a scan finishes",
       body: <>
         <p>Open it from the queue to triage its findings: <b>False positive</b>, <b>Confirm</b> or <b>Escalate</b> each one, then <b>Sign off</b>.</p>
-        <p>Two exports live there: <b>Report</b> (the full security report as Markdown, HTML or PDF) and <b>REMEDIATIONS.md</b>, a task list an AI coding agent can work through. Mark false positives first; they&rsquo;re left out of it.</p>
+        <p>Two exports live there: <b>Report</b> (the full security report as Markdown, HTML or PDF) and <b>REMEDIATIONS.md</b>, suggestions an AI coding agent can check and propose fixes for. Mark false positives first; they&rsquo;re left out of it.</p>
       </>,
     });
   }
