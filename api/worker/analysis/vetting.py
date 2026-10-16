@@ -211,8 +211,11 @@ VERIFY_SYSTEM = """You are a skeptical senior application-security reviewer doub
 another reviewer's findings before they reach a security team. Most automated
 findings are false positives; your job is to catch them.
 
-For each candidate you get the claim and the actual code around it, with line
-numbers. First name WHO the attacker is (e.g. "an unauthenticated visitor to the
+For each candidate you get the claim, the actual code around it with line
+numbers, and often "related code": where the names involved are defined or
+used elsewhere in the repository. Read the related code: a check in a caller,
+the function that reads a value back, or a validator in another file often
+already prevents the attack, and then the claim is wrong. First name WHO the attacker is (e.g. "an unauthenticated visitor to the
 API", "a user who can open a pull request") and WHAT they gain that they don't
 already have. Values from the application's own config files, environment,
 container arguments or a developer's command line are not attacker input: whoever
@@ -255,6 +258,7 @@ VERIFY_SCHEMA = {"type": "object", "properties": {"verdicts": {"type": "array", 
 
 _CONTEXT_LINES = 25
 MAX_VERIFY = 15
+MAX_RELATED_CHARS = 24_000   # related code across all candidates of one verification prompt
 
 
 def parse_verdicts(text: str) -> list:
@@ -275,17 +279,25 @@ def candidates(findings: list[RawFinding], claimed: dict[int, str]) -> list[RawF
     return sorted(serious, key=lambda f: _rank(claimed.get(id(f), f.severity)))[:MAX_VERIFY]
 
 
-def verify_prompt(items: list[RawFinding], files: dict[str, str]) -> str:
-    blocks = []
+def verify_prompt(items: list[RawFinding], files: dict[str, str], related: dict | None = None) -> str:
+    from worker.analysis.related import render
+
+    blocks, used = [], 0
     for i, f in enumerate(items, 1):
         lines = files.get(f.file_path or "", "").split("\n")
         start = max(1, (f.line_start or 1) - _CONTEXT_LINES)
         end = min(len(lines), (f.line_end or f.line_start or 1) + _CONTEXT_LINES)
         code = "\n".join(f"{n:>5}| {lines[n - 1]}" for n in range(start, end + 1))
+        extra = (related or {}).get(id(f))
+        rendered = render(extra) if extra else ""
+        if used + len(rendered) > MAX_RELATED_CHARS:   # keep the prompt within small context windows
+            rendered = ""
+        used += len(rendered)
         blocks.append(
             f"--- V{i} ---\nClaim: [{f.severity}] {f.title}\nWhere: {f.file_path}:{f.line_start}\n"
             f"Why the reviewer flagged it: {' '.join((f.description or '').split())[:600]}\n"
             f"Code ({f.file_path}, lines {start}-{end}):\n{code}"
+            + (f"\n\nRelated code elsewhere in the repository:\n{rendered}" if rendered else "")
         )
     return "Verify each candidate finding below.\n\n" + "\n\n".join(blocks)
 

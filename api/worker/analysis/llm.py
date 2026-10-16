@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from config import settings
-from worker.analysis import vetting
+from worker.analysis import related, vetting
 from worker.analysis.sast import RawFinding
 
 logger = logging.getLogger(__name__)
@@ -302,7 +302,7 @@ async def call_llm(
         combined = _combine(results, len(batches))
         if len(combined.errors) == len(batches):
             raise LlmError(f"All {len(batches)} LLM batch(es) failed: {combined.errors[0]}")
-        await _vet_and_verify(client, provider, combined, dict(files), verify)
+        await _vet_and_verify(client, provider, combined, dict(files), verify, repo_path)
     logger.info(
         "LLM: %d findings from %d batch(es), %d failed%s", len(combined.findings), len(batches),
         len(combined.errors), f" — {combined.notes}" if combined.notes else "",
@@ -311,7 +311,7 @@ async def call_llm(
 
 
 async def _vet_and_verify(client, provider: LlmProvider, result: LlmResult, files: dict[str, str],
-                          verify: bool) -> None:
+                          verify: bool, repo_path: str | None = None) -> None:
     """Drop findings that don't hold up against the code, then (optionally) have
     the model re-check the serious ones with the surrounding code in front of it."""
     report = vetting.Report()
@@ -319,7 +319,11 @@ async def _vet_and_verify(client, provider: LlmProvider, result: LlmResult, file
     result.findings = vetting.vet(result.findings, files, report)
     items = vetting.candidates(result.findings, claimed) if verify else []
     if items:
-        prompt = vetting.verify_prompt(items, files)
+        related_code = {}
+        if repo_path:
+            readable = _readable_files(repo_path, settings.MAX_FILE_SIZE_KB * 1024, first=files)
+            related_code = await asyncio.to_thread(related.find_related, items, readable, files)
+        prompt = vetting.verify_prompt(items, files, related_code)
         try:
             try:
                 check = await complete(client, provider, prompt, VERIFY_SPEC)
@@ -822,6 +826,37 @@ def _safe_read(repo_root: Path, rel: str, max_file_bytes: int) -> str | None:
     if "\x00" in content[:8192]:
         return None  # binary
     return content
+
+
+_MAX_SCANNED_FILES = 5000
+
+
+_VENDORED = {"site-packages", "vendor", "third_party", "bower_components"}
+
+
+def _readable_files(repo_path: str, max_file_bytes: int, first: dict[str, str] | None = None):
+    """(rel_path, content) for files the review may send to the model, *first* (the files it
+    already chose) before the rest: the same skip rules and safe reads as _select_files
+    (no secrets, symlinks or binaries), and no virtualenvs or vendored code."""
+    yield from (first or {}).items()
+    root = Path(repo_path).resolve()
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d not in _SKIP_DIRS and d not in _VENDORED and not d.startswith((".venv", "venv")))
+        for fname in filenames:
+            if fname in _SKIP_NAMES or Path(fname).suffix.lower() in _SKIP_EXTENSIONS \
+                    or "".join(Path(fname).suffixes).lower() in _SKIP_EXTENSIONS:
+                continue
+            rel = str((Path(dirpath) / fname).relative_to(root))
+            if first and rel in first:
+                continue
+            content = _safe_read(root, rel, max_file_bytes)
+            if content is not None:
+                yield rel, content
+            seen += 1
+            if seen >= _MAX_SCANNED_FILES:
+                return
 
 
 def _select_files(

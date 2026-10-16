@@ -331,7 +331,7 @@ LLM reviewers over-report, so every AI finding is checked before it is saved (Se
 
 - **Mechanical checks** against the files the model was shown: the finding must point at one of them, and the code it quotes must really be in that file (its line is corrected to where it is). Findings without evidence are capped at medium, and findings in test, benchmark or script code at low.
 - **Dropped:** findings whose own explanation says the code is safe, claimed XSS in React code that only renders text, and findings without a file. Non-security remarks (code quality, "hardcoded URL") are set aside.
-- **Verification pass** (on by default, one extra LLM request): a skeptical second review re-reads each serious AI finding with the surrounding code, must name the attacker and what they gain, and confirms, lowers or rejects it.
+- **Verification pass** (on by default, one extra LLM request): a skeptical second review re-reads each serious AI finding with the surrounding code, must name the attacker and what they gain, and confirms, lowers or rejects it. It also gets **related code** from the rest of the checkout: where the names the finding is about are defined and used (callers, the checks around them, helpers in other files), since a claim is often disproved somewhere else. The same file rules as the review apply (no env files, keys, symlinks, docs or vendored code), within a size budget.
 
 Nothing is re-rated silently: lowered findings say why, and the run's details list what was dropped, lowered or rejected.
 
