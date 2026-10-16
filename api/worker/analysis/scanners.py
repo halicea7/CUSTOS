@@ -175,9 +175,12 @@ _CHECKOV_NOTE = ("**Checkov hardening check:** a configuration best practice, no
 
 async def run_checkov(repo_path: str) -> list[RawFinding]:
     with tempfile.TemporaryDirectory(prefix="custos-checkov-") as tmp:
-        cmd = ["checkov", "-d", repo_path, "-o", "json", "--quiet", "--compact", "--skip-download",
+        # "--directory=PATH" as one argument: Checkov reads a .checkov.yaml from the folder only when
+        # it's given as "-d PATH", and a repo's config could skip checks or load its own Python
+        # checks (external-checks-dir). cwd and HOME are ours, so no config is read from there either.
+        cmd = ["checkov", f"--directory={repo_path}", "-o", "json", "--quiet", "--compact", "--skip-download",
                "--framework", *_CHECKOV_FRAMEWORKS]
-        rc, stdout, stderr = await _run(cmd, cwd=tmp)  # cwd: not the repo, so its .checkov.yaml isn't read
+        rc, stdout, stderr = await _run(cmd, cwd=tmp, env={"HOME": tmp})
     if rc not in (0, 1):
         logger.warning("checkov exited %d: %s", rc, stderr[:200])
         return []

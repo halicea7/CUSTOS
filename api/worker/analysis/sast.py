@@ -39,7 +39,7 @@ class RawFinding:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 async def _run(
-    cmd: list[str], cwd: str | None = None, timeout: int = _TOOL_TIMEOUT_SECONDS
+    cmd: list[str], cwd: str | None = None, timeout: int = _TOOL_TIMEOUT_SECONDS, env: dict | None = None
 ) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -48,6 +48,7 @@ async def _run(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env={**os.environ, **env} if env else None,
         )
     except FileNotFoundError:
         logger.warning("Tool not found: %s", cmd[0])

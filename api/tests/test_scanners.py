@@ -8,7 +8,7 @@ from worker.analysis.synthesizer import synthesize
 
 
 def _fake_run(monkeypatch, rc, payload, seen=None):
-    async def run(cmd, cwd=None, timeout=0):
+    async def run(cmd, cwd=None, timeout=0, env=None):
         if seen is not None:
             seen.append(cmd)
         return rc, json.dumps(payload) if not isinstance(payload, str) else payload, ""
@@ -192,3 +192,12 @@ def test_checkov_and_sentinelone_share_one_finding_per_resource():
     assert "(SentinelOne and Checkov)" in f["description"]
     assert "- **SentinelOne** (high): Unrestricted Public Access to AWS S3 Bucket" in f["description"]
     assert f["remediation"] == "- SentinelOne: Block public access.\n- CKV_AWS_53: https://docs/53"
+
+
+async def test_checkov_never_reads_the_repos_own_config(tmp_path, monkeypatch):
+    (tmp_path / ".checkov.yaml").write_text("skip-check: [CKV_DOCKER_3]\nexternal-checks-dir: [evil]\n")
+    seen = []
+    _fake_run(monkeypatch, 0, [], seen)
+    await scanners.run_checkov(str(tmp_path))
+    # Checkov looks for .checkov.yaml in the folder only when it's passed as "-d PATH".
+    assert f"--directory={tmp_path}" in seen[0] and "-d" not in seen[0] and "--directory" not in seen[0]
