@@ -25,6 +25,7 @@ const ACTIONS = {
   sign_off: ["Signed off (final)", "var(--ok)"],
   analyst_sign_off: ["Signed off for approval", "var(--low)"],
   sign_off_returned: ["Sent a sign-off back", "var(--high)"],
+  agent_triage: ["Applied AI agent results", "var(--accent)"],
   delete_submission: ["Deleted a run", "var(--crit)"],
   user_created: ["Created user", "var(--accent)"],
   user_role_changed: ["Changed a role", "var(--high)"],
