@@ -4,6 +4,7 @@ import ipaddress
 import logging
 from urllib.parse import urlsplit
 
+import bedrock
 from cryptography.fernet import InvalidToken
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,7 @@ from config import settings
 from crypto import decrypt
 from models import AppConfig
 from schemas import AppConfigResponse
+from worker.analysis.llm import PROVIDER_BEDROCK, PROVIDER_OLLAMA, PROVIDER_RESPONSES, LlmProvider
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +196,43 @@ async def load_responses_api_key(db: AsyncSession, base_url: str) -> str:
 async def load_bedrock_api_key(db: AsyncSession) -> str:
     row = await db.get(AppConfig, BEDROCK_API_KEY)
     return _decrypt_or_empty(row.value if row else None, "Bedrock API key")
+
+
+async def build_llm_provider(db: AsyncSession, cfg: AppConfigResponse) -> LlmProvider:
+    """Turn the configured provider settings into something complete() can call.
+
+    The single place that does this, so the scheduled review and an on-demand
+    call (e.g. generating a chain's exploitation PoC) always pick the same
+    provider and key.
+    """
+    if cfg.llm_provider == PROVIDER_BEDROCK:
+        return LlmProvider(
+            kind=PROVIDER_BEDROCK,
+            base_url=bedrock.base_url(cfg.bedrock_region, cfg.bedrock_endpoint),
+            alt_base_url=bedrock.alternate_base_url(cfg.bedrock_region, cfg.bedrock_endpoint),
+            messages_url=bedrock.messages_url(cfg.bedrock_region, cfg.bedrock_endpoint),
+            model=cfg.bedrock_model,
+            api_key=await load_bedrock_api_key(db),
+            extra_headers=bedrock.project_headers(cfg.bedrock_project_id, cfg.bedrock_endpoint),
+            reasoning_effort=cfg.bedrock_reasoning_effort,
+            max_output_tokens=cfg.bedrock_max_output_tokens,
+        )
+    if cfg.llm_provider == PROVIDER_RESPONSES:
+        return LlmProvider(
+            kind=PROVIDER_RESPONSES,
+            base_url=cfg.responses_base_url,
+            model=cfg.responses_model,
+            api_key=await load_responses_api_key(db, cfg.responses_base_url),
+            reasoning_effort=cfg.responses_reasoning_effort,
+            max_output_tokens=cfg.responses_max_output_tokens,
+        )
+    return LlmProvider(
+        kind=PROVIDER_OLLAMA,
+        base_url=cfg.ollama_base_url,
+        model=cfg.ollama_model,
+        ollama_think=cfg.ollama_think,
+        ollama_num_ctx=cfg.ollama_num_ctx,
+    )
 
 
 def is_local_url(url: str) -> bool:

@@ -272,3 +272,11 @@ class AttackChain(Base):
     steps: Mapped[list] = mapped_column(sa.JSON, nullable=False)
     break_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = _created_at()
+
+    # An admin-generated, admin-only exploitation PoC for this one chain (never
+    # automatic, never run by Custos itself). {"summary","preconditions",
+    # "steps":[{"label","action","commands","expected_result"}],"impact","caveats"}.
+    poc: Mapped[dict | None] = mapped_column(sa.JSON)
+    poc_model: Mapped[str | None] = mapped_column(Text)
+    poc_generated_by: Mapped[str | None] = mapped_column(Text)
+    poc_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -132,6 +132,26 @@ class ReturnSignoffRequest(BaseModel):
     note: str = Field(..., min_length=1, max_length=5000)
 
 
+class ChainPocStep(BaseModel):
+    label: str
+    action: str
+    commands: str
+    expected_result: str
+
+
+class ChainPocResponse(BaseModel):
+    """An admin-generated exploitation PoC for one attack chain. Admin-only: never
+    sent to analysts, never included in exports."""
+    summary: str
+    preconditions: str
+    steps: list[ChainPocStep]
+    impact: str
+    caveats: str
+    model: str
+    generated_by: str
+    generated_at: datetime
+
+
 class AuditLogResponse(BaseModel):
     id: UUID
     submission_id: UUID

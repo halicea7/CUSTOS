@@ -9,23 +9,31 @@ enforce the same gates: every critical/high finding has a decision, and (when
 enabled) so does every step of a live critical/high attack chain.
 """
 
+from datetime import UTC, datetime
+from uuid import UUID
+
+import activity
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from access import get_visible_submission
-from app_config import SELF_UPDATE_REPO, load_app_config
+from app_config import SELF_UPDATE_REPO, build_llm_provider, load_app_config
 from auth import get_current_user, require_admin
 from crypto import decrypt
 from database import get_db
 from enums import BLOCKING_SEVERITIES, Disposition, Role, SubmissionStatus
 from github_client import post_github_check
 from models import AppConfig, AttackChain, AuditLog, Finding, LlmRun, Repo, Submission, User
-from schemas import ReturnSignoffRequest, SignoffRequest, SubmissionResponse
+from schemas import ChainPocResponse, ReturnSignoffRequest, SignoffRequest, SubmissionResponse
+from worker.analysis import poc
+from worker.analysis.llm import InvalidJson, LlmError, complete
 
 router = APIRouter(prefix="/submissions", tags=["signoff"])
 
 STAGE_ACTIONS = ("analyst_sign_off", "sign_off", "sign_off_returned")
+_POC_TIMEOUT_SECONDS = 180
 
 
 async def _gate(db: AsyncSession, sub: Submission) -> None:
@@ -165,4 +173,114 @@ async def attack_chains(
                          "prompt_tokens": last.prompt_tokens, "completion_tokens": last.completion_tokens}
     return {"gate": cfg.chain_gate, "enabled": cfg.chains_enabled, "analysis": analysis, "chains": [
         {"id": str(c.id), "title": c.title, "severity": c.severity, "confidence": c.confidence,
-         "narrative": c.narrative, "steps": c.steps, "break_index": c.break_index} for c in rows]}
+         "narrative": c.narrative, "steps": c.steps, "break_index": c.break_index,
+         # Whether an admin already verified this chain by hand; the PoC itself is admin-only (see below).
+         "has_poc": c.poc is not None, "poc_generated_by": c.poc_generated_by,
+         "poc_generated_at": c.poc_generated_at} for c in rows]}
+
+
+async def _get_chain(db: AsyncSession, sub: Submission, chain_id: UUID) -> AttackChain:
+    chain = await db.get(AttackChain, chain_id)
+    if not chain or chain.submission_id != sub.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Attack chain not found")
+    return chain
+
+
+async def _live_steps(db: AsyncSession, chain: AttackChain) -> list[dict]:
+    """The chain's steps with their current Finding rows, in attack order.
+
+    Raises 409 if the chain is broken (a step's finding is gone or dismissed) or
+    too short to verify: a PoC for a chain that no longer holds together would
+    be describing an attack that, as triaged, doesn't exist.
+    """
+    ids = [s.get("finding_id") for s in chain.steps]
+    rows = (await db.execute(select(Finding).where(Finding.id.in_(ids)))).scalars().all()
+    by_id = {str(f.id): f for f in rows}
+    steps = []
+    for i, s in enumerate(chain.steps, 1):
+        f = by_id.get(s.get("finding_id"))
+        if f is None or f.disposition == Disposition.FALSE_POSITIVE:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="This chain is broken (a step was dismissed, or no longer exists) and can't be verified. "
+                       "Re-run the LLM to refresh attack chains against the current findings.",
+            )
+        steps.append({"label": f"Step {i}", "role": s.get("role", "pivot"), "why": s.get("why", ""), "finding": f})
+    if len(steps) < 2:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="This chain no longer has enough steps to verify.")
+    return steps
+
+
+def _poc_response(chain: AttackChain) -> ChainPocResponse:
+    data = chain.poc or {}
+    return ChainPocResponse(
+        summary=data.get("summary", ""), preconditions=data.get("preconditions", ""),
+        steps=data.get("steps", []), impact=data.get("impact", ""), caveats=data.get("caveats", ""),
+        model=chain.poc_model or "", generated_by=chain.poc_generated_by or "",
+        generated_at=chain.poc_generated_at,
+    )
+
+
+@router.post("/{submission_id}/chains/{chain_id}/poc", response_model=ChainPocResponse)
+async def generate_chain_poc(
+    chain_id: UUID,
+    sub: Submission = Depends(get_visible_submission),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin-only: ask the LLM for concrete steps to verify one live attack chain by hand.
+
+    Custos never runs any of this itself. It's generated only when an admin asks for
+    this specific chain, stored only for this chain, and never included in exports;
+    an admin reads it, decides whether and where it's safe to try, and runs it
+    themselves. Regenerating overwrites the previous PoC for this chain.
+    """
+    chain = await _get_chain(db, sub, chain_id)
+    steps = await _live_steps(db, chain)
+
+    cfg = await load_app_config(db)
+    provider = await build_llm_provider(db, cfg)
+    user_prompt = poc.prompt(chain, steps)
+    timeout = httpx.Timeout(_POC_TIMEOUT_SECONDS, connect=15)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                result = await complete(client, provider, user_prompt, poc.SPEC)
+            except InvalidJson:
+                result = await complete(client, provider, user_prompt, poc.SPEC)
+    except LlmError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"Couldn't generate a PoC: {exc}") from None
+
+    chain.poc = poc.validate(result.value or {}, steps)
+    chain.poc_model = provider.label
+    chain.poc_generated_by = current_user.username
+    chain.poc_generated_at = datetime.now(UTC)
+    activity.record(db, current_user.username, "chain_poc_generated", f"{sub.repo_full_name}: {chain.title[:80]}")
+    await db.commit()
+    return _poc_response(chain)
+
+
+@router.get("/{submission_id}/chains/{chain_id}/poc", response_model=ChainPocResponse)
+async def get_chain_poc(
+    chain_id: UUID,
+    sub: Submission = Depends(get_visible_submission),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    chain = await _get_chain(db, sub, chain_id)
+    if chain.poc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No PoC has been generated for this chain yet")
+    return _poc_response(chain)
+
+
+@router.delete("/{submission_id}/chains/{chain_id}/poc", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chain_poc(
+    chain_id: UUID,
+    sub: Submission = Depends(get_visible_submission),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    chain = await _get_chain(db, sub, chain_id)
+    chain.poc = chain.poc_model = chain.poc_generated_by = chain.poc_generated_at = None
+    activity.record(db, current_user.username, "chain_poc_cleared", f"{sub.repo_full_name}: {chain.title[:80]}")
+    await db.commit()

@@ -11,12 +11,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
-import bedrock
 import httpx
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select, update
 
-from app_config import load_app_config, load_bedrock_api_key, load_responses_api_key, load_s1_token
+from app_config import build_llm_provider, load_app_config, load_s1_token
 from config import settings
 from crypto import decrypt
 from database import async_session_factory
@@ -30,17 +29,7 @@ from worker.analysis import chains
 from worker.analysis.carryover import apply_previous_false_positives, audit_carried
 from worker.analysis.clone import clone_repo, redact
 from worker.analysis.config_checks import run_config_checks
-from worker.analysis.llm import (
-    PROVIDER_BEDROCK,
-    PROVIDER_OLLAMA,
-    PROVIDER_RESPONSES,
-    InvalidJson,
-    LlmError,
-    LlmProvider,
-    LlmResult,
-    call_llm,
-    complete,
-)
+from worker.analysis.llm import InvalidJson, LlmError, LlmProvider, LlmResult, call_llm, complete
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
 from worker.analysis.scanners import RUNNERS as EXTRA_RUNNERS
 from worker.analysis.scanners import STAGES as EXTRA_STAGES
@@ -83,34 +72,9 @@ async def _job_deadline(job_timeout: int):
 
 
 async def _llm_provider(db, cfg: AppConfigResponse) -> LlmProvider:
-    if cfg.llm_provider == PROVIDER_BEDROCK:
-        return LlmProvider(
-            kind=PROVIDER_BEDROCK,
-            base_url=bedrock.base_url(cfg.bedrock_region, cfg.bedrock_endpoint),
-            alt_base_url=bedrock.alternate_base_url(cfg.bedrock_region, cfg.bedrock_endpoint),
-            messages_url=bedrock.messages_url(cfg.bedrock_region, cfg.bedrock_endpoint),
-            model=cfg.bedrock_model,
-            api_key=await load_bedrock_api_key(db),
-            extra_headers=bedrock.project_headers(cfg.bedrock_project_id, cfg.bedrock_endpoint),
-            reasoning_effort=cfg.bedrock_reasoning_effort,
-            max_output_tokens=cfg.bedrock_max_output_tokens,
-        )
-    if cfg.llm_provider == PROVIDER_RESPONSES:
-        return LlmProvider(
-            kind=PROVIDER_RESPONSES,
-            base_url=cfg.responses_base_url,
-            model=cfg.responses_model,
-            api_key=await load_responses_api_key(db, cfg.responses_base_url),
-            reasoning_effort=cfg.responses_reasoning_effort,
-            max_output_tokens=cfg.responses_max_output_tokens,
-        )
-    return LlmProvider(
-        kind=PROVIDER_OLLAMA,
-        base_url=cfg.ollama_base_url,
-        model=cfg.ollama_model,
-        ollama_think=cfg.ollama_think,
-        ollama_num_ctx=cfg.ollama_num_ctx,
-    )
+    # Shared with the on-demand calls in routers/ (e.g. a chain's exploitation PoC),
+    # so they always pick the same provider and key as a scheduled review.
+    return await build_llm_provider(db, cfg)
 
 
 async def _run_llm(

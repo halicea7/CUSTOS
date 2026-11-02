@@ -72,3 +72,19 @@ export async function returnSignoff(id, note) {
   const res = await api.post(`/submissions/${id}/signoff/return`, { note });
   return res.data;
 }
+
+// Exploitation PoC for one attack chain. Admin-only; generated only on request,
+// never automatically, never run by Custos itself.
+export async function generateChainPoc(submissionId, chainId) {
+  const res = await api.post(`/submissions/${submissionId}/chains/${chainId}/poc`);
+  return res.data;
+}
+
+export async function getChainPoc(submissionId, chainId) {
+  const res = await api.get(`/submissions/${submissionId}/chains/${chainId}/poc`);
+  return res.data;
+}
+
+export async function clearChainPoc(submissionId, chainId) {
+  await api.delete(`/submissions/${submissionId}/chains/${chainId}/poc`);
+}

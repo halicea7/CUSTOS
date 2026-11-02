@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getActiveLlmJobs, getLlmRuns, getLlmStatus, getSubmission, getSubmissionFindings,
   listSubmissions, rerunLlm, signOff, deleteSubmission, getQueueOverview, getComparison,
-  getChains, getSignoffs, returnSignoff,
+  getChains, getSignoffs, returnSignoff, generateChainPoc, getChainPoc, clearChainPoc,
 } from "./submissions.js";
 import { applyAgentTriage, getFindingAudit, setDispositions } from "./findings.js";
 import { getHealthStatus, getScanFindings, getServices, listScans, triggerScan } from "./health.js";
@@ -16,6 +16,7 @@ export const keys = {
   findings: (id) => ["submission", id, "findings"],
   comparison: (id) => ["submission", id, "compare"],
   chains: (id) => ["submission", id, "chains"],
+  chainPoc: (id, chainId) => ["submission", id, "chains", chainId, "poc"],
   signoffs: (id) => ["submission", id, "signoffs"],
   audit: (findingId) => ["finding", findingId, "audit"],
   llmRuns: (id) => ["submission", id, "llm-runs"],
@@ -103,6 +104,40 @@ export function useComparison(id, status) {
 /** Attack chains (LLM estimates) of a finished run. */
 export function useChains(id, status) {
   return useQuery({ queryKey: keys.chains(id), queryFn: () => getChains(id), enabled: !IN_FLIGHT.has(status) });
+}
+
+/** An admin-generated exploitation PoC for one chain. Fetched only once the admin
+ * asks to see it; a 404 (none generated yet) is expected, not an error. */
+export function useChainPoc(submissionId, chainId, enabled) {
+  return useQuery({
+    queryKey: keys.chainPoc(submissionId, chainId), queryFn: () => getChainPoc(submissionId, chainId),
+    enabled: enabled && !!chainId, retry: false,
+  });
+}
+
+/** Admin: ask the LLM to write out concrete steps to verify one live chain by hand.
+ * Custos never runs any of it; it's text for an admin to read and run themselves. */
+export function useGenerateChainPoc(submissionId) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (chainId) => generateChainPoc(submissionId, chainId),
+    onSuccess: (poc, chainId) => {
+      qc.setQueryData(keys.chainPoc(submissionId, chainId), poc);
+      qc.invalidateQueries({ queryKey: keys.chains(submissionId) });
+    },
+  });
+}
+
+/** Admin: delete a chain's stored PoC. */
+export function useClearChainPoc(submissionId) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (chainId) => clearChainPoc(submissionId, chainId),
+    onSuccess: (_data, chainId) => {
+      qc.removeQueries({ queryKey: keys.chainPoc(submissionId, chainId) });
+      qc.invalidateQueries({ queryKey: keys.chains(submissionId) });
+    },
+  });
 }
 
 /** Each sign-off stage of a run with its comment, oldest first. */

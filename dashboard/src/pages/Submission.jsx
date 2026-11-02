@@ -656,7 +656,8 @@ export default function Submission() {
               <Progress findings={findings} />
               <SeverityBars findings={findings} />
               <Chains resolved={chainList} selected={chainOn} onSelect={selectChain}
-                analysis={chainsData?.analysis} enabled={chainsData?.enabled !== false} />
+                analysis={chainsData?.analysis} enabled={chainsData?.enabled !== false}
+                submissionId={id} isAdmin={isAdmin} />
               <LlmRuns submissionId={id} />
               <Keys />
             </div>
