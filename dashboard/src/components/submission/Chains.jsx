@@ -7,6 +7,8 @@ import { sevVar } from "../queue/Board.jsx";
 import { useChainPoc, useClearChainPoc, useGenerateChainPoc } from "../../api/queries.js";
 import { errorMessage } from "../../api/errors.js";
 import { useToast } from "../Toast.jsx";
+import { useTheme } from "../../App.jsx";
+import { Modal } from "../ui.jsx";
 
 const BLOCKING = new Set(["critical", "high"]);
 
@@ -23,27 +25,65 @@ function fmtWhen(ts) {
   return ts ? new Date(ts).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
 }
 
-/** Admin-only: generate, view and clear one chain's exploitation PoC.
+/** The PoC's content, inside the modal: warning, preconditions, each step, impact, caveats. */
+function PocBody({ data }) {
+  return (
+    <div className="poc-body">
+      <div className="banner bad" style={{ margin: 0 }}>
+        <b>For authorized testing only, by this team, on infrastructure you own and control.</b> Prefer an
+        isolated clone over production; during an active incident, run nothing here without your IR
+        process&rsquo;s sign-off. Custos never runs any of this — you decide whether, where and when.
+      </div>
+      {data.summary && <p className="narr" style={{ fontSize: ".92rem" }}>{data.summary}</p>}
+      {data.preconditions && <div className="poc-note"><h4>Preconditions</h4><p>{data.preconditions}</p></div>}
+      {data.steps.map((s, i) => (
+        <div key={i} className="poc-step">
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+            <b>{s.label}</b><span className="muted" style={{ fontSize: ".8rem" }}>{s.action}</span>
+          </div>
+          <div style={{ position: "relative" }}>
+            <pre className="poc-commands">{s.commands}</pre>
+            <div style={{ position: "absolute", top: 6, right: 6 }}><CopyButton text={s.commands} /></div>
+          </div>
+          <div className="muted" style={{ fontSize: ".8rem" }}>Expect: {s.expected_result}</div>
+        </div>
+      ))}
+      {data.impact && <div className="poc-note"><h4>Impact if it all succeeds</h4><p>{data.impact}</p></div>}
+      {data.caveats && <div className="poc-note"><h4>Caveats</h4><p>{data.caveats}</p></div>}
+      <div className="muted" style={{ fontSize: ".76rem" }}>
+        Written by <span className="mono">{data.model}</span> from this run&rsquo;s findings; verify each step
+        against the real code before relying on it.
+      </div>
+    </div>
+  );
+}
+
+/** Admin-only: generate, view and clear one chain's exploitation PoC, in a centered modal
+ * with room for it — the inline chain card is too narrow for commands and a warning banner.
  *
  * Custos never runs anything here itself — it only writes out text for an
  * admin to read, judge, and run by hand, in an environment they control. */
 function ChainPoc({ submissionId, chain }) {
+  const { theme } = useTheme();
   const toast = useToast();
   const [open, setOpen] = useState(false);
-  const { data, isLoading, isError, error } = useChainPoc(submissionId, chain.id, open);
   const generate = useGenerateChainPoc(submissionId);
   const clear = useClearChainPoc(submissionId);
+  // Only read the stored PoC when we're not already showing a fresher one from
+  // a mutation this session — avoids a GET racing the POST that just wrote it.
+  const queryEnabled = open && chain.has_poc && !generate.isPending && !generate.data;
+  const { data: stored, isLoading, isError, error } = useChainPoc(submissionId, chain.id, queryEnabled);
   const stop = (e) => e.stopPropagation();
   const notFound = isError && error?.response?.status === 404;
 
+  const data = generate.isPending ? null : generate.data || stored;
+  const loading = generate.isPending || (!generate.data && isLoading);
+  const loadError = generate.isPending ? null : generate.error || (!generate.data && isError && !notFound ? error : null);
+
   const doGenerate = (e) => {
     stop(e);
-    // Open only once the new PoC is already cached (see useGenerateChainPoc), so the
-    // panel never fires a GET that could race the POST and show a stale 404.
-    generate.mutate(chain.id, {
-      onSuccess: () => setOpen(true),
-      onError: (err) => toast(errorMessage(err, "Couldn't generate a PoC"), "bad"),
-    });
+    setOpen(true);
+    generate.mutate(chain.id, { onError: (err) => toast(errorMessage(err, "Couldn't generate a PoC"), "bad") });
   };
   const doClear = (e) => {
     stop(e);
@@ -60,9 +100,7 @@ function ChainPoc({ submissionId, chain }) {
           </button>
         ) : (
           <>
-            <button className="btn sm" onClick={(e) => { stop(e); setOpen((o) => !o); }}>
-              {open ? "Hide PoC" : "View PoC"}
-            </button>
+            <button className="btn sm" onClick={(e) => { stop(e); setOpen(true); }}>View PoC</button>
             <button className="btn sm" disabled={generate.isPending} onClick={doGenerate}>
               {generate.isPending ? <><span className="spin" /> Regenerating…</> : "Regenerate"}
             </button>
@@ -74,40 +112,12 @@ function ChainPoc({ submissionId, chain }) {
         )}
       </div>
 
-      {open && isLoading && <div className="muted" style={{ marginTop: 8 }}><span className="spin" /> Loading…</div>}
-      {open && isError && !notFound && (
-        <div className="result bad" style={{ marginTop: 8 }}>{errorMessage(error, "Couldn't load the PoC")}</div>
-      )}
-      {open && data && (
-        <div className="poc-body">
-          <div className="banner bad" style={{ margin: "8px 0" }}>
-            <b>For authorized testing only, by this team, on infrastructure you own and control.</b> Prefer an
-            isolated clone over production; during an active incident, run nothing here without your IR
-            process&rsquo;s sign-off. Custos never runs any of this — you decide whether, where and when.
-          </div>
-          {data.summary && <p className="narr">{data.summary}</p>}
-          {data.preconditions && (
-            <div className="poc-note"><h4>Preconditions</h4><p>{data.preconditions}</p></div>
-          )}
-          {data.steps.map((s, i) => (
-            <div key={i} className="poc-step">
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-                <b>{s.label}</b><span className="muted" style={{ fontSize: ".74rem" }}>{s.action}</span>
-              </div>
-              <div style={{ position: "relative" }}>
-                <pre className="poc-commands">{s.commands}</pre>
-                <div style={{ position: "absolute", top: 4, right: 4 }}><CopyButton text={s.commands} /></div>
-              </div>
-              <div className="muted" style={{ fontSize: ".76rem" }}>Expect: {s.expected_result}</div>
-            </div>
-          ))}
-          {data.impact && <div className="poc-note"><h4>Impact if it all succeeds</h4><p>{data.impact}</p></div>}
-          {data.caveats && <div className="poc-note"><h4>Caveats</h4><p>{data.caveats}</p></div>}
-          <div className="muted" style={{ fontSize: ".72rem", marginTop: 6 }}>
-            Written by <span className="mono">{data.model}</span> from this run&rsquo;s findings; verify each step
-            against the real code before relying on it.
-          </div>
-        </div>
+      {open && (
+        <Modal theme={theme} title="Exploitation PoC" subtitle={chain.title} width={820} onClose={() => setOpen(false)}>
+          {loading && <div className="muted"><span className="spin" /> {generate.isPending ? "Writing the PoC…" : "Loading…"}</div>}
+          {loadError && <div className="result bad">{errorMessage(loadError, "Couldn't load the PoC")}</div>}
+          {!loading && data && <PocBody data={data} />}
+        </Modal>
       )}
     </div>
   );
