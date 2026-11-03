@@ -375,11 +375,14 @@ class RepoUpdate(BaseModel):
     github_token: str | None = None
     webhook_secret: str | None = None
     enabled: bool | None = None
+    # Not provided: unchanged. "": track the default branch again. A value: that branch/tag.
+    tracked_ref: str | None = None
 
 
 class RepoResponse(BaseModel):
     id: UUID
     repo_full_name: str
+    tracked_ref: str | None = None
     added_by: str
     added_at: datetime
     last_push_at: datetime | None = None

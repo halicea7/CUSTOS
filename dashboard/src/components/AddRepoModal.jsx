@@ -56,6 +56,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
   const [validateResult, setValidateResult] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState(null);
 
   const handleValidate = async () => {
     setValidating(true);
@@ -82,6 +83,7 @@ export default function AddRepoModal({ onClose, onAdded }) {
         webhook_secret: secret,
         group_ids: selectedGroups,
       });
+      setSaved(repo);
       setStep(3);
       toast(`Added ${repo.repo_full_name}`);
       onAdded?.(repo);
@@ -112,7 +114,10 @@ export default function AddRepoModal({ onClose, onAdded }) {
               <input id="nr-name" className="input mono" placeholder="owner/repo" value={repoName} autoFocus
                 onChange={e => setRepoName(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && canVerify && handleValidate()} />
-              <div className="hint">Full name or URL, e.g. acme-uni/webapp</div>
+              <div className="hint">
+                Full name or URL, e.g. acme-uni/webapp. Add <span className="mono">/tree/&lt;branch-or-tag&gt;</span>
+                {" "}(as GitHub&rsquo;s own URL shows it) to track that instead of the default branch.
+              </div>
             </div>
             <div className="field">
               <label htmlFor="nr-token">GitHub token</label>
@@ -155,6 +160,12 @@ export default function AddRepoModal({ onClose, onAdded }) {
             <div className="result ok">
               ✓ Token can read {validateResult?.repo_name || repoName} · {expiryText(validateResult?.token_expires_at)}
             </div>
+            <div className="dim" style={{ fontSize: ".88rem" }}>
+              {validateResult?.tracked_ref
+                ? <>Tracking <span className="mono">{validateResult.tracked_ref}</span>, not the default branch
+                   {" "}(<span className="mono">{validateResult.default_branch}</span>).</>
+                : <>Tracking the default branch, <span className="mono">{validateResult?.default_branch}</span>.</>}
+            </div>
             <div className="dim" style={{ fontSize: ".88rem", lineHeight: 1.6 }}>
               Custos checks the repository for new commits on a schedule (Settings), and you can press
               {" "}<b>Check for updates</b> on the Repositories page at any time. Neither needs GitHub to reach this server.
@@ -185,8 +196,13 @@ export default function AddRepoModal({ onClose, onAdded }) {
         {step === 3 && (
           <div style={{ textAlign: "center", padding: "12px 0" }}>
             <div style={{ fontSize: "2rem", color: "var(--ok)" }}>✓</div>
-            <div style={{ fontWeight: 600, color: "var(--text)", margin: "6px 0" }}>{repoName.trim()} connected</div>
+            <div style={{ fontWeight: 600, color: "var(--text)", margin: "6px 0" }}>
+              {saved?.repo_full_name || repoName.trim()} connected
+            </div>
             <div className="muted" style={{ fontSize: ".86rem" }}>
+              {saved?.tracked_ref
+                ? <>Tracking <span className="mono">{saved.tracked_ref}</span>. </>
+                : null}
               Press Check for updates to scan it now; otherwise Custos picks it up on its next scheduled check.
             </div>
           </div>

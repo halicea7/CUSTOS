@@ -16,6 +16,7 @@ const ACTIONS = {
   repo_enabled: ["Resumed scanning", "var(--ok)"],
   repo_disabled: ["Paused scanning", "var(--high)"],
   repo_token_replaced: ["Replaced the GitHub token", "var(--accent)"],
+  repo_tracked_ref_changed: ["Changed the tracked branch", "var(--accent)"],
   repo_checked: ["Checked for updates", "var(--text3)"],
   repo_shared: ["Shared repository", "var(--accent)"],
   repo_unshared: ["Stopped sharing repository", "var(--text3)"],

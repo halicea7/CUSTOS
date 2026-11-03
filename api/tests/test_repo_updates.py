@@ -168,3 +168,42 @@ async def test_update_check_records_when_the_token_expires(client, db, github):
     await client.post(f"/repos/{repo.id}/check-updates", headers=auth_headers("ana"))
     listed = (await client.get("/repos", headers=auth_headers("ana"))).json()[0]
     assert listed["token_expires_at"].startswith("2026-11-02T09:00:00")
+
+
+REF_SHA = "3" * 40
+
+
+async def test_scan_targets_use_the_tracked_ref_instead_of_default_branch(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/pulls"):
+            return httpx.Response(200, json=[])
+        if path.endswith("/commits/release/2.11"):
+            return httpx.Response(200, json={"sha": REF_SHA, "author": {"login": "releaser"}})
+        if "/commits/" in path:
+            return httpx.Response(200, json={"sha": MAIN_SHA, "author": {"login": "maintainer"}})
+        return httpx.Response(200, json={"default_branch": "main", "clone_url": "https://github.com/org/app.git"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(github_client.httpx, "AsyncClient",
+                        lambda *a, **kw: real_client(*a, transport=httpx.MockTransport(handler), **kw))
+
+    [target] = await github_client.list_scan_targets("org/app", "token", ref="release/2.11")
+    assert (target["commit_sha"], target["branch"], target["submitter"]) == (REF_SHA, "release/2.11", "releaser")
+
+
+async def test_check_for_updates_passes_the_repos_tracked_ref(client, db, github, monkeypatch):
+    await make_user(db, "ana")
+    repo = await make_repo(db, "org/app", owner="ana")
+    repo.tracked_ref = "release/2.11"
+    await db.commit()
+    seen = {}
+    real = intake.list_scan_targets
+
+    async def spy(repo_name, token, ref=None):
+        seen["ref"] = ref
+        return await real(repo_name, token, ref)
+
+    monkeypatch.setattr(intake, "list_scan_targets", spy)
+    await client.post(f"/repos/{repo.id}/check-updates", headers=auth_headers("ana"))
+    assert seen["ref"] == "release/2.11"

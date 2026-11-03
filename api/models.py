@@ -188,6 +188,9 @@ class Repo(Base):
     # When the GitHub token expires (from GitHub's response headers); None = never/unknown.
     token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
+    # A specific branch or tag to scan instead of the repo's default branch
+    # (e.g. a long-lived release branch). None = the default branch.
+    tracked_ref: Mapped[str | None] = mapped_column(Text)
 
 
 class Group(Base):

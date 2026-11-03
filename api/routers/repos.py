@@ -1,4 +1,5 @@
 import re
+from urllib.parse import unquote
 from uuid import UUID
 
 import activity
@@ -29,6 +30,12 @@ router = APIRouter(prefix="/repos", tags=["repos"])
 
 
 _REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# A github.com URL in front of the owner/repo (scheme and "www." optional).
+_GITHUB_URL_PREFIX = re.compile(r"^(?:https?://)?(?:www\.)?github\.com/", re.I)
+# GitHub's own URL shape for one branch/tag: ".../owner/repo/tree/<ref>" (the ref
+# itself may contain "/", e.g. a tag like "release/2.11").
+_TREE_MARKER = "/tree/"
+_REF = re.compile(r"^[^\s\x00-\x1f\x7f]{1,250}$")
 
 
 def _normalise_name(raw: str) -> str:
@@ -41,8 +48,42 @@ def _normalise_name(raw: str) -> str:
     return name
 
 
+def _parse_repo_input(raw: str) -> tuple[str, str | None]:
+    """'owner/repo', a github.com URL, or either with GitHub's own '/tree/<ref>'
+    suffix for one branch or tag -> (owner/repo, ref or None).
+
+    Lets someone paste a URL straight from their browser's address bar, and is
+    how a repo gets pinned to a branch or tag other than its default branch.
+    """
+    s = _GITHUB_URL_PREFIX.sub("", raw.strip(), count=1).strip("/")
+    ref = None
+    if _TREE_MARKER in s:
+        s, _, ref = s.partition(_TREE_MARKER)
+        s = s.strip("/")
+        ref = unquote(ref).strip("/") or None
+        if ref and not _REF.match(ref):
+            raise HTTPException(status_code=422, detail="That branch or tag name doesn't look valid")
+    return _normalise_name(s.removesuffix(".git")), ref
+
+
 def _preview(last4: str | None) -> str:
     return f"••••••••{last4}" if last4 else "••••••••"
+
+
+async def _ref_exists(name: str, token: str, ref: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://api.github.com/repos/{name}/commits/{ref}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+    except httpx.HTTPError:
+        return True  # can't tell right now; don't block on a transient network error
+    return resp.status_code == 200
 
 
 async def _groups_for(db: AsyncSession, repo_ids: list[UUID]) -> dict[UUID, list[GroupSummary]]:
@@ -78,6 +119,7 @@ def _response(repo: Repo, groups: list[GroupSummary]) -> RepoResponse:
     return RepoResponse(
         id=repo.id,
         repo_full_name=repo.repo_full_name,
+        tracked_ref=repo.tracked_ref,
         added_by=repo.added_by,
         added_at=repo.added_at,
         last_push_at=repo.last_push_at,
@@ -120,13 +162,14 @@ async def add_repo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    name = _normalise_name(body.repo_full_name)
+    name, ref = _parse_repo_input(body.repo_full_name)
     existing = await db.execute(select(Repo).where(Repo.repo_full_name == name))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository already registered")
 
     repo = Repo(
         repo_full_name=name,
+        tracked_ref=ref,
         github_token_enc=encrypt(body.github_token),
         webhook_secret_enc=encrypt(body.webhook_secret),
         token_last4=body.github_token[-4:],
@@ -173,6 +216,20 @@ async def update_repo(
         repo.enabled = body.enabled
     if body.github_token is not None:
         activity.record(db, current_user.username, "repo_token_replaced", repo.repo_full_name)
+    if body.tracked_ref is not None:
+        new_ref = body.tracked_ref.strip() or None
+        if new_ref:
+            if not _REF.match(new_ref):
+                raise HTTPException(status_code=422, detail="That branch or tag name doesn't look valid")
+            token = body.github_token if body.github_token is not None else decrypt(repo.github_token_enc)
+            if not await _ref_exists(repo.repo_full_name, token, new_ref):
+                raise HTTPException(
+                    status_code=422, detail=f"Branch or tag '{new_ref}' not found in {repo.repo_full_name}"
+                )
+        if new_ref != repo.tracked_ref:
+            activity.record(db, current_user.username, "repo_tracked_ref_changed",
+                            f"{repo.repo_full_name} → {new_ref or 'default branch'}")
+        repo.tracked_ref = new_ref
 
     await db.commit()
     await db.refresh(repo)
@@ -186,7 +243,7 @@ async def check_updates(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Look for unscanned commits (default branch head, open PRs) and queue them.
+    """Look for unscanned commits (one branch's head, open PRs) and queue them.
 
     The webhook-free way to keep a repo scanned: outbound calls to GitHub only.
     """
@@ -266,7 +323,7 @@ async def validate_token(
     body: ValidateTokenRequest,
     _: User = Depends(get_current_user),
 ):
-    name = _normalise_name(body.repo_full_name)
+    name, ref = _parse_repo_input(body.repo_full_name)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -284,6 +341,8 @@ async def validate_token(
             resp.raise_for_status()
             data = resp.json()
             expires_at = github_client.token_expiry(resp.headers)
+            if ref and not await _ref_exists(name, body.github_token, ref):
+                return {"ok": False, "error": f"Branch or tag '{ref}' not found in {name}"}
     except httpx.TimeoutException:
         return {"ok": False, "error": "GitHub API timed out"}
     except Exception as exc:
@@ -292,6 +351,7 @@ async def validate_token(
         "ok": True,
         "repo_name": data.get("full_name"),
         "default_branch": data.get("default_branch"),
+        "tracked_ref": ref,
         "private": data.get("private"),
         "token_expires_at": expires_at.isoformat() if expires_at else None,
     }

@@ -35,6 +35,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .input { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: .5rem .8rem; color: var(--text); font-size: .92rem; outline: none; transition: border-color .15s, box-shadow .15s; }
 .input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-bg); }
 .input.mono { font-size: .85rem; }
+.input.sm { padding: .28rem .5rem; font-size: .8rem; border-radius: 7px; }
+.ref-pill { color: var(--accent); background: var(--accent-bg); border: 1px solid transparent; }
+.ref-edit { display: inline-flex; gap: 5px; align-items: center; }
+.ref-edit .input { width: 150px; }
 .btn { background: var(--surface); border: 1px solid var(--border); color: var(--text2); border-radius: 10px; padding: .45rem .85rem; font-size: .86rem; font-weight: 500; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
        transition: border-color .15s, color .15s, transform .15s var(--ease), box-shadow .15s, background .15s; }
 .btn:hover:not(:disabled) { border-color: var(--accent-line); color: var(--text); transform: translateY(-1px); }

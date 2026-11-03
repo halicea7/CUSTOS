@@ -106,26 +106,29 @@ class ScanTargets(list):
     token_expires_at: datetime | None = None
 
 
-async def list_scan_targets(repo: str, token: str) -> ScanTargets:
-    """Commits Custos would scan for *repo* now: its default branch head and open PR heads.
+async def list_scan_targets(repo: str, token: str, ref: str | None = None) -> ScanTargets:
+    """Commits Custos would scan for *repo* now: one branch's head (the repo's default
+    branch, or *ref* when the repo tracks a specific branch or tag instead) and open PR
+    heads.
 
     Each target matches what the webhook would have queued: commit_sha, branch,
     submitter, event_type ("push" or "pull_request"), pr_number and repo_url.
-    Raises httpx.HTTPError when GitHub can't be reached or refuses the token.
+    Raises httpx.HTTPError when GitHub can't be reached, refuses the token, or
+    *ref* doesn't exist.
     """
     async with httpx.AsyncClient(timeout=15, headers=_headers(token)) as client:
         meta = await client.get(f"{_API}/repos/{repo}")
         meta.raise_for_status()
         expires_at = token_expiry(meta.headers)
         info = meta.json()
-        default_branch, repo_url = info["default_branch"], info["clone_url"]
+        branch, repo_url = ref or info["default_branch"], info["clone_url"]
 
-        head = await client.get(f"{_API}/repos/{repo}/commits/{default_branch}")
+        head = await client.get(f"{_API}/repos/{repo}/commits/{branch}")
         head.raise_for_status()
         commit = head.json()
         targets = ScanTargets([{
             "commit_sha": commit["sha"],
-            "branch": default_branch,
+            "branch": branch,
             "submitter": (commit.get("author") or {}).get("login")
             or (commit.get("commit", {}).get("author") or {}).get("name"),
             "event_type": "push",

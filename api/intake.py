@@ -76,13 +76,16 @@ async def queue_submission(
 
 
 async def check_repo_for_updates(db, redis, arq_pool, repo_rec: Repo) -> dict:
-    """Queue the default branch head and open PR heads that haven't been scanned yet.
+    """Queue the head of one branch (the default branch, or the repo's tracked
+    ref if it has one) and open PR heads that haven't been scanned yet.
 
     Outbound calls only, so it works where GitHub can't reach Custos. Commits
     already submitted (by any path) are skipped. Raises httpx.HTTPError if
-    GitHub can't be reached or refuses the token.
+    GitHub can't be reached, refuses the token, or the tracked ref is gone.
     """
-    targets = await list_scan_targets(repo_rec.repo_full_name, decrypt(repo_rec.github_token_enc))
+    targets = await list_scan_targets(
+        repo_rec.repo_full_name, decrypt(repo_rec.github_token_enc), ref=repo_rec.tracked_ref
+    )
     repo_rec.token_expires_at = targets.token_expires_at
     shas = {t["commit_sha"] for t in targets}
     seen = set((await db.execute(

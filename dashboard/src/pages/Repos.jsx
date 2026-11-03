@@ -32,6 +32,55 @@ function checkSummary(result) {
   return `Queued ${plural(k, "scan")}: ${result.queued.map((q) => (q.pr_number ? `PR #${q.pr_number}` : q.branch)).join(", ")}`;
 }
 
+/** The repo's tracked branch/tag, if any; owners/admins can change or clear it inline. */
+function RefBadge({ repo, canManage, onChanged }) {
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(repo.tracked_ref || "");
+  const [saving, setSaving] = useState(false);
+  const stop = (e) => e.stopPropagation();
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await updateRepo(repo.id, { tracked_ref: value.trim() });
+      setEditing(false);
+      onChanged();
+    } catch (e) {
+      toast(errorMessage(e, "Couldn't update the tracked branch"), { bad: true });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const cancel = (e) => { stop(e); setValue(repo.tracked_ref || ""); setEditing(false); };
+
+  if (editing) {
+    return (
+      <span className="ref-edit" onClick={stop}>
+        <input className="input mono sm" autoFocus value={value} placeholder="default branch"
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") cancel(e); }} />
+        <button className="btn sm" disabled={saving} onClick={save}>{saving ? <span className="spin" /> : "Save"}</button>
+        <button className="btn sm" onClick={cancel}>Cancel</button>
+      </span>
+    );
+  }
+  if (!repo.tracked_ref) {
+    return canManage ? (
+      <button className="link" style={{ fontSize: ".74rem" }} onClick={(e) => { stop(e); setEditing(true); }}>
+        + track a branch
+      </button>
+    ) : null;
+  }
+  return (
+    <span className="pill ref-pill" title={`Tracking ${repo.tracked_ref} instead of the default branch`}
+      onClick={canManage ? (e) => { stop(e); setEditing(true); } : undefined}
+      style={canManage ? { cursor: "pointer" } : undefined}>
+      ⎇ {repo.tracked_ref}
+    </span>
+  );
+}
+
 function RepoRow({ repo, runs, groups, canManage, onChanged }) {
   const navigate = useNavigate();
   const toast = useToast();
@@ -63,7 +112,10 @@ function RepoRow({ repo, runs, groups, canManage, onChanged }) {
     <tr className={`click ${repo.enabled ? "" : "dim-row"}`} onClick={() => latest && navigate(`/submissions/${latest.id}`)}
       title={latest ? "Open the latest scan" : undefined}>
       <td>
-        <div className="rname" style={{ cursor: "inherit" }}>{repo.repo_full_name}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <div className="rname" style={{ cursor: "inherit" }}>{repo.repo_full_name}</div>
+          <RefBadge repo={repo} canManage={canManage} onChanged={onChanged} />
+        </div>
         <div className="rmeta" onClick={stop}>
           {(repo.groups || []).map((g) => (
             <span key={g.id} className="gtag">{g.name}
