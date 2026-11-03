@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 // Field gives its control an id and label/error wiring through context, so
 // every input inside a Field is labelled for screen readers automatically.
@@ -205,7 +206,12 @@ export function Modal({ theme, title, subtitle, onClose, children, width = 480 }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
-  return (
+  // Portalled straight to <body>: a modal opened from inside something that gets its own
+  // `transform` on hover or focus (a card, a button) would otherwise turn that ancestor
+  // into the containing block for this "position: fixed" overlay, shrinking it down to
+  // that element's own box instead of the viewport. React still bubbles its events
+  // through the component tree, not the DOM, so stopPropagation above this is unaffected.
+  return createPortal(
     <div className="modal-wrap" onClick={onClose}>
       <div className="modal-card" role="dialog" aria-modal="true" aria-label={title}
         onClick={(e) => e.stopPropagation()} style={{ maxWidth: width }}>
@@ -218,7 +224,8 @@ export function Modal({ theme, title, subtitle, onClose, children, width = 480 }
         </div>
         <div className="mb">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
