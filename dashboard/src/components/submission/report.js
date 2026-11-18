@@ -6,6 +6,7 @@ export const SOURCE_LABELS = {
   pip_audit: "pip-audit (Deps)", npm_audit: "npm-audit (Deps)", llm: "LLM Analysis",
   bandit: "Bandit (SAST)", osv: "OSV-Scanner (Deps)", checkov: "Checkov (IaC)",
   s1_secret: "SentinelOne (Secrets)", s1_iac: "SentinelOne (IaC)", s1_vuln: "SentinelOne (Vulns)",
+  codeql: "CodeQL (SAST)",
 };
 
 export function fmtUtc(ts) {

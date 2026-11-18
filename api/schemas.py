@@ -252,6 +252,10 @@ class AppConfigResponse(BaseModel):
     llm_max_content_chars: int
     # Optional scanners that run next to Semgrep, Gitleaks, pip-audit and npm audit.
     extra_scanners: list[str] = []
+    # Deep taint-tracking, for languages CodeQL extracts without a build step.
+    # Off by default: much slower than the rest of the scan, so it runs as its
+    # own follow-up job rather than sharing the main scan's time budget.
+    codeql_enabled: bool = False
     # Attack chains: an LLM pass over each run's findings; critical/high chains can gate sign-off.
     chains_enabled: bool = True
     chain_gate: bool = True
@@ -310,6 +314,7 @@ class AppConfigUpdateRequest(BaseModel):
     ollama_num_ctx: int | None = Field(None, ge=0, le=1_048_576)
     llm_max_content_chars: int | None = Field(None, ge=1_000, le=2_000_000)
     extra_scanners: list[Literal["bandit", "osv", "checkov"]] | None = None
+    codeql_enabled: bool | None = None
     chains_enabled: bool | None = None
     chain_gate: bool | None = None
     verify_llm_findings: bool | None = None

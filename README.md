@@ -23,14 +23,15 @@ GitHub ← update check (scheduled / button) or → webhook → API → ARQ work
 8. [SentinelOne CNS layer](#sentinelone-cns-layer)
 9. [Self-update](#self-update)
 10. [SAST tools](#sast-tools)
-11. [AI review checks](#ai-review-checks)
-12. [Reviewing findings](#reviewing-findings)
-13. [Reports and AI coding agents](#reports-and-ai-coding-agents)
-14. [Connecting repositories](#connecting-repositories)
-15. [Users and access](#users-and-access)
-16. [Security model](#security-model)
-17. [Testing and CI](#testing-and-ci)
-18. [Useful commands](#useful-commands)
+11. [CodeQL](#codeql)
+12. [AI review checks](#ai-review-checks)
+13. [Reviewing findings](#reviewing-findings)
+14. [Reports and AI coding agents](#reports-and-ai-coding-agents)
+15. [Connecting repositories](#connecting-repositories)
+16. [Users and access](#users-and-access)
+17. [Security model](#security-model)
+18. [Testing and CI](#testing-and-ci)
+19. [Useful commands](#useful-commands)
 
 ---
 
@@ -325,6 +326,20 @@ Before findings are saved, Custos merges what the tools report twice and drops w
 
 ---
 
+## CodeQL
+
+Optional, off by default (**Settings → Analysis → CodeQL**): GitHub's deep, cross-file taint-tracking engine, next to Semgrep, Bandit and the rest. It catches things pattern-based tools don't reach — a value a user controls flowing into an outbound request, a log line or an exception several functions away from where it entered.
+
+**Scope.** Python, JavaScript/TypeScript and Ruby only: the languages CodeQL can extract straight from source, with no build step. Compiled languages (Java, Go, C/C++, C#, Rust) need CodeQL's autobuild, which runs the repository's own build tooling to extract from — exactly the execution Custos otherwise never does on a scanned repo's code, so those languages aren't supported here.
+
+**Licensing is the admin's to check, not Custos's to enforce.** GitHub's CodeQL CLI is free for open-source code hosted on GitHub.com. Automated analysis of private code needs a GitHub Advanced Security license — the same kind of per-admin decision as registering a SentinelOne account.
+
+**Why it's a separate pass.** Real CodeQL analysis (building a database, then running its query suite) takes far longer than the rest of the scan, and doesn't scale the way Semgrep's pattern matching does — on a large repository it can take many minutes, not seconds. Sharing the main scan's time budget would mean either starving the other tools of time or needing a much longer timeout for every scan, CodeQL-enabled or not. So when it's on, Custos queues it as its own job once the main scan has already saved its findings and the run shows as needs-review; it gets a full `worker_job_timeout` window of its own, and its findings (source `codeql`) are simply added to the run whenever it finishes — the same way SentinelOne's are. A known gap from running later: a CodeQL finding at the same spot as an existing Semgrep or Bandit one isn't folded into it the way those two are folded into each other, so the same real issue can appear twice.
+
+In Docker it's installed in the `worker` image target (one combined bundle, so no separate per-language install); on a host, `./custos dev --with-codeql` installs it (~700MB–1.2GB, skipped by default since this is an opt-in layer), or by hand from the [CodeQL releases](https://github.com/github/codeql-action/releases).
+
+---
+
 ## AI review checks
 
 LLM reviewers over-report, so every AI finding is checked before it is saved (Settings → Analysis → **AI checks**):
@@ -413,6 +428,7 @@ Custos analyses untrusted code, so the worker treats every repository as hostile
 - **Jobs can't hang.** Each job enforces its own deadline just inside `worker_job_timeout`, so an overrun is recorded as failed immediately; a worker restart mid-job leaves the row for ARQ's retry to resume, and a reaper catches anything else.
 - **Where code goes.** With the default Ollama provider, code never leaves your infrastructure. With the Responses API provider it is sent to the configured server (`store: false`); with Amazon Bedrock, to AWS in the chosen region, under the data-retention mode shown in Settings. API keys are encrypted at rest and write-only through the API. A Responses API key is bound to the host it was saved for (so changing settings can't redirect it) and never sent over plain HTTP to a non-local host; a Bedrock key only goes to URLs Custos builds from the region name.
 - **Scanners can't be silenced by the repo.** `# nosec` comments and a repo's own `.bandit`, `osv-scanner.toml` and `.checkov.yaml` are ignored (a `.checkov.yaml` could otherwise skip checks or point Checkov at the repo's own Python checks).
+- **CodeQL never builds or runs the scanned repo.** It's limited to the languages it can extract straight from source (Python, JavaScript/TypeScript, Ruby); the compiled languages that would need its autobuild — running the repo's own build tooling — aren't supported.
 - **Pasted agent results are untrusted.** Rows only ever apply to findings of the same run, reasons are stored as plain text, and nothing is applied without the analyst's review.
 - **Exploitation PoCs are never run by Custos.** Generating, reading and clearing one is admin-only; it's written out as text for a human to read and run themselves, nowhere else, and it's refused outright for a chain that's no longer live. Everyone else who can see the run sees only that one exists and who made it.
 - **Prompt injection.** The system prompt is fixed in code and instructs the model to ignore instructions embedded in the source.

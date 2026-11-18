@@ -33,9 +33,13 @@ HEALTHCHECK --interval=15s --timeout=3s --retries=5 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
 
-# ── worker: git + Semgrep + Gitleaks + pip-audit + npm + Bandit + OSV + Checkov
+# ── worker: git + Semgrep + Gitleaks + pip-audit + npm + Bandit + OSV + Checkov + CodeQL
 FROM base AS worker
 ARG GITLEAKS_VERSION=8.21.2
+# CodeQL (optional layer, off by default in Settings): one bundle covers every
+# language, including the three Custos ever requests (Python, JavaScript,
+# Ruby — the ones it can extract from source with no build step).
+ARG CODEQL_VERSION=2.27.4
 ARG BANDIT_VERSION=1.9.4
 ARG OSV_SCANNER_VERSION=2.7.0
 # Checkov gets its own venv too: it pins dozens of libraries.
@@ -56,6 +60,10 @@ RUN apt-get update \
  && curl -fsSL -o /usr/local/bin/osv-scanner \
     "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${TARGETARCH:-amd64}" \
  && chmod 755 /usr/local/bin/osv-scanner \
+ && CODEQL_ARCH="$( [ "${TARGETARCH:-amd64}" = "arm64" ] && echo linux-arm64 || echo linux64 )" \
+ && curl -fsSL "https://github.com/github/codeql-action/releases/download/codeql-bundle-v${CODEQL_VERSION}/codeql-bundle-${CODEQL_ARCH}.tar.gz" \
+    | tar -xz -C /opt \
+ && ln -s /opt/codeql/codeql /usr/local/bin/codeql \
  && pip install semgrep pip-audit "bandit==${BANDIT_VERSION}" \
  && python -m venv /opt/checkov \
  && /opt/checkov/bin/pip install "checkov==${CHECKOV_VERSION}" \

@@ -28,6 +28,7 @@ from schemas import AppConfigResponse
 from worker.analysis import chains
 from worker.analysis.carryover import apply_previous_false_positives, audit_carried
 from worker.analysis.clone import clone_repo, redact
+from worker.analysis.codeql import run_codeql as run_codeql_scan
 from worker.analysis.config_checks import run_config_checks
 from worker.analysis.llm import InvalidJson, LlmError, LlmProvider, LlmResult, call_llm, complete
 from worker.analysis.sast import RawFinding, run_dep_audit, run_gitleaks, run_semgrep
@@ -340,6 +341,9 @@ async def analyze_submission(ctx, submission_id: str) -> None:
                 submission.error_message = "\n".join(notes) or None
                 await db.commit()
 
+                if cfg.codeql_enabled and ctx.get("redis"):
+                    await ctx["redis"].enqueue_job("run_codeql", submission_id)
+
                 blocking = any(
                     f["severity"] in BLOCKING_SEVERITIES and not f.get("disposition") for f in all_findings
                 )
@@ -489,6 +493,51 @@ async def rerun_llm(ctx, submission_id: str) -> None:
         if arq_redis:
             await arq_redis.delete(llm_start_key(submission_id), llm_lock_key(submission_id))
             await arq_redis.srem(LLM_ACTIVE_SET, submission_id)
+
+
+async def run_codeql(ctx, submission_id: str) -> None:
+    """CodeQL's own pass over an already-scanned commit.
+
+    Queued by analyze_submission only when Settings → Analysis → CodeQL is on,
+    after the main scan has already saved its findings — never inline with it.
+    CodeQL takes far longer than the rest of the scan, so sharing the same job
+    would mean either starving the other tools of time or needing a much longer
+    timeout for every scan, codeql-enabled or not. As a separate ARQ job it gets
+    its own full job_timeout window, and its findings are simply added to the
+    run whenever it finishes, the same way SentinelOne's are.
+    """
+    repo_path: str | None = None
+    async with async_session_factory() as db:
+        sub = await db.get(Submission, UUID(submission_id))
+        if not sub:
+            logger.error("Submission %s not found for CodeQL", submission_id)
+            return
+        cfg = await load_app_config(db)
+        github_token = await _repo_token(db, sub.repo_full_name)
+        try:
+            async with _job_deadline(cfg.worker_job_timeout):
+                repo_path = await clone_repo(
+                    url=sub.repo_url, sha=sub.commit_sha,
+                    base_dir=settings.CLONE_BASE_DIR, github_token=github_token,
+                )
+                findings = await run_codeql_scan(repo_path)
+                if findings:
+                    dicts = synthesize(findings)
+                    await _save_findings(db, sub, dicts)
+                    logger.info("CodeQL for %s: %d finding(s)", submission_id, len(dicts))
+                else:
+                    logger.info("CodeQL for %s: no findings", submission_id)
+                await db.commit()
+        except Exception as exc:
+            logger.exception("CodeQL failed for submission %s", submission_id)
+            await db.rollback()
+            await db.refresh(sub)
+            note = f"CodeQL scan failed: {redact(str(exc) or type(exc).__name__, github_token)[:500]}"
+            sub.error_message = "\n".join(filter(None, [sub.error_message, note]))
+            await db.commit()
+        finally:
+            if repo_path:
+                shutil.rmtree(repo_path, ignore_errors=True)
 
 
 def _self_scan_stages(cfg: AppConfigResponse, provider: LlmProvider) -> list[tuple[str, str, str]]:

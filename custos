@@ -9,7 +9,9 @@
                              run, then starts the live dev console.
   ./custos setup             Local setup only (venv, deps, DB, keys, admin).
                              Add --with-s1 (to setup or dev) to install the
-                             SentinelOne CNS CLI for the optional S1 layer.
+                             SentinelOne CNS CLI, or --with-codeql for CodeQL
+                             (~700MB-1.2GB) — both optional layers, off by
+                             default, enabled separately in Settings.
   ./custos stop | logs       Stop / follow logs of the Docker deployment.
   ./custos user add NAME [--role admin|analyst]
   ./custos user reset NAME   Manage logins (Docker or local, auto-detected).
@@ -52,6 +54,8 @@ S1_VENV = ROOT / ".venv-s1cns"
 # Checkov pins many libraries, so it gets its own venv too (like the S1 CLI).
 CHECKOV_VENV = ROOT / ".venv-checkov"
 BANDIT_VERSION, CHECKOV_VERSION = "1.9.4", "3.3.29"
+CODEQL_DIR = ROOT / ".codeql"
+CODEQL_VERSION = "2.27.4"
 S1_CLI_VERSION = "1.0.4"
 VPY = VENV / "bin" / "python"
 LOCAL_ENV = API / ".env"      # read by the API/worker when run on the host
@@ -683,6 +687,25 @@ def cmd_setup(args) -> None:
             stamp.write_text(S1_CLI_VERSION)
         ok(f"s1-cns-cli {S1_CLI_VERSION} (enable it under Settings → Analysis)")
 
+    if getattr(args, "with_codeql", False):
+        codeql_bin = CODEQL_DIR / "codeql" / "codeql"
+        stamp = CODEQL_DIR / ".custos-version"
+        if not codeql_bin.exists() or not stamp.exists() or stamp.read_text() != CODEQL_VERSION:
+            info(f"Downloading CodeQL {CODEQL_VERSION} into .codeql (700MB-1.2GB depending on platform, a few minutes)…")
+            machine = platform.machine().lower()
+            asset = "osx64" if IS_MAC else ("linux-arm64" if machine in ("arm64", "aarch64") else "linux64")
+            url = (f"https://github.com/github/codeql-action/releases/download/"
+                   f"codeql-bundle-v{CODEQL_VERSION}/codeql-bundle-{asset}.tar.gz")
+            CODEQL_DIR.mkdir(exist_ok=True)
+            tmp_tar = CODEQL_DIR / "bundle.tar.gz"
+            run(["curl", "-fsSL", "-o", tmp_tar, url], check=False)
+            if tmp_tar.exists():
+                run(["tar", "-xzf", tmp_tar, "-C", CODEQL_DIR], check=False)
+                tmp_tar.unlink(missing_ok=True)
+            if codeql_bin.exists():
+                stamp.write_text(CODEQL_VERSION)
+        (ok if codeql_bin.exists() else warn)(f"codeql {CODEQL_VERSION} (enable it under Settings → Analysis)")
+
     step("Dashboard dependencies")
     lock = DASH / "package-lock.json"
     stamp = DASH / "node_modules" / ".custos-lock"
@@ -830,9 +853,11 @@ def main() -> None:
     p.add_argument("--ngrok", action="store_true", help="open an ngrok tunnel for webhooks")
     p.add_argument("--bind-all", action="store_true", help="listen on 0.0.0.0 (e.g. Tailscale)")
     p.add_argument("--with-s1", action="store_true", help="also install the SentinelOne CNS CLI")
+    p.add_argument("--with-codeql", action="store_true", help="also install CodeQL (~700MB)")
     p.set_defaults(fn=cmd_dev)
     p = sub.add_parser("setup", help="local setup only")
     p.add_argument("--with-s1", action="store_true", help="also install the SentinelOne CNS CLI")
+    p.add_argument("--with-codeql", action="store_true", help="also install CodeQL (~700MB)")
     p.set_defaults(fn=cmd_setup)
     sub.add_parser("stop", help="stop the Docker deployment").set_defaults(fn=cmd_stop)
     sub.add_parser("logs", help="follow Docker deployment logs").set_defaults(fn=cmd_logs)

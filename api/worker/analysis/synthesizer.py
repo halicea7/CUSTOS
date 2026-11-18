@@ -206,7 +206,7 @@ def _where(f: RawFinding) -> str:
 def _group_key(f: RawFinding) -> tuple | None:
     """Findings that are really one issue: the same Semgrep rule anywhere in the repo,
     or several advisories for the same package version. Secrets stay one per finding."""
-    if f.source in ("semgrep", "bandit"):
+    if f.source in ("semgrep", "bandit", "codeql"):
         return ("rule", f.source, f.title)
     if f.source == "npm_audit":     # the same advisory in several package.json folders
         return ("rule", f.source, f.title)

@@ -660,6 +660,7 @@ function AnalysisTab({ theme }) {
         ollama_num_ctx: Number(draft.ollama_num_ctx) || 0,
         llm_max_content_chars: Number(draft.llm_max_content_chars),
         extra_scanners: EXTRA_SCANNERS.map(o => o.value).filter(v => (draft.extra_scanners || []).includes(v)),
+        codeql_enabled: !!draft.codeql_enabled,
         chains_enabled: !!draft.chains_enabled,
         verify_llm_findings: !!draft.verify_llm_findings,
         chain_gate: !!draft.chain_gate,
@@ -1172,6 +1173,29 @@ function AnalysisTab({ theme }) {
               </Field>
             );
           })}
+        </div>
+      </SectionCard>
+
+      <SectionCard theme={t} title="CodeQL" subtitle="deep, cross-file taint-tracking — off by default">
+        <div style={{ maxWidth: 600 }}>
+          <Field theme={t} label="Enable CodeQL">
+            <Toggle theme={t} value={!!draft.codeql_enabled} onChange={v => update({ codeql_enabled: v })}
+              label={draft.codeql_enabled ? "On" : "Off"} />
+            <div style={hint}>
+              Covers Python, JavaScript/TypeScript and Ruby — the languages CodeQL can analyse straight from source,
+              with no build step, so this keeps the same rule as everything else: a scanned repo&rsquo;s own code is
+              never executed. It catches things pattern-based tools don&rsquo;t, like a user-controlled value flowing
+              into an outbound request several functions away, but it&rsquo;s much slower than the rest of the scan.
+              Custos runs it as its own pass after a scan finishes, so it never delays the main findings or a run&rsquo;s
+              sign-off; its results just appear once it&rsquo;s done. On a large repository that can take a while.
+            </div>
+            <div style={hint}>
+              Turning this on for a private repository is a licensing decision, not just a setting: GitHub&rsquo;s free
+              CodeQL license covers open-source code on GitHub.com; automated use on private code needs a GitHub
+              Advanced Security license. That&rsquo;s on whoever enables this, the same as registering a SentinelOne
+              account below.
+            </div>
+          </Field>
         </div>
       </SectionCard>
 

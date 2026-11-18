@@ -9,7 +9,14 @@ from app_config import DEFAULT_WORKER_JOB_TIMEOUT, DEFAULT_WORKER_MAX_JOBS, load
 from config import assert_secure_settings, settings
 from database import engine
 from redis_util import ARQ_QUEUE, arq_redis_settings
-from worker.tasks import analyze_submission, check_repos_for_updates, reap_stale_jobs, rerun_llm, scan_self
+from worker.tasks import (
+    analyze_submission,
+    check_repos_for_updates,
+    reap_stale_jobs,
+    rerun_llm,
+    run_codeql,
+    scan_self,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +63,7 @@ _max_jobs, _job_timeout = _load_worker_limits()
 
 
 class WorkerSettings:
-    functions = [analyze_submission, rerun_llm, scan_self]
+    functions = [analyze_submission, rerun_llm, scan_self, run_codeql]
     cron_jobs = [
         arq_cron(scan_self, weekday={0}, hour=2, minute=0),  # Monday 02:00 UTC
         arq_cron(reap_stale_jobs, minute=set(range(0, 60, 10)), run_at_startup=True),
