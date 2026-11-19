@@ -25,6 +25,7 @@ async def test_other_analyst_gets_404_everywhere(client, db):
         ("GET", f"/submissions/{sub.id}/llm-runs", None),
         ("GET", f"/submissions/{sub.id}/llm-status", None),
         ("POST", f"/submissions/{sub.id}/rerun-llm", None),
+        ("POST", f"/submissions/{sub.id}/rescan", None),
         ("POST", f"/submissions/{sub.id}/signoff", {}),
         ("GET", f"/findings/{finding.id}", None),
         ("GET", f"/findings/{finding.id}/audit", None),

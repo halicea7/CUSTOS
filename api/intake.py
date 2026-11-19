@@ -26,6 +26,21 @@ async def claim_commit(redis, repo_full_name: str, commit_sha: str) -> bool:
     return bool(await redis.set(dedup_key(repo_full_name, commit_sha), "1", nx=True, ex=300))
 
 
+def _rescan_claim_key(repo_full_name: str, commit_sha: str) -> str:
+    return f"Custos:rescan-claim:{repo_full_name}:{commit_sha}"
+
+
+async def claim_rescan(redis, repo_full_name: str, commit_sha: str) -> bool:
+    """True if this caller may force a rescan (no one did in the last 30 seconds).
+
+    Deliberately separate from claim_commit/dedup_key: a forced rescan is for a
+    commit that's *already* been scanned, so it must not be blocked by the
+    5-minute claim that scan left behind. This only guards against the same
+    "Scan now" click firing twice.
+    """
+    return bool(await redis.set(_rescan_claim_key(repo_full_name, commit_sha), "1", nx=True, ex=30))
+
+
 async def queue_submission(
     db,
     redis,
@@ -115,3 +130,30 @@ async def check_repo_for_updates(db, redis, arq_pool, repo_rec: Repo) -> dict:
         repo_rec.repo_full_name, len(queued), len(targets) - len(queued),
     )
     return {"queued": queued, "already_scanned": len(targets) - len(queued)}
+
+
+async def rescan_repo_head(db, redis, arq_pool, repo_rec: Repo) -> dict:
+    """Force a fresh scan of just the tracked ref's (or default branch's) current
+    head, even if that commit was already scanned — e.g. after turning on a new
+    scanner, to see it run without waiting for a new commit.
+
+    Deliberately doesn't touch open PRs: re-queuing all of them on every click
+    would repeat the exact PR-stampede slowdown a big repo like Autolab already
+    hit once. "Check for updates" is still the way to catch up on those.
+    """
+    targets = await list_scan_targets(
+        repo_rec.repo_full_name, decrypt(repo_rec.github_token_enc), ref=repo_rec.tracked_ref
+    )
+    repo_rec.token_expires_at = targets.token_expires_at
+    head = targets[0]  # list_scan_targets always puts the branch head first
+    sha = head["commit_sha"]
+    if not await claim_rescan(redis, repo_rec.repo_full_name, sha):
+        repo_rec.last_checked_at = datetime.now(UTC)
+        await db.commit()
+        return {"queued": False, "commit_sha": sha, "reason": "already queued moments ago"}
+
+    submission = await queue_submission(db, redis, arq_pool, repo_rec, **head)
+    repo_rec.last_checked_at = datetime.now(UTC)
+    await db.commit()
+    logger.info("Forced rescan of %s@%s (submission %s)", repo_rec.repo_full_name, sha, submission.id)
+    return {"queued": True, "submission_id": str(submission.id), "commit_sha": sha, "branch": head["branch"]}

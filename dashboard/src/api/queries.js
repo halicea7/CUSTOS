@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getActiveLlmJobs, getLlmRuns, getLlmStatus, getSubmission, getSubmissionFindings,
-  listSubmissions, rerunLlm, signOff, deleteSubmission, getQueueOverview, getComparison,
+  listSubmissions, rerunLlm, rescanSubmission, signOff, deleteSubmission, getQueueOverview, getComparison,
   getChains, getSignoffs, returnSignoff, generateChainPoc, getChainPoc, clearChainPoc,
 } from "./submissions.js";
 import { applyAgentTriage, getFindingAudit, setDispositions } from "./findings.js";
@@ -218,6 +218,14 @@ export function useRerunLlm(id) {
       qc.setQueryData(keys.llmStatus(id), { status: "queued", elapsed: 0, estimated: 90, progress: 0 });
       qc.invalidateQueries({ queryKey: keys.llmActive });
     },
+  });
+}
+
+export function useRescanSubmission(id) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => rescanSubmission(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["submissions"] }),
   });
 }
 

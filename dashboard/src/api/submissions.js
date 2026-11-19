@@ -34,6 +34,11 @@ export async function rerunLlm(id) {
   return res.data;
 }
 
+export async function rescanSubmission(id) {
+  const res = await api.post(`/submissions/${id}/rescan`);
+  return res.data;
+}
+
 export async function getLlmStatus(id) {
   const res = await api.get(`/submissions/${id}/llm-status`);
   return res.data;

@@ -12,6 +12,7 @@ from app_config import SELF_UPDATE_REPO
 from auth import get_current_user, require_admin
 from database import get_db
 from enums import BLOCKING_SEVERITIES, SEVERITY_ORDER, SubmissionStatus
+from intake import queue_submission
 from models import AppConfig, AuditLog, Finding, LlmRun, Repo, RepoGroup, Submission, User
 from redis_util import ARQ_QUEUE, LLM_ACTIVE_SET, llm_job_key, llm_lock_key, llm_start_key
 from schemas import FindingResponse, LlmRunResponse, SubmissionListResponse, SubmissionResponse
@@ -314,6 +315,33 @@ async def rerun_llm_endpoint(
     activity.record(db, admin.username, "llm_rerun", f"{sub.repo_full_name}@{sub.commit_sha[:7]}")
     await db.commit()
     return {"job_id": job.job_id}
+
+
+@router.post("/{submission_id}/rescan", status_code=status.HTTP_202_ACCEPTED)
+async def rescan_submission(
+    request: Request,
+    sub: Submission = Depends(get_visible_submission),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Run the full pipeline (SAST, CodeQL/S1, LLM) again against this exact
+    commit, as a new submission — e.g. to pick up a scanner turned on after
+    this run finished. The original submission and its findings are untouched.
+    """
+    repo = (await db.execute(select(Repo).where(Repo.repo_full_name == sub.repo_full_name))).scalar_one_or_none()
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository is no longer tracked")
+    if not repo.enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository is disabled")
+
+    new_sub = await queue_submission(
+        db, request.app.state.redis, request.app.state.arq_pool, repo,
+        repo_url=sub.repo_url, commit_sha=sub.commit_sha, branch=sub.branch,
+        submitter=sub.submitter, event_type="rescan", pr_number=sub.pr_number,
+    )
+    activity.record(db, admin.username, "submission_rescanned", f"{sub.repo_full_name}@{sub.commit_sha[:7]}")
+    await db.commit()
+    return {"submission_id": str(new_sub.id)}
 
 
 @router.get("/{submission_id}/llm-status")

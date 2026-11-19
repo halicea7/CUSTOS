@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  addRepoToGroup, checkRepoUpdates, deleteRepo, removeRepoFromGroup, updateRepo,
+  addRepoToGroup, checkRepoUpdates, deleteRepo, removeRepoFromGroup, scanRepoNow, updateRepo,
 } from "../api/repos.js";
 import { keys, useGroups, useRepos, useSubmissions } from "../api/queries.js";
 import { errorMessage } from "../api/errors.js";
@@ -30,6 +30,11 @@ function checkSummary(result) {
   const k = result.queued.length;
   if (!k) return "Up to date: no new commits.";
   return `Queued ${plural(k, "scan")}: ${result.queued.map((q) => (q.pr_number ? `PR #${q.pr_number}` : q.branch)).join(", ")}`;
+}
+
+function scanNowSummary(result) {
+  if (!result.queued) return `Not queued: ${result.reason}`;
+  return `Queued a fresh scan of ${result.branch} (${result.commit_sha.slice(0, 7)}).`;
 }
 
 /** The repo's tracked branch/tag, if any; owners/admins can change or clear it inline. */
@@ -85,6 +90,7 @@ function RepoRow({ repo, runs, groups, canManage, onChanged }) {
   const navigate = useNavigate();
   const toast = useToast();
   const [checking, setChecking] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [msg, setMsg] = useState(null); // { ok, text }
   const latest = runs[0];
   const open = latest?.status === "needs_review";
@@ -105,6 +111,17 @@ function RepoRow({ repo, runs, groups, canManage, onChanged }) {
     } catch (err) {
       setMsg({ ok: false, text: errorMessage(err, "Check failed") });
     } finally { setChecking(false); }
+  };
+  const scanNow = async (e) => {
+    e.stopPropagation();
+    setScanning(true); setMsg(null);
+    try {
+      const result = await scanRepoNow(repo.id);
+      setMsg({ ok: true, text: scanNowSummary(result) });
+      onChanged();
+    } catch (err) {
+      setMsg({ ok: false, text: errorMessage(err, "Scan failed") });
+    } finally { setScanning(false); }
   };
   const stop = (e) => e.stopPropagation();
 
@@ -156,6 +173,10 @@ function RepoRow({ repo, runs, groups, canManage, onChanged }) {
       <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={stop}>
         <button className="btn sm" disabled={checking || !repo.enabled} onClick={checkNow}>
           {checking ? <><span className="spin" /> Checking</> : "↻ Check for updates"}
+        </button>
+        <button className="btn sm" disabled={scanning || !repo.enabled} onClick={scanNow}
+          title="Force a fresh scan of the current head, even if it was already scanned" style={{ marginLeft: 6 }}>
+          {scanning ? <><span className="spin" /> Scanning</> : "▶ Scan now"}
         </button>
         <button className={`toggle ${repo.enabled ? "on" : ""}`} style={{ margin: "0 10px", verticalAlign: "middle" }}
           aria-pressed={repo.enabled} title={repo.enabled ? "Enabled: click to stop scanning" : "Disabled: click to resume scanning"}

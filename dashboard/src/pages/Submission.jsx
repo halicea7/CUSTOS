@@ -12,8 +12,8 @@ import ReportModal from "../components/submission/ReportModal.jsx";
 import AgentTriageModal from "../components/submission/AgentTriageModal.jsx";
 import { downloadBlob, generateRemediations, remediationTasks } from "../components/submission/report.js";
 import {
-  useChains, useComparison, useDispose, useInvalidateSubmission, useLlmStatus, useRerunLlm, useReturnSignoff,
-  useSignOff, useSignoffs, useSubmission, useSubmissionFindings,
+  useChains, useComparison, useDispose, useInvalidateSubmission, useLlmStatus, useRerunLlm, useRescanSubmission,
+  useReturnSignoff, useSignOff, useSignoffs, useSubmission, useSubmissionFindings,
 } from "../api/queries.js";
 import Chains, { chainGatePending, resolveChains } from "../components/submission/Chains.jsx";
 import { errorMessage } from "../api/errors.js";
@@ -348,6 +348,7 @@ export default function Submission() {
   const dispose = useDispose(id);
   const { data: llm, refetch: refetchLlm } = useLlmStatus(id);
   const rerun = useRerunLlm(id);
+  const rescan = useRescanSubmission(id);
 
   const [src, setSrc] = useState(null);
   const [untriaged, setUntriaged] = useState(false);
@@ -487,6 +488,10 @@ export default function Submission() {
     onSuccess: () => { refetchLlm(); toast("LLM re-run queued"); },
     onError: (e) => toast(errorMessage(e, "Couldn't start the re-run"), { bad: true }),
   });
+  const startRescan = () => rescan.mutate(undefined, {
+    onSuccess: (result) => { toast("Full rescan queued"); navigate(`/submissions/${result.submission_id}`); },
+    onError: (e) => toast(errorMessage(e, "Couldn't start the rescan"), { bad: true }),
+  });
 
   return (
     <div className="page glow">
@@ -513,6 +518,12 @@ export default function Submission() {
             <button className="btn" disabled={inFlight || llmBusy} onClick={startRerun}
               title="Re-clones the same commit; only LLM findings are replaced">
               {llmBusy ? <><span className="spin" /> Re-running</> : "↻ Re-run LLM"}
+            </button>
+          )}
+          {isAdmin && (
+            <button className="btn" disabled={rescan.isPending} onClick={startRescan}
+              title="Runs the full pipeline (SAST, CodeQL/S1, LLM) again on this exact commit, as a new run — e.g. after turning on a new scanner">
+              {rescan.isPending ? <><span className="spin" /> Queuing</> : "↻ Full rescan"}
             </button>
           )}
           <button className="btn" disabled={inFlight} onClick={() => setShowReport(true)} data-tour="run-report">↓ Report</button>

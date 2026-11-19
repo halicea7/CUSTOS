@@ -1,3 +1,4 @@
+import logging
 import re
 from urllib.parse import unquote
 from uuid import UUID
@@ -15,7 +16,7 @@ from auth import get_current_user
 from crypto import decrypt, encrypt
 from database import get_db
 from enums import Role
-from intake import check_repo_for_updates
+from intake import check_repo_for_updates, rescan_repo_head
 from models import Group, Repo, RepoGroup, User
 from schemas import (
     GroupSummary,
@@ -27,6 +28,7 @@ from schemas import (
 from worker.analysis.clone import redact
 
 router = APIRouter(prefix="/repos", tags=["repos"])
+logger = logging.getLogger(__name__)
 
 
 _REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -159,6 +161,7 @@ async def list_repos(
 @router.post("", response_model=RepoResponse, status_code=status.HTTP_201_CREATED)
 async def add_repo(
     body: RepoCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -191,6 +194,12 @@ async def add_repo(
     activity.record(db, current_user.username, "repo_added", name)
     await db.commit()
     await db.refresh(repo)
+
+    try:
+        await check_repo_for_updates(db, request.app.state.redis, request.app.state.arq_pool, repo)
+    except httpx.HTTPError:
+        logger.warning("Couldn't start the initial scan of %s; 'Check for updates' will retry it", name)
+
     return await _to_response(db, repo)
 
 
@@ -265,6 +274,36 @@ async def check_updates(
     activity.record(db, current_user.username, "repo_checked",
                     f"{repo.repo_full_name}: {queued} scan{'s' if queued != 1 else ''} queued" if queued
                     else f"{repo.repo_full_name}: up to date")
+    await db.commit()
+    return result
+
+
+@router.post("/{repo_id}/scan-now")
+async def scan_now(
+    repo_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Force a fresh scan of the tracked ref/default branch head, even if it's
+    already been scanned (open PRs are untouched — use "Check for updates" for
+    those). For picking up a newly-enabled scanner or setting right away.
+    """
+    repo = _require_owner(await db.get(Repo, repo_id), current_user)
+    if not repo.enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository is disabled")
+    try:
+        result = await rescan_repo_head(db, request.app.state.redis, request.app.state.arq_pool, repo)
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        hint = {401: "the token was rejected", 403: "the token lacks access or hit a rate limit",
+                404: "repository not found, or the token can't see it"}.get(code, "unexpected response")
+        raise HTTPException(status_code=502, detail=f"GitHub returned {code}: {hint}") from None
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach GitHub ({type(exc).__name__})") from None
+    activity.record(db, current_user.username, "repo_rescanned",
+                    f"{repo.repo_full_name}@{result['commit_sha'][:7]}" if result["queued"]
+                    else f"{repo.repo_full_name}: {result['reason']}")
     await db.commit()
     return result
 

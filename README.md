@@ -379,12 +379,15 @@ Repositories are connected from the dashboard **Repos → Add repository** wizar
 1. Create a fine-grained PAT whose **Resource owner** is the account or organization that owns the repo, with **Contents: Read** and **Pull requests: Read** (Metadata: Read is added automatically). An organization may need to approve the token first; for a repo in another organization, use a token owned by that one. With a classic token (`repo` scope), authorize it for the organization's SSO.
 2. In the wizard, paste the token. It is checked against the GitHub API before the repo is saved, and its expiry date is shown on the Repos page.
 
-That's all an internal deployment needs: Custos asks GitHub for new commits (one branch's head and every open PR's head) and queues any it hasn't scanned. This needs outbound HTTPS to GitHub only; GitHub never has to reach Custos.
+That's all an internal deployment needs: Custos asks GitHub for new commits (one branch's head and every open PR's head) and queues any it hasn't scanned. This needs outbound HTTPS to GitHub only; GitHub never has to reach Custos. Scanning starts as soon as the repo is added — Custos checks for current targets right away, the same as pressing **Check for updates** — so there's nothing else to click.
 
 **Tracking a branch other than the default one:** paste the repo as `owner/repo/tree/<branch-or-tag>` — the same path GitHub's own URL uses for one branch, so pasting the address bar's URL straight from a branch or tag page works too (`https://github.com/owner/repo/tree/2.11`). Custos checks the branch or tag exists before saving, and the repo page shows it as a small `⎇` badge next to the name; owners and admins can change or clear it there (clearing goes back to the default branch). Open PRs are still checked regardless.
 
-- **On demand:** **Repos → Check for updates** on a repository.
+- **On demand:** **Repos → Check for updates** on a repository, for new commits (one branch's head, open PRs) it hasn't scanned yet.
 - **On a schedule:** every **Settings → Repository updates → Check every (hours)** (default 48; `0` = on demand only). The worker checks hourly which repos are due.
+- **Forcing a rescan of what's already been scanned:** "Check for updates" skips commits it already has a run for, so two more targeted buttons force a *fresh* run instead of waiting for a new commit — handy right after turning on a scanner or changing a setting.
+  - **Repos → Scan now** forces a fresh scan of just the current head (the tracked ref, or the default branch). It leaves open PRs alone on purpose: forcing every one of them to rescan on each click would repeat the same stampede of simultaneous jobs a repo with many open PRs can already cause.
+  - **A run's own ↻ Full rescan** button re-runs the whole pipeline (SAST, CodeQL/SentinelOne, LLM) against that exact commit as a new run, leaving the original run and its findings untouched.
 
 **Optional: webhooks for instant scans**, only if GitHub can reach Custos. Copy the generated webhook secret from the wizard, then in the repo on GitHub: **Settings → Webhooks → Add webhook**
    - Payload URL: `https://<your-host>/api/webhook/github` (Docker) or `http://localhost:8000/webhook/github` behind a tunnel (local)
